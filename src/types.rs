@@ -5,18 +5,33 @@ use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Domain(pub String);
+
 impl Domain {
+    /// Canonicalize host to a stable key: lowercase + IDNA/Punycode
+    fn canonicalize(host: &str) -> String {
+        let lower = host.to_ascii_lowercase();
+        idna::domain_to_ascii(&lower).unwrap_or(lower)
+    }
+
     pub fn from_url(url: &Url) -> Option<Self> {
-        url.domain().map(|d| Domain(d.to_string()))
+        url.domain().map(|d| Domain(Self::canonicalize(d)))
+    }
+
+    /// Build a Domain from raw user text (CLI, API callers, etc.)
+    pub fn from_raw(host: &str) -> Self {
+        Domain(Self::canonicalize(host))
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderSet(pub BTreeMap<String, String>);
 impl HeaderSet {
-    pub fn empty() -> Self { Self(BTreeMap::new()) }
+    pub fn empty() -> Self {
+        Self(BTreeMap::new())
+    }
     pub fn with(mut self, k: &str, v: &str) -> Self {
-        self.0.insert(k.to_string(), v.to_string()); self
+        self.0.insert(k.to_string(), v.to_string());
+        self
     }
 }
 
@@ -31,11 +46,15 @@ pub struct CrawlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sel(pub String);
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum AreaRole { Main, Section, Sidebar, Header, Footer, Unknown }
-
-impl Default for AreaRole {
-    fn default() -> Self { AreaRole::Unknown }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub enum AreaRole {
+    Main,
+    Section,
+    Sidebar,
+    Header,
+    Footer,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -66,7 +85,13 @@ pub struct FollowLinks {
 }
 impl Default for FollowLinks {
     fn default() -> Self {
-        Self { enabled: false, scope: FollowScope::SameDomain, allow_domains: vec![], max: 10, dedupe: true }
+        Self {
+            enabled: false,
+            scope: FollowScope::SameDomain,
+            allow_domains: vec![],
+            max: 10,
+            dedupe: true,
+        }
     }
 }
 
@@ -86,21 +111,32 @@ pub struct ScrapeConfig {
     pub areas: Vec<AreaPolicy>,
 }
 
+/// Handy wrapper when you want to print or pass "config" as a single object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyConfig {
+    pub crawl: CrawlConfig,
+    pub scrape: ScrapeConfig,
+}
+
+/// Canonical in-memory policy type (simple & derived)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
     pub domain: Domain,
     pub crawl: CrawlConfig,
     pub scrape: ScrapeConfig,
-    pub version: u32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LinkOut { pub href: String, pub text: String }
+pub struct LinkOut {
+    pub href: String,
+    pub text: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageOut { pub src: String, pub alt: Option<String> }
+pub struct ImageOut {
+    pub src: String,
+    pub alt: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AreaContent {
@@ -137,6 +173,18 @@ pub struct ApiResponse<T> {
     pub error: Option<String>,
 }
 impl<T> ApiResponse<T> {
-    pub fn ok(data: T) -> Self { Self { ok: true, data: Some(data), error: None } }
-    pub fn err(msg: impl Into<String>) -> Self { Self { ok: false, data: None, error: Some(msg.into()) } }
+    pub fn ok(data: T) -> Self {
+        Self {
+            ok: true,
+            data: Some(data),
+            error: None,
+        }
+    }
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            data: None,
+            error: Some(msg.into()),
+        }
+    }
 }

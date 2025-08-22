@@ -1,8 +1,11 @@
-use crate::{error::*, types::*, policy::validate_policy};
+use crate::{error::*, types::*};
 use directories::ProjectDirs;
-use std::{fs, path::{Path, PathBuf}};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 
-pub trait PolicyStore: Send + Sync {
+pub trait PolicyStore {
     fn get(&self, domain: &Domain) -> Result<Option<Policy>>;
     fn set(&self, policy: &Policy) -> Result<()>;
     fn list(&self) -> Result<Vec<Policy>>;
@@ -10,66 +13,143 @@ pub trait PolicyStore: Send + Sync {
     fn delete_all(&self) -> Result<()>;
 }
 
-pub struct LocalFsStore { root: PathBuf }
+pub struct LocalFsStore {
+    root: PathBuf,
+}
 
 impl LocalFsStore {
     pub fn new() -> Result<Self> {
-        let root = policy_dir()?;
+        let proj = ProjectDirs::from("io", "qrawl", "qrawl")
+            .ok_or_else(|| QrawlError::Other("could not resolve data dir".into()))?;
+        let root = proj.data_local_dir().join("policies");
         fs::create_dir_all(&root)?;
         Ok(Self { root })
     }
-    fn path_for(&self, domain: &Domain) -> PathBuf {
-        self.root.join(format!("{}.json", domain.0))
+
+    fn path_for(&self, d: &Domain) -> PathBuf {
+        self.root.join(format!("{}.json", d.0))
     }
 }
 
-fn policy_dir() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("QRAWL_HOME") {
-        return Ok(Path::new(&home).join("policies"));
-    }
-    // author: QLangstaff, app: qrawl
-    let dirs = ProjectDirs::from("", "QLangstaff", "qrawl")
-        .ok_or_else(|| QrawlError::Other("cannot resolve data dir".into()))?;
-    Ok(PathBuf::from(dirs.data_dir()).join("policies"))
+/* ---------- On-disk document shape ----------
+{
+  "<domain>": {
+    "config": { "crawl": {...}, "scrape": {...} }
+  }
+}
+---------------------------------------------- */
+
+#[derive(Serialize, Deserialize)]
+struct PolicyConfigDoc {
+    crawl: CrawlConfig,
+    scrape: ScrapeConfig,
+}
+#[derive(Serialize, Deserialize)]
+struct PolicyDoc {
+    config: PolicyConfigDoc,
 }
 
 impl PolicyStore for LocalFsStore {
     fn get(&self, domain: &Domain) -> Result<Option<Policy>> {
         let p = self.path_for(domain);
-        if !p.exists() { return Ok(None); }
-        let bytes = fs::read(p)?;
-        let policy: Policy = serde_json::from_slice(&bytes)?;
-        Ok(Some(policy))
+        if !p.exists() {
+            return Ok(None);
+        }
+        let file = fs::File::open(&p)?;
+        let map: BTreeMap<String, PolicyDoc> = serde_json::from_reader(file)?;
+        if let Some(doc) = map.get(&domain.0) {
+            Ok(Some(Policy {
+                domain: domain.clone(),
+                crawl: doc.config.crawl.clone(),
+                scrape: doc.config.scrape.clone(),
+            }))
+        } else if let Some(doc) = map.values().next() {
+            Ok(Some(Policy {
+                domain: domain.clone(),
+                crawl: doc.config.crawl.clone(),
+                scrape: doc.config.scrape.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
+
     fn set(&self, policy: &Policy) -> Result<()> {
-        validate_policy(policy)?;
         let p = self.path_for(&policy.domain);
-        let pretty = serde_json::to_string_pretty(policy)?;
-        fs::write(p, pretty)?;
+        let mut map = BTreeMap::<String, PolicyDoc>::new();
+        map.insert(
+            policy.domain.0.clone(),
+            PolicyDoc {
+                config: PolicyConfigDoc {
+                    crawl: policy.crawl.clone(),
+                    scrape: policy.scrape.clone(),
+                },
+            },
+        );
+        let file = fs::File::create(&p)?;
+        serde_json::to_writer_pretty(file, &map)?;
         Ok(())
     }
+
     fn list(&self) -> Result<Vec<Policy>> {
-        let mut out = vec![];
-        for e in fs::read_dir(&self.root)? {
-            let e = e?;
-            if e.file_type()?.is_file() && e.path().extension().and_then(|x| x.to_str()) == Some("json") {
-                let bytes = fs::read(e.path())?;
-                let pol: Policy = serde_json::from_slice(&bytes)?;
-                out.push(pol);
+        let mut out = Vec::new();
+        if !self.root.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let fname = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let domain = Domain::from_raw(fname);
+
+            let file = match fs::File::open(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let map: BTreeMap<String, PolicyDoc> = match serde_json::from_reader(file) {
+                Ok(m) => m,
+                Err(_) => continue, // skip corrupt files
+            };
+
+            // Prefer canonical key, else any first value
+            if let Some(doc) = map.get(&domain.0) {
+                out.push(Policy {
+                    domain: domain.clone(),
+                    crawl: doc.config.crawl.clone(),
+                    scrape: doc.config.scrape.clone(),
+                });
+            } else if let Some(doc) = map.values().next() {
+                out.push(Policy {
+                    domain: domain.clone(),
+                    crawl: doc.config.crawl.clone(),
+                    scrape: doc.config.scrape.clone(),
+                });
             }
         }
+        out.sort_by(|a, b| a.domain.0.cmp(&b.domain.0));
         Ok(out)
     }
+
     fn delete(&self, domain: &Domain) -> Result<()> {
         let p = self.path_for(domain);
-        if p.exists() { fs::remove_file(p)?; }
+        if p.exists() {
+            fs::remove_file(p)?;
+        }
         Ok(())
     }
+
     fn delete_all(&self) -> Result<()> {
-        if self.root.exists() {
-            for e in fs::read_dir(&self.root)? {
-                let e = e?;
-                if e.file_type()?.is_file() { fs::remove_file(e.path())?; }
+        if !self.root.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                let _ = fs::remove_file(path);
             }
         }
         Ok(())

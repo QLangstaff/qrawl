@@ -1,223 +1,366 @@
-use crate::{engine::{Fetcher, Scraper}, types::*, error::*};
-use chrono::Utc;
+use crate::{
+    engine::{Fetcher as FetcherT, Scraper as ScraperT},
+    error::*,
+    types::*,
+};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONNECTION,
+    REFERER, USER_AGENT,
+};
 use scraper::{ElementRef, Html, Selector};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
-/* ------------------------- Fetcher (blocking) ------------------------- */
+/* ===========================
+FETCHER (sousy-style first, HTTP/1.1)
+=========================== */
 
 pub struct ReqwestFetcher {
     client: Client,
 }
+
 impl ReqwestFetcher {
     pub fn new() -> Result<Self> {
+        // Force HTTP/1.1; some WAFs expect 1.1 + Connection: keep-alive
         let client = Client::builder()
+            .http1_only()
             .cookie_store(true)
-            .build()
-            .map_err(|e| QrawlError::Other(e.to_string()))?;
+            .gzip(true)
+            .brotli(true)
+            .deflate(true)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(Duration::from_secs(10))
+            .build()?;
         Ok(Self { client })
     }
-    fn build_headers(&self, cfg: &CrawlConfig) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        for (k, v) in cfg.default_headers.0.iter() {
-            if let (Ok(hk), Ok(hv)) = (HeaderName::try_from(k.as_str()), HeaderValue::try_from(v.as_str())) {
-                let _ = headers.insert(hk, hv);
-            }
-        }
-        if let Some(ua) = cfg.user_agents.get(0) {
-            if let Ok(hv) = HeaderValue::try_from(ua.as_str()) {
-                let _ = headers.insert("User-Agent", hv);
-            }
-        }
-        headers
-    }
 }
-impl Fetcher for ReqwestFetcher {
-    fn name(&self) -> &'static str { "reqwest-blocking" }
+
+impl FetcherT for ReqwestFetcher {
+    fn name(&self) -> &'static str {
+        "reqwest-blocking"
+    }
+
     fn fetch_blocking(&self, url: &str, cfg: &CrawlConfig) -> Result<String> {
-        let headers = self.build_headers(cfg);
-        let resp = self.client
-            .get(url)
-            .headers(headers)
-            .send()
-            .map_err(|e| QrawlError::Other(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(QrawlError::Other(format!("http status {} for {}", resp.status(), url)));
+        let parsed = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
+        let origin = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
+
+        let uas: Vec<&str> = if cfg.user_agents.is_empty() {
+            vec!["Mozilla/5.0"]
+        } else {
+            cfg.user_agents.iter().map(|s| s.as_str()).collect()
+        };
+
+        let base = to_headermap(&cfg.default_headers, None)?;
+
+        for (ua_idx, ua) in uas.iter().enumerate() {
+            // Attempt 1: simple browser-like profile
+            if let Ok(text) = self.try_once(url, base.clone(), ua, None) {
+                return Ok(text);
+            }
+
+            // Small jitter before the optional referrer retry (only for first UA)
+            if ua_idx == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(80 + jitter_ms(120)));
+            }
+
+            // Attempt 2: same-site Referer
+            match self.try_once(url, base.clone(), ua, Some(&origin)) {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    // If this was the last UA's last attempt, propagate the concrete error
+                    if ua_idx == uas.len() - 1 {
+                        return Err(e);
+                    }
+                }
+            }
+
+            // Between UAs
+            std::thread::sleep(std::time::Duration::from_millis(120 + jitter_ms(160)));
         }
-        resp.text().map_err(|e| QrawlError::Other(e.to_string()))
+
+        // Shouldn't reach here, but keep a fallback
+        Err(QrawlError::Other(
+            "request failed after simple attempts".into(),
+        ))
     }
 }
 
-/* ------------------------- Scraper (areas) ------------------------- */
+impl ReqwestFetcher {
+    fn try_once(
+        &self,
+        url: &str,
+        mut headers: HeaderMap,
+        ua: &str,
+        referer: Option<&str>,
+    ) -> Result<String> {
+        headers.entry(ACCEPT).or_insert(HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        ));
+        headers
+            .entry(ACCEPT_LANGUAGE)
+            .or_insert(HeaderValue::from_static("en-US,en;q=0.5"));
+        headers
+            .entry(ACCEPT_ENCODING)
+            .or_insert(HeaderValue::from_static("gzip, deflate, br"));
+        headers
+            .entry(CONNECTION)
+            .or_insert(HeaderValue::from_static("keep-alive"));
+        headers.insert(
+            HeaderName::from_static("upgrade-insecure-requests"),
+            HeaderValue::from_static("1"),
+        );
+        headers.insert(
+            HeaderName::from_static("dnt"),
+            HeaderValue::from_static("1"),
+        );
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_str(ua).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
+        );
+        if let Some(r) = referer {
+            headers.insert(REFERER, HeaderValue::from_str(r).unwrap());
+        }
 
-fn compile(list: &[Sel]) -> Vec<Selector> {
-    list.iter().filter_map(|s| Selector::parse(&s.0).ok()).collect()
+        let resp = self.client.get(url).headers(headers).send()?;
+        let status = resp.status();
+        let text = resp.text()?;
+
+        if status.is_success() && !looks_blocked(&text) {
+            return Ok(text);
+        }
+        Err(QrawlError::Other(format!(
+            "http status {} for {}",
+            status, url
+        )))
+    }
 }
 
-/// Return true if `el` is inside any subtree selected by any `exclude` selector under `root`.
-fn is_excluded(el: &ElementRef, root: &ElementRef, exclude: &[Selector]) -> bool {
-    // For each exclude selector, select matching roots under `root` and
-    // check if any ancestor of `el` matches one of those roots.
-    for sel in exclude {
-        for ex_root in root.select(sel) {
-            let ex_id = ex_root.id(); // private NodeId type is fine as a local
-            for anc in el.ancestors() {
-                if let Some(ael) = ElementRef::wrap(anc) {
-                    if ael.id() == ex_id { return true; }
+// Convert policy headers into a HeaderMap
+fn to_headermap(hs: &HeaderSet, ua: Option<&str>) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    for (k, v) in &hs.0 {
+        let kn = HeaderName::from_bytes(k.as_bytes())
+            .map_err(|e| QrawlError::Other(format!("bad header name {}: {}", k, e)))?;
+        let vv = HeaderValue::from_str(v)
+            .map_err(|e| QrawlError::Other(format!("bad header value for {}: {}", k, e)))?;
+        headers.insert(kn, vv);
+    }
+    if let Some(ua_str) = ua {
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_str(ua_str).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
+        );
+    }
+    Ok(headers)
+}
+
+// Simple block-page detector
+fn looks_blocked(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains("verify you are a human")
+        || b.contains("captcha")
+        || b.contains("cf-browser-verification")
+        || b.contains("px-captcha")
+        || b.contains("access denied")
+}
+
+// Small, dependency-free jitter (ms)
+fn jitter_ms(range: u64) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_nanos(0));
+    let nanos = now.subsec_nanos() as u64;
+    let micros = (now.as_micros() & 0xFFFF) as u64;
+    (nanos ^ (micros << 5)) % range
+}
+
+/* ===========================
+SCRAPER (schema-first)
+=========================== */
+
+pub struct DefaultScraper;
+impl ScraperT for DefaultScraper {
+    fn name(&self) -> &'static str {
+        "default-scraper"
+    }
+
+    fn scrape(&self, url: &str, html: &str, cfg: &ScrapeConfig) -> Result<PageExtraction> {
+        let doc = Html::parse_document(html);
+
+        // JSON-LD first
+        let mut json_ld = Vec::<serde_json::Value>::new();
+        if cfg.extract_json_ld {
+            if let Ok(sel) = Selector::parse(r#"script[type="application/ld+json"]"#) {
+                for s in doc.select(&sel) {
+                    if let Some(txt) = s.text().next() {
+                        if let Some(mut vals) = parse_json_ld_block(txt) {
+                            json_ld.append(&mut vals);
+                        }
+                    }
                 }
+            }
+        }
+
+        // Optional CSS areas (manual policies)
+        let mut areas_out = Vec::<AreaContent>::new();
+        for area in &cfg.areas {
+            if area.roots.is_empty() {
+                continue;
+            }
+            for rsel in &area.roots {
+                if let Ok(sel) = Selector::parse(&rsel.0) {
+                    for root_el in doc.select(&sel) {
+                        if is_excluded(&root_el, &area.exclude_within) {
+                            continue;
+                        }
+
+                        let mut out = AreaContent {
+                            role: area.role,
+                            root_selector_matched: rsel.0.clone(),
+                            ..Default::default()
+                        };
+                        collect_strings(&root_el, &area.fields.title, &mut out.title, true);
+                        collect_many(&root_el, &area.fields.headings, &mut out.headings);
+                        collect_many(&root_el, &area.fields.paragraphs, &mut out.paragraphs);
+                        collect_images(&root_el, &area.fields.images, &mut out.images);
+                        collect_links(&root_el, &area.fields.links, &mut out.links);
+
+                        areas_out.push(out);
+                    }
+                }
+            }
+        }
+
+        Ok(PageExtraction {
+            url: url.to_string(),
+            domain: Url::parse(url)
+                .ok()
+                .and_then(|u| u.domain().map(|d| d.to_string()))
+                .unwrap_or_default(),
+            areas: areas_out,
+            json_ld,
+            fetched_at: chrono::Utc::now(),
+        })
+    }
+}
+
+/* -------- JSON-LD helpers -------- */
+
+fn parse_json_ld_block(txt: &str) -> Option<Vec<serde_json::Value>> {
+    let txt = txt.trim();
+    if txt.is_empty() {
+        return None;
+    }
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt) {
+        return Some(flatten_jsonld(v));
+    }
+    let bracketed = format!("[{}]", txt);
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&bracketed) {
+        return Some(flatten_jsonld(v));
+    }
+    None
+}
+
+fn flatten_jsonld(v: serde_json::Value) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    match v {
+        serde_json::Value::Array(arr) => {
+            for it in arr {
+                out.extend(flatten_jsonld(it));
+            }
+        }
+        serde_json::Value::Object(mut obj) => {
+            if let Some(graph) = obj.remove("@graph") {
+                out.extend(flatten_jsonld(graph));
+                if !obj.is_empty() {
+                    out.push(serde_json::Value::Object(obj));
+                }
+            } else {
+                out.push(serde_json::Value::Object(obj));
+            }
+        }
+        other => out.push(other),
+    }
+    out
+}
+
+/* -------- CSS helpers -------- */
+
+fn is_excluded(root: &ElementRef<'_>, exclude: &[Sel]) -> bool {
+    for s in exclude {
+        if let Ok(sel) = Selector::parse(&s.0) {
+            if root.select(&sel).next().is_some() {
+                return true;
             }
         }
     }
     false
 }
 
-fn text_of(el: &ElementRef) -> String {
-    el.text().collect::<String>().trim().to_string()
-}
-
-fn resolve(base: &Url, href: &str) -> Option<String> {
-    Url::options().base_url(Some(base)).parse(href).ok().map(|u| u.to_string())
-}
-
-pub struct DefaultScraper;
-impl Scraper for DefaultScraper {
-    fn name(&self) -> &'static str { "default-scraper" }
-
-    fn scrape(&self, url: &str, html: &str, cfg: &ScrapeConfig) -> Result<PageExtraction> {
-        let doc = Html::parse_document(html);
-        let base = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
-
-        let mut areas_out: Vec<AreaContent> = Vec::new();
-
-        for area in &cfg.areas {
-            let roots = compile(&area.roots);
-            let exclude = compile(&area.exclude_within);
-            let s_title = compile(&area.fields.title);
-            let s_head = compile(&area.fields.headings);
-            let s_p = compile(&area.fields.paragraphs);
-            let s_img = compile(&area.fields.images);
-            let s_a = compile(&area.fields.links);
-            let s_lists = compile(&area.fields.lists);
-            let s_tables = compile(&area.fields.tables);
-
-            let mut matched_any = false;
-            for rsel in &roots {
-                for root in doc.select(rsel) {
-                    matched_any = true;
-
-                    let mut out = AreaContent {
-                        role: area.role,
-                        root_selector_matched: format!("{:?}", rsel),
-                        ..Default::default()
-                    };
-                    // title
-                    for s in &s_title {
-                        if let Some(el) = root.select(s).find(|el| !is_excluded(el, &root, &exclude)) {
-                            let t = text_of(&el);
-                            if !t.is_empty() { out.title = Some(t); break; }
-                        }
-                    }
-                    // headings
-                    for s in &s_head {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            let t = text_of(&el);
-                            if !t.is_empty() { out.headings.push(t); }
-                        }
-                    }
-                    // paragraphs
-                    for s in &s_p {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            let t = text_of(&el);
-                            if !t.is_empty() { out.paragraphs.push(t); }
-                        }
-                    }
-                    // images
-                    for s in &s_img {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            if let Some(src) = el.value().attr("src") {
-                                let src_abs = resolve(&base, src).unwrap_or_else(|| src.to_string());
-                                let alt = el.value().attr("alt").map(|s| s.to_string());
-                                out.images.push(ImageOut { src: src_abs, alt });
-                            }
-                        }
-                    }
-                    // links
-                    for s in &s_a {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            if let Some(href) = el.value().attr("href") {
-                                let href_abs = resolve(&base, href).unwrap_or_else(|| href.to_string());
-                                let text = text_of(&el);
-                                out.links.push(LinkOut { href: href_abs, text });
-                            }
-                        }
-                    }
-                    // lists
-                    for s in &s_lists {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            // collect li text
-                            if let Ok(li_sel) = Selector::parse("li") {
-                                let mut list_items = vec![];
-                                for li in el.select(&li_sel) {
-                                    let t = text_of(&li);
-                                    if !t.is_empty() { list_items.push(t); }
-                                }
-                                if !list_items.is_empty() { out.lists.push(list_items); }
-                            }
-                        }
-                    }
-                    // tables
-                    for s in &s_tables {
-                        for el in root.select(s) {
-                            if is_excluded(&el, &root, &exclude) { continue; }
-                            let tr_sel = Selector::parse("tr").unwrap();
-                            let td_sel = Selector::parse("th, td").unwrap();
-                            let mut rows = vec![];
-                            for tr in el.select(&tr_sel) {
-                                let mut row = vec![];
-                                for td in tr.select(&td_sel) {
-                                    let t = text_of(&td);
-                                    if !t.is_empty() { row.push(t); }
-                                }
-                                if !row.is_empty() { rows.push(row); }
-                            }
-                            if !rows.is_empty() { out.tables.push(rows); }
-                        }
-                    }
-
-                    areas_out.push(out);
-                    if !area.is_repeating { break; }
-                }
-                if matched_any && !area.is_repeating { break; }
-            }
-        }
-
-        // JSON-LD
-        let mut json_ld = vec![];
-        if cfg.extract_json_ld {
-            if let Ok(sel) = Selector::parse(r#"script[type="application/ld+json"]"#) {
-                for el in doc.select(&sel) {
-                    let txt = el.text().collect::<String>();
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
-                        if val.is_object() { json_ld.push(val) }
-                        else if let Some(arr) = val.as_array() { json_ld.extend(arr.clone()); }
+fn collect_strings(
+    root: &ElementRef<'_>,
+    sels: &[Sel],
+    target: &mut Option<String>,
+    first_only: bool,
+) {
+    for s in sels {
+        if let Ok(sel) = Selector::parse(&s.0) {
+            if let Some(el) = root.select(&sel).next() {
+                let txt = el.text().collect::<String>().trim().to_string();
+                if !txt.is_empty() {
+                    *target = Some(txt);
+                    if first_only {
+                        return;
                     }
                 }
             }
         }
+    }
+}
 
-        let domain = base.domain().unwrap_or_default().to_string();
-        Ok(PageExtraction {
-            url: url.to_string(),
-            domain,
-            areas: areas_out,
-            json_ld,
-            fetched_at: Utc::now(),
-        })
+fn collect_many(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<String>) {
+    for s in sels {
+        if let Ok(sel) = Selector::parse(&s.0) {
+            for el in root.select(&sel) {
+                let txt = el.text().collect::<String>().trim().to_string();
+                if !txt.is_empty() {
+                    out.push(txt);
+                }
+            }
+        }
+    }
+}
+
+fn collect_images(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<ImageOut>) {
+    for s in sels {
+        if let Ok(sel) = Selector::parse(&s.0) {
+            for el in root.select(&sel) {
+                if let Some(src) = el.value().attr("src") {
+                    let alt = el.value().attr("alt").map(|s| s.to_string());
+                    out.push(ImageOut {
+                        src: src.to_string(),
+                        alt,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn collect_links(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<LinkOut>) {
+    for s in sels {
+        if let Ok(sel) = Selector::parse(&s.0) {
+            for el in root.select(&sel) {
+                if let Some(href) = el.value().attr("href") {
+                    let text = el.text().collect::<String>().trim().to_string();
+                    out.push(LinkOut {
+                        href: href.to_string(),
+                        text,
+                    });
+                }
+            }
+        }
     }
 }
