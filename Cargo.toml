@@ -1,9 +1,9 @@
 [package]
 name = "qrawl"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "MIT"
-description = "Infer domain-specific policies to crawl & scrape URLs (CLI + Rust API)."
+description = "Crawl at scale with domain-specific policies (CLI + Rust API)."
 repository = "https://github.com/QLangstaff/qrawl"
 homepage = "https://github.com/QLangstaff/qrawl"
 documentation = "https://docs.rs/qrawl"
