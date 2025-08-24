@@ -3,7 +3,7 @@ use crate::{error::*, types::*};
 /// Quick syntactic checks (no defaults).
 /// We enforce: at least one UA; at least one area; at least one field selector across title/headings/paragraphs.
 pub fn validate_policy(p: &Policy) -> Result<()> {
-    if p.crawl.user_agents.is_empty() {
+    if p.fetch.user_agents.is_empty() {
         return Err(QrawlError::Other(
             "crawl.user_agents must not be empty".into(),
         ));

@@ -1,11 +1,11 @@
 use crate::{error::*, store::PolicyStore, types::*};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use url::Url;
 
 /* ---------- Traits that impls.rs provides ---------- */
 
 pub trait Fetcher: Send + Sync {
-    fn fetch_blocking(&self, url: &str, cfg: &CrawlConfig) -> crate::Result<String>;
+    fn fetch_blocking(&self, url: &str, cfg: &FetchConfig) -> crate::Result<String>;
     /// Optional; concrete impls (like reqwest) can override.
     fn name(&self) -> &'static str {
         "fetcher"
@@ -22,9 +22,15 @@ pub trait Scraper: Send + Sync {
 
 /* ---------- Engine options ---------- */
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct EngineOptions {
     pub max_children: usize,
+}
+
+impl Default for EngineOptions {
+    fn default() -> Self {
+        Self { max_children: 50 }
+    }
 }
 
 /* ---------- Engine ---------- */
@@ -59,7 +65,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
             .get(&domain)?
             .ok_or_else(|| QrawlError::Other(format!("no policy for domain {}", domain.0)))?;
 
-        let html = self.fetcher.fetch_blocking(url, &pol.crawl)?;
+        let html = self.fetcher.fetch_blocking(url, &pol.fetch)?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
         let children = self.follow_itemlist_children(url, &parent, &pol)?;
 
@@ -72,7 +78,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
 
         let pol = transient_unknown_policy(domain);
 
-        let html = self.fetcher.fetch_blocking(url, &pol.crawl)?;
+        let html = self.fetcher.fetch_blocking(url, &pol.fetch)?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
         let children = self.follow_itemlist_children(url, &parent, &pol)?;
 
@@ -120,8 +126,20 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
         let base = Url::parse(base_url).map_err(|_| QrawlError::InvalidUrl(base_url.into()))?;
         let parent_domain = base.domain().unwrap_or("");
 
-        // Extract candidate URLs from JSON-LD ItemList
+        // Extract candidate URLs from JSON-LD ItemList and content areas
         let mut links = extract_itemlist_urls(&parent.json_ld, &base);
+
+        // Also extract links from content areas
+        for area in &parent.areas {
+            for block in &area.content {
+                if let ContentBlock::Link { href, .. } = block {
+                    // Resolve relative URLs to absolute
+                    if let Ok(absolute_url) = base.join(href) {
+                        links.push(absolute_url.to_string());
+                    }
+                }
+            }
+        }
 
         // Scope filtering
         links.retain(|u| match scope {
@@ -153,7 +171,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
         // Fetch + scrape children
         let mut out = Vec::new();
         for child in links {
-            if let Ok(html) = self.fetcher.fetch_blocking(&child, &pol.crawl) {
+            if let Ok(html) = self.fetcher.fetch_blocking(&child, &pol.fetch) {
                 if let Ok(page) = self.scraper.scrape(&child, &html, &pol.scrape) {
                     out.push(page);
                 }
@@ -169,7 +187,7 @@ fn transient_unknown_policy(domain: Domain) -> Policy {
     // Schema-first unknown policy: JSON-LD only, no CSS selectors, no follow by default
     Policy {
         domain,
-        crawl: CrawlConfig {
+        fetch: FetchConfig {
             user_agents: vec![
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".into(),
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15".into(),
@@ -183,12 +201,33 @@ fn transient_unknown_policy(domain: Domain) -> Policy {
                     ("Connection".into(), "keep-alive".into()),
                 ].into_iter().collect()
             ),
+            http_version: HttpVersion::default(),
+            bot_evasion_strategy: BotEvadeStrategy::default(),
             respect_robots_txt: true,
             timeout_ms: 20_000,
         },
         scrape: ScrapeConfig {
             extract_json_ld: true,
-            areas: vec![], // kept empty on unknown to stay conservative
+            json_ld_schemas: vec![], // empty = extract all schemas
+            open_graph: BTreeMap::new(),
+            twitter_cards: BTreeMap::new(),
+            areas: vec![AreaPolicy {
+                roots: vec![Sel("article".into()), Sel("main".into()), Sel(".content".into()), Sel(".entry-content".into())],
+                exclude_within: vec![],
+                role: AreaRole::Main,
+                fields: FieldSelectors::default(),
+                is_repeating: false,
+                follow_links: FollowLinks::default(), // disabled by default for unknown
+            }],
+        },
+        performance_profile: PerformanceProfile {
+            optimal_timeout_ms: 20_000,
+            working_strategy: BotEvadeStrategy::default(),
+            avg_response_size_bytes: 0, // Unknown for transient policy
+            strategies_tried: vec![],
+            strategies_failed: vec![],
+            last_tested_at: chrono::Utc::now(),
+            success_rate: 0.0, // Unknown success rate
         },
     }
 }

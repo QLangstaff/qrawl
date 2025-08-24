@@ -35,10 +35,30 @@ impl HeaderSet {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum HttpVersion {
+    Http1Only,
+    Http2Only,
+    #[default]
+    Http2WithHttp1Fallback, // Default - try HTTP/2, fallback to HTTP/1.1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum BotEvadeStrategy {
+    UltraMinimal, // just User-Agent, no other headers
+    Minimal,      // Basic headers: Accept, Accept-Language, Accept-Encoding
+    Standard,     // Current qrawl approach (full browser simulation)
+    Advanced,     // Enhanced browser fingerprint with security headers
+    #[default]
+    Adaptive,     // Try multiple approaches automatically
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrawlConfig {
+pub struct FetchConfig {
     pub user_agents: Vec<String>,
     pub default_headers: HeaderSet,
+    pub http_version: HttpVersion,
+    pub bot_evasion_strategy: BotEvadeStrategy,
     pub respect_robots_txt: bool,
     pub timeout_ms: u64,
 }
@@ -57,7 +77,7 @@ pub enum AreaRole {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSelectors {
     pub title: Vec<Sel>,
     pub headings: Vec<Sel>,
@@ -66,6 +86,30 @@ pub struct FieldSelectors {
     pub links: Vec<Sel>,
     pub lists: Vec<Sel>,
     pub tables: Vec<Sel>,
+}
+
+impl Default for FieldSelectors {
+    fn default() -> Self {
+        Self {
+            title: vec![
+                Sel("h1".into()),
+                Sel(".title".into()),
+                Sel(".entry-title".into()),
+            ],
+            headings: vec![
+                Sel("h2".into()),
+                Sel("h3".into()),
+                Sel("h4".into()),
+                Sel("h5".into()),
+                Sel("h6".into()),
+            ],
+            paragraphs: vec![Sel("p".into())],
+            images: vec![Sel("img".into())],
+            links: vec![Sel("a[href]".into())],
+            lists: vec![Sel("ul".into()), Sel("ol".into())],
+            tables: vec![Sel("table".into())],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -86,10 +130,10 @@ pub struct FollowLinks {
 impl Default for FollowLinks {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             scope: FollowScope::SameDomain,
             allow_domains: vec![],
-            max: 10,
+            max: 100,
             dedupe: true,
         }
     }
@@ -108,22 +152,38 @@ pub struct AreaPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapeConfig {
     pub extract_json_ld: bool,
+    pub json_ld_schemas: Vec<String>,
+    pub open_graph: BTreeMap<String, String>,
+    pub twitter_cards: BTreeMap<String, String>,
     pub areas: Vec<AreaPolicy>,
 }
 
 /// Handy wrapper when you want to print or pass "config" as a single object
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyConfig {
-    pub crawl: CrawlConfig,
+    pub fetch: FetchConfig,
     pub scrape: ScrapeConfig,
+}
+
+/// Performance characteristics learned during policy inference
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceProfile {
+    pub optimal_timeout_ms: u64,
+    pub working_strategy: BotEvadeStrategy,
+    pub avg_response_size_bytes: u64,
+    pub strategies_tried: Vec<BotEvadeStrategy>,
+    pub strategies_failed: Vec<BotEvadeStrategy>,
+    pub last_tested_at: DateTime<Utc>,
+    pub success_rate: f64, // 0.0 to 1.0
 }
 
 /// Canonical in-memory policy type (simple & derived)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
     pub domain: Domain,
-    pub crawl: CrawlConfig,
+    pub fetch: FetchConfig,
     pub scrape: ScrapeConfig,
+    pub performance_profile: PerformanceProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,17 +198,23 @@ pub struct ImageOut {
     pub alt: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentBlock {
+    Heading { text: String, level: u8 },
+    Paragraph { text: String },
+    Image { src: String, alt: Option<String> },
+    Link { href: String, text: String },
+    List { items: Vec<String> },
+    Table { rows: Vec<Vec<String>> },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AreaContent {
     pub role: AreaRole,
     pub root_selector_matched: String,
     pub title: Option<String>,
-    pub headings: Vec<String>,
-    pub paragraphs: Vec<String>,
-    pub images: Vec<ImageOut>,
-    pub links: Vec<LinkOut>,
-    pub lists: Vec<Vec<String>>,
-    pub tables: Vec<Vec<Vec<String>>>,
+    pub content: Vec<ContentBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -34,15 +34,29 @@ impl LocalFsStore {
 /* ---------- On-disk document shape ----------
 {
   "<domain>": {
-    "config": { "crawl": {...}, "scrape": {...} }
+    "config": { "fetch": {...}, "scrape": {...} }
   }
 }
 ---------------------------------------------- */
 
 #[derive(Serialize, Deserialize)]
 struct PolicyConfigDoc {
-    crawl: CrawlConfig,
+    fetch: FetchConfig,
     scrape: ScrapeConfig,
+    #[serde(default = "default_performance_profile")]
+    performance_profile: PerformanceProfile,
+}
+
+fn default_performance_profile() -> PerformanceProfile {
+    PerformanceProfile {
+        optimal_timeout_ms: 20_000,
+        working_strategy: BotEvadeStrategy::default(),
+        avg_response_size_bytes: 0,
+        strategies_tried: vec![],
+        strategies_failed: vec![],
+        last_tested_at: chrono::Utc::now(),
+        success_rate: 0.0,
+    }
 }
 #[derive(Serialize, Deserialize)]
 struct PolicyDoc {
@@ -60,14 +74,16 @@ impl PolicyStore for LocalFsStore {
         if let Some(doc) = map.get(&domain.0) {
             Ok(Some(Policy {
                 domain: domain.clone(),
-                crawl: doc.config.crawl.clone(),
+                fetch: doc.config.fetch.clone(),
                 scrape: doc.config.scrape.clone(),
+                performance_profile: doc.config.performance_profile.clone(),
             }))
         } else if let Some(doc) = map.values().next() {
             Ok(Some(Policy {
                 domain: domain.clone(),
-                crawl: doc.config.crawl.clone(),
+                fetch: doc.config.fetch.clone(),
                 scrape: doc.config.scrape.clone(),
+                performance_profile: doc.config.performance_profile.clone(),
             }))
         } else {
             Ok(None)
@@ -81,8 +97,9 @@ impl PolicyStore for LocalFsStore {
             policy.domain.0.clone(),
             PolicyDoc {
                 config: PolicyConfigDoc {
-                    crawl: policy.crawl.clone(),
+                    fetch: policy.fetch.clone(),
                     scrape: policy.scrape.clone(),
+                    performance_profile: policy.performance_profile.clone(),
                 },
             },
         );
@@ -118,14 +135,16 @@ impl PolicyStore for LocalFsStore {
             if let Some(doc) = map.get(&domain.0) {
                 out.push(Policy {
                     domain: domain.clone(),
-                    crawl: doc.config.crawl.clone(),
+                    fetch: doc.config.fetch.clone(),
                     scrape: doc.config.scrape.clone(),
+                    performance_profile: doc.config.performance_profile.clone(),
                 });
             } else if let Some(doc) = map.values().next() {
                 out.push(Policy {
                     domain: domain.clone(),
-                    crawl: doc.config.crawl.clone(),
+                    fetch: doc.config.fetch.clone(),
                     scrape: doc.config.scrape.clone(),
+                    performance_profile: doc.config.performance_profile.clone(),
                 });
             }
         }

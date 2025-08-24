@@ -42,13 +42,13 @@ fn verify_policy_runtime(components: &Components, pol: &Policy) -> Result<()> {
     let https = format!("https://{}/", pol.domain.0);
     let attempt = components
         .fetcher
-        .fetch_blocking(&https, &pol.crawl)
+        .fetch_blocking(&https, &pol.fetch)
         .and_then(|html| components.scraper.scrape(&https, &html, &pol.scrape))
         .or_else(|_| {
             let http = format!("http://{}/", pol.domain.0);
             components
                 .fetcher
-                .fetch_blocking(&http, &pol.crawl)
+                .fetch_blocking(&http, &pol.fetch)
                 .and_then(|html| components.scraper.scrape(&http, &html, &pol.scrape))
         });
 
@@ -59,10 +59,7 @@ fn verify_policy_runtime(components: &Components, pol: &Policy) -> Result<()> {
                 .as_ref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false)
-                || !a.headings.is_empty()
-                || !a.paragraphs.is_empty()
-                || !a.images.is_empty()
-                || !a.links.is_empty()
+                || !a.content.is_empty()
         });
 
     if !has_any_content {
@@ -88,11 +85,9 @@ pub fn policy_create_auto<PS: PolicyStore>(
             domain.0
         )));
     }
-    // Infer
+    // Create minimal policy (no verification needed)
     let pol = crate::infer::infer_policy(&*components.fetcher, &*components.scraper, &domain)?;
-    // Double-check (redundant but safe)
-    verify_policy_runtime(components, &pol)?;
-    // Persist
+    // Persist without verification - policy will be refined during actual extraction
     store.set(&pol)?;
     Ok(pol)
 }
@@ -185,7 +180,7 @@ pub fn policy_status_all<PS: PolicyStore>(
                 error: None,
                 config: if verbose {
                     Some(PolicyConfig {
-                        crawl: pol.crawl.clone(),
+                        fetch: pol.fetch.clone(),
                         scrape: pol.scrape.clone(),
                     })
                 } else {
@@ -197,7 +192,7 @@ pub fn policy_status_all<PS: PolicyStore>(
                 error: Some(e.to_string()),
                 config: if verbose {
                     Some(PolicyConfig {
-                        crawl: pol.crawl.clone(),
+                        fetch: pol.fetch.clone(),
                         scrape: pol.scrape.clone(),
                     })
                 } else {

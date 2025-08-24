@@ -5,34 +5,53 @@ use crate::{
 };
 use reqwest::blocking::Client;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONNECTION,
-    REFERER, USER_AGENT,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CACHE_CONTROL, CONNECTION,
+    REFERER, UPGRADE_INSECURE_REQUESTS, USER_AGENT,
 };
 use scraper::{ElementRef, Html, Selector};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 /* ===========================
-FETCHER (sousy-style first, HTTP/1.1)
+FETCHER
 =========================== */
 
-pub struct ReqwestFetcher {
-    client: Client,
-}
+pub struct ReqwestFetcher;
 
 impl ReqwestFetcher {
     pub fn new() -> Result<Self> {
-        // Force HTTP/1.1; some WAFs expect 1.1 + Connection: keep-alive
-        let client = Client::builder()
-            .http1_only()
+        Ok(Self)
+    }
+
+    fn build_client_for_policy(&self, cfg: &FetchConfig) -> Result<Client> {
+        if matches!(cfg.bot_evasion_strategy, BotEvadeStrategy::UltraMinimal) {
+            return Ok(Client::builder().timeout(Duration::from_secs(30)).build()?);
+        }
+
+        // For other strategies, use full-featured client
+        let mut builder = Client::builder()
             .cookie_store(true)
             .gzip(true)
             .brotli(true)
             .deflate(true)
             .redirect(reqwest::redirect::Policy::limited(10))
-            .timeout(Duration::from_secs(10))
-            .build()?;
-        Ok(Self { client })
+            .timeout(Duration::from_secs(10));
+
+        // Configure HTTP version based on policy
+        match cfg.http_version {
+            HttpVersion::Http1Only => {
+                builder = builder.http1_only();
+            }
+            HttpVersion::Http2Only => {
+                builder = builder.http2_prior_knowledge();
+            }
+            HttpVersion::Http2WithHttp1Fallback => {
+                // Default reqwest behavior - try HTTP/2, fallback to HTTP/1.1
+                // No additional configuration needed
+            }
+        }
+
+        Ok(builder.build()?)
     }
 }
 
@@ -41,9 +60,12 @@ impl FetcherT for ReqwestFetcher {
         "reqwest-blocking"
     }
 
-    fn fetch_blocking(&self, url: &str, cfg: &CrawlConfig) -> Result<String> {
+    fn fetch_blocking(&self, url: &str, cfg: &FetchConfig) -> Result<String> {
         let parsed = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         let origin = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
+
+        // Build client based on policy configuration
+        let client = self.build_client_for_policy(cfg)?;
 
         let uas: Vec<&str> = if cfg.user_agents.is_empty() {
             vec!["Mozilla/5.0"]
@@ -53,35 +75,57 @@ impl FetcherT for ReqwestFetcher {
 
         let base = to_headermap(&cfg.default_headers, None)?;
 
-        for (ua_idx, ua) in uas.iter().enumerate() {
-            // Attempt 1: simple browser-like profile
-            if let Ok(text) = self.try_once(url, base.clone(), ua, None) {
-                return Ok(text);
+        // Determine evasion strategies to try
+        let strategies = match &cfg.bot_evasion_strategy {
+            BotEvadeStrategy::Adaptive => {
+                // Progressive fallback: UltraMinimal -> Minimal -> Standard -> Advanced
+                // Start with ultra-minimal approach for sophisticated detection
+                vec![
+                    BotEvadeStrategy::UltraMinimal,
+                    BotEvadeStrategy::Minimal,
+                    BotEvadeStrategy::Standard,
+                    BotEvadeStrategy::Advanced,
+                ]
             }
+            other => vec![other.clone()],
+        };
 
-            // Small jitter before the optional referrer retry (only for first UA)
-            if ua_idx == 0 {
-                std::thread::sleep(std::time::Duration::from_millis(80 + jitter_ms(120)));
-            }
+        for (strategy_idx, strategy) in strategies.iter().enumerate() {
+            for (ua_idx, ua) in uas.iter().enumerate() {
+                // Attempt 1: strategy with no referer
+                if let Ok(text) = self.try_once(&client, url, base.clone(), ua, None, strategy) {
+                    return Ok(text);
+                }
 
-            // Attempt 2: same-site Referer
-            match self.try_once(url, base.clone(), ua, Some(&origin)) {
-                Ok(text) => return Ok(text),
-                Err(e) => {
-                    // If this was the last UA's last attempt, propagate the concrete error
-                    if ua_idx == uas.len() - 1 {
-                        return Err(e);
+                // Small jitter before the optional referrer retry (only for first UA of first strategy)
+                if strategy_idx == 0 && ua_idx == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(80 + jitter_ms(120)));
+                }
+
+                // Attempt 2: same-site Referer
+                match self.try_once(&client, url, base.clone(), ua, Some(&origin), strategy) {
+                    Ok(text) => return Ok(text),
+                    Err(e) => {
+                        // If this was the last strategy's last UA's last attempt, propagate error
+                        if strategy_idx == strategies.len() - 1 && ua_idx == uas.len() - 1 {
+                            return Err(e);
+                        }
                     }
                 }
+
+                // Between UAs within same strategy
+                std::thread::sleep(std::time::Duration::from_millis(120 + jitter_ms(160)));
             }
 
-            // Between UAs
-            std::thread::sleep(std::time::Duration::from_millis(120 + jitter_ms(160)));
+            // Between strategies - longer pause
+            if strategy_idx < strategies.len() - 1 {
+                std::thread::sleep(std::time::Duration::from_millis(300 + jitter_ms(200)));
+            }
         }
 
         // Shouldn't reach here, but keep a fallback
         Err(QrawlError::Other(
-            "request failed after simple attempts".into(),
+            "request failed after all evasion strategies".into(),
         ))
     }
 }
@@ -89,40 +133,16 @@ impl FetcherT for ReqwestFetcher {
 impl ReqwestFetcher {
     fn try_once(
         &self,
+        client: &Client,
         url: &str,
         mut headers: HeaderMap,
         ua: &str,
         referer: Option<&str>,
+        strategy: &BotEvadeStrategy,
     ) -> Result<String> {
-        headers.entry(ACCEPT).or_insert(HeaderValue::from_static(
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        ));
-        headers
-            .entry(ACCEPT_LANGUAGE)
-            .or_insert(HeaderValue::from_static("en-US,en;q=0.5"));
-        headers
-            .entry(ACCEPT_ENCODING)
-            .or_insert(HeaderValue::from_static("gzip, deflate, br"));
-        headers
-            .entry(CONNECTION)
-            .or_insert(HeaderValue::from_static("keep-alive"));
-        headers.insert(
-            HeaderName::from_static("upgrade-insecure-requests"),
-            HeaderValue::from_static("1"),
-        );
-        headers.insert(
-            HeaderName::from_static("dnt"),
-            HeaderValue::from_static("1"),
-        );
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_str(ua).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
-        );
-        if let Some(r) = referer {
-            headers.insert(REFERER, HeaderValue::from_str(r).unwrap());
-        }
+        self.apply_evasion_strategy(&mut headers, ua, referer, strategy);
 
-        let resp = self.client.get(url).headers(headers).send()?;
+        let resp = client.get(url).headers(headers).send()?;
         let status = resp.status();
         let text = resp.text()?;
 
@@ -133,6 +153,125 @@ impl ReqwestFetcher {
             "http status {} for {}",
             status, url
         )))
+    }
+
+    fn apply_evasion_strategy(
+        &self,
+        headers: &mut HeaderMap,
+        ua: &str,
+        referer: Option<&str>,
+        strategy: &BotEvadeStrategy,
+    ) {
+        match strategy {
+            BotEvadeStrategy::UltraMinimal => {
+                // Ultra minimal: ONLY User-Agent header
+                // No Accept, Accept-Language, Accept-Encoding - nothing that screams "browser"
+            }
+            BotEvadeStrategy::Minimal => {
+                // Basic headers for sites that expect some browser-like behavior
+                headers
+                    .entry(ACCEPT)
+                    .or_insert(HeaderValue::from_static("text/html;q=0.9,*/*;q=0.8"));
+                headers
+                    .entry(ACCEPT_LANGUAGE)
+                    .or_insert(HeaderValue::from_static("en-US,en;q=0.8"));
+                headers
+                    .entry(ACCEPT_ENCODING)
+                    .or_insert(HeaderValue::from_static("gzip, deflate, br"));
+                // No DNT, no Upgrade-Insecure-Requests, no Connection header
+            }
+            BotEvadeStrategy::Standard => {
+                // Current qrawl approach (full browser simulation)
+                headers.entry(ACCEPT).or_insert(HeaderValue::from_static(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                ));
+                headers
+                    .entry(ACCEPT_LANGUAGE)
+                    .or_insert(HeaderValue::from_static("en-US,en;q=0.5"));
+                headers
+                    .entry(ACCEPT_ENCODING)
+                    .or_insert(HeaderValue::from_static("gzip, deflate, br"));
+                headers
+                    .entry(CONNECTION)
+                    .or_insert(HeaderValue::from_static("keep-alive"));
+                headers.insert(
+                    HeaderName::from_static("upgrade-insecure-requests"),
+                    HeaderValue::from_static("1"),
+                );
+                headers.insert(
+                    HeaderName::from_static("dnt"),
+                    HeaderValue::from_static("1"),
+                );
+            }
+            BotEvadeStrategy::Advanced => {
+                // Enhanced browser fingerprint with security headers
+                headers.entry(ACCEPT).or_insert(HeaderValue::from_static(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+                ));
+                headers
+                    .entry(ACCEPT_LANGUAGE)
+                    .or_insert(HeaderValue::from_static("en-US,en;q=0.9"));
+                headers
+                    .entry(ACCEPT_ENCODING)
+                    .or_insert(HeaderValue::from_static("gzip, deflate, br, zstd"));
+                headers
+                    .entry(CONNECTION)
+                    .or_insert(HeaderValue::from_static("keep-alive"));
+                headers.insert(
+                    HeaderName::from_static("upgrade-insecure-requests"),
+                    HeaderValue::from_static("1"),
+                );
+                headers.insert(
+                    HeaderName::from_static("sec-fetch-dest"),
+                    HeaderValue::from_static("document"),
+                );
+                headers.insert(
+                    HeaderName::from_static("sec-fetch-mode"),
+                    HeaderValue::from_static("navigate"),
+                );
+                headers.insert(
+                    HeaderName::from_static("sec-fetch-site"),
+                    HeaderValue::from_static("none"),
+                );
+            }
+            BotEvadeStrategy::Adaptive => {
+                // This will be handled by the caller with fallback logic
+                // Default to Standard for individual attempts - apply directly to avoid recursion
+                headers.insert(
+                    ACCEPT,
+                    HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                );
+                headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+                headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+                headers.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
+                headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
+                headers.insert(
+                    CACHE_CONTROL,
+                    HeaderValue::from_static("max-age=0"),
+                );
+                if let Some(ref_url) = referer {
+                    if let Ok(ref_value) = HeaderValue::from_str(ref_url) {
+                        headers.insert(REFERER, ref_value);
+                    }
+                }
+            }
+        }
+
+        // Add User-Agent - use different UA for UltraMinimal
+        let user_agent = match strategy {
+            BotEvadeStrategy::UltraMinimal => {
+                // Linux User-Agent
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+            }
+            _ => ua,
+        };
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_str(user_agent).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
+        );
+        if let Some(r) = referer {
+            headers.insert(REFERER, HeaderValue::from_str(r).unwrap());
+        }
     }
 }
 
@@ -158,11 +297,20 @@ fn to_headermap(hs: &HeaderSet, ua: Option<&str>) -> Result<HeaderMap> {
 // Simple block-page detector
 fn looks_blocked(body: &str) -> bool {
     let b = body.to_ascii_lowercase();
+
+    // Check for specific blocking patterns that indicate actual bot blocking,
+    // not just mentions of security technologies like reCAPTCHA
     b.contains("verify you are a human")
-        || b.contains("captcha")
+        || b.contains("please complete the captcha")
+        || b.contains("solve this captcha")
+        || b.contains("captcha challenge")
         || b.contains("cf-browser-verification")
         || b.contains("px-captcha")
         || b.contains("access denied")
+        || b.contains("blocked by cloudflare")
+        || b.contains("please enable javascript and cookies")
+        || b.contains("suspicious activity")
+        || b.contains("bot detection")
 }
 
 // Small, dependency-free jitter (ms)
@@ -218,13 +366,11 @@ impl ScraperT for DefaultScraper {
                         let mut out = AreaContent {
                             role: area.role,
                             root_selector_matched: rsel.0.clone(),
-                            ..Default::default()
+                            title: None,
+                            content: Vec::new(),
                         };
                         collect_strings(&root_el, &area.fields.title, &mut out.title, true);
-                        collect_many(&root_el, &area.fields.headings, &mut out.headings);
-                        collect_many(&root_el, &area.fields.paragraphs, &mut out.paragraphs);
-                        collect_images(&root_el, &area.fields.images, &mut out.images);
-                        collect_links(&root_el, &area.fields.links, &mut out.links);
+                        collect_content_blocks(&root_el, &area.fields, &mut out.content);
 
                         areas_out.push(out);
                     }
@@ -320,46 +466,167 @@ fn collect_strings(
     }
 }
 
-fn collect_many(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<String>) {
-    for s in sels {
-        if let Ok(sel) = Selector::parse(&s.0) {
-            for el in root.select(&sel) {
-                let txt = el.text().collect::<String>().trim().to_string();
-                if !txt.is_empty() {
-                    out.push(txt);
-                }
-            }
-        }
-    }
-}
+fn collect_content_blocks(
+    root: &ElementRef<'_>,
+    fields: &FieldSelectors,
+    out: &mut Vec<ContentBlock>,
+) {
+    // Collect content by type in document order to preserve structure
 
-fn collect_images(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<ImageOut>) {
-    for s in sels {
-        if let Ok(sel) = Selector::parse(&s.0) {
-            for el in root.select(&sel) {
-                if let Some(src) = el.value().attr("src") {
-                    let alt = el.value().attr("alt").map(|s| s.to_string());
-                    out.push(ImageOut {
-                        src: src.to_string(),
-                        alt,
-                    });
-                }
-            }
-        }
-    }
-}
+    // Use a universal selector to get all elements in document order
+    if let Ok(all_selector) = Selector::parse("*") {
+        for el in root.select(&all_selector) {
+            let tag_name = el.value().name();
 
-fn collect_links(root: &ElementRef<'_>, sels: &[Sel], out: &mut Vec<LinkOut>) {
-    for s in sels {
-        if let Ok(sel) = Selector::parse(&s.0) {
-            for el in root.select(&sel) {
-                if let Some(href) = el.value().attr("href") {
-                    let text = el.text().collect::<String>().trim().to_string();
-                    out.push(LinkOut {
-                        href: href.to_string(),
-                        text,
+            // Check if this element matches any of our configured selectors and process accordingly
+            match tag_name {
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    // Check if this heading matches any heading selector
+                    let matches = fields.headings.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
                     });
+
+                    if matches {
+                        let level = match tag_name {
+                            "h1" => 1,
+                            "h2" => 2,
+                            "h3" => 3,
+                            "h4" => 4,
+                            "h5" => 5,
+                            "h6" => 6,
+                            _ => 2,
+                        };
+                        let text = el.text().collect::<String>().trim().to_string();
+                        if !text.is_empty() {
+                            out.push(ContentBlock::Heading { text, level });
+                        }
+                    }
                 }
+                "p" => {
+                    // Check if this paragraph matches any paragraph selector
+                    let matches = fields.paragraphs.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
+                    });
+
+                    if matches {
+                        let text = el.text().collect::<String>().trim().to_string();
+                        if !text.is_empty() {
+                            out.push(ContentBlock::Paragraph { text });
+                        }
+                    }
+                }
+                "img" => {
+                    // Check if this image matches any image selector
+                    let matches = fields.images.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
+                    });
+
+                    if matches {
+                        if let Some(src) = el.value().attr("src") {
+                            let alt = el.value().attr("alt").map(|s| s.to_string());
+                            out.push(ContentBlock::Image {
+                                src: src.to_string(),
+                                alt,
+                            });
+                        }
+                    }
+                }
+                "a" => {
+                    // Check if this link matches any link selector
+                    let matches = fields.links.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
+                    });
+
+                    if matches {
+                        if let Some(href) = el.value().attr("href") {
+                            let text = el.text().collect::<String>().trim().to_string();
+                            out.push(ContentBlock::Link {
+                                href: href.to_string(),
+                                text,
+                            });
+                        }
+                    }
+                }
+                "ul" | "ol" => {
+                    // Check if this list matches any list selector
+                    let matches = fields.lists.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
+                    });
+
+                    if matches {
+                        let mut items = Vec::new();
+                        if let Ok(li_sel) = Selector::parse("li") {
+                            for li in el.select(&li_sel) {
+                                let text = li.text().collect::<String>().trim().to_string();
+                                if !text.is_empty() {
+                                    items.push(text);
+                                }
+                            }
+                        }
+                        if !items.is_empty() {
+                            out.push(ContentBlock::List { items });
+                        }
+                    }
+                }
+                "table" => {
+                    // Check if this table matches any table selector
+                    let matches = fields.tables.iter().any(|sel| {
+                        if let Ok(selector) = Selector::parse(&sel.0) {
+                            root.select(&selector)
+                                .any(|matching_el| matching_el.id() == el.id())
+                        } else {
+                            false
+                        }
+                    });
+
+                    if matches {
+                        let mut rows = Vec::new();
+                        if let Ok(row_sel) = Selector::parse("tr") {
+                            for tr in el.select(&row_sel) {
+                                let mut cells = Vec::new();
+                                if let Ok(cell_sel) = Selector::parse("td, th") {
+                                    for cell in tr.select(&cell_sel) {
+                                        let text =
+                                            cell.text().collect::<String>().trim().to_string();
+                                        cells.push(text);
+                                    }
+                                }
+                                if !cells.is_empty() {
+                                    rows.push(cells);
+                                }
+                            }
+                        }
+                        if !rows.is_empty() {
+                            out.push(ContentBlock::Table { rows });
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

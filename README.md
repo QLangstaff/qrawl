@@ -1,8 +1,17 @@
-# qrawl
+# Qrawl
 
-Infer domain-specific policies to crawl & scrape URLs.
+Crawl at scale with domain-specific policies.
 
-## Install
 
+## Key Features
+- **Simulate human browsing**
+- **Follow child links**
+- **Extract structured data**
+
+## Get Started
 ```bash
 cargo install qrawl
+```
+
+## License
+MIT

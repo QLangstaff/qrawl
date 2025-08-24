@@ -1,5 +1,5 @@
 use crate::api::{self, Components};
-use crate::{ApiResponse, Domain, LocalFsStore, Policy};
+use crate::{ApiResponse, Domain, LocalFsStore, PerformanceProfile, Policy};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -10,16 +10,17 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "qrawl", version, about = "Policies + extraction (JSON only)")]
 pub struct Cli {
+    /// URL to extract content from
+    url: Option<String>,
+
     #[command(subcommand)]
-    cmd: Command,
+    cmd: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
     #[command(subcommand)]
     Policy(PolicyCmd),
-    /// Extract content from a URL (auto-detects known vs unknown)
-    Extract(ExtractArgs),
 }
 
 #[derive(Subcommand)]
@@ -32,7 +33,7 @@ enum PolicyCmd {
 
     /// MANUAL: update (or create-if-missing) but only if supplied config works (reads JSON)
     /// Provide JSON via --file or stdin in shape:
-    /// { "<domain>": { "config": { "crawl": {...}, "scrape": {...} } } }
+    /// { "<domain>": { "config": { "fetch": {...}, "scrape": {...} } } }
     Update {
         domain: String,
         #[arg(long)]
@@ -75,7 +76,13 @@ struct ExtractArgs {
 /* ---------- helpers: presentation ---------- */
 
 fn policy_keyed_value(p: &Policy) -> Value {
-    let inner = json!({ "config": { "crawl": p.crawl, "scrape": p.scrape } });
+    let inner = json!({
+        "config": {
+            "fetch": p.fetch,
+            "scrape": p.scrape
+        },
+        "performance_profile": p.performance_profile
+    });
     let mut top = Map::new();
     top.insert(p.domain.0.clone(), inner);
     Value::Object(top)
@@ -86,7 +93,13 @@ fn policies_keyed_value(policies: &[Policy]) -> Value {
     for p in policies {
         top.insert(
             p.domain.0.clone(),
-            json!({ "config": { "crawl": p.crawl, "scrape": p.scrape } }),
+            json!({
+                "config": {
+                    "fetch": p.fetch,
+                    "scrape": p.scrape
+                },
+                "performance_profile": p.performance_profile
+            }),
         );
     }
     Value::Object(top)
@@ -138,17 +151,29 @@ fn parse_policy_for_domain(domain_arg: &str, json_text: &str) -> Result<Policy, 
         .cloned()
         .ok_or_else(|| ApiResponse::<()>::err("missing .config object"))?;
 
-    let crawl: crate::types::CrawlConfig =
-        serde_json::from_value(cfg.get("crawl").cloned().unwrap_or(Value::Null))
-            .map_err(|e| ApiResponse::<()>::err(format!("invalid .config.crawl: {e}")))?;
+    let fetch: crate::types::FetchConfig =
+        serde_json::from_value(cfg.get("fetch").cloned().unwrap_or(Value::Null))
+            .map_err(|e| ApiResponse::<()>::err(format!("invalid .config.fetch: {e}")))?;
     let scrape: crate::types::ScrapeConfig =
         serde_json::from_value(cfg.get("scrape").cloned().unwrap_or(Value::Null))
             .map_err(|e| ApiResponse::<()>::err(format!("invalid .config.scrape: {e}")))?;
 
+    let timeout_ms = fetch.timeout_ms;
+    let strategy = fetch.bot_evasion_strategy.clone();
+
     Ok(Policy {
         domain: Domain::from_raw(key),
-        crawl,
+        fetch,
         scrape,
+        performance_profile: PerformanceProfile {
+            optimal_timeout_ms: timeout_ms,
+            working_strategy: strategy.clone(),
+            avg_response_size_bytes: 0, // Unknown from manual policy
+            strategies_tried: vec![strategy],
+            strategies_failed: vec![],
+            last_tested_at: chrono::Utc::now(),
+            success_rate: 1.0, // Assume manual policy works
+        },
     })
 }
 
@@ -159,10 +184,22 @@ pub fn run() {
     let store = LocalFsStore::new().unwrap();
     let components = Components::default();
 
-    match cli.cmd {
-        Command::Policy(pc) => policy_cmd(&store, &components, pc),
-        Command::Extract(args) => {
-            finish(api::extract_url_auto(&store, &args.url, &components));
+    match (cli.url, cli.cmd) {
+        // Direct URL extraction
+        (Some(url), None) => {
+            finish(api::extract_url_auto(&store, &url, &components));
+        }
+        // Policy subcommands
+        (None, Some(Command::Policy(pc))) => {
+            policy_cmd(&store, &components, pc);
+        }
+        // No arguments - show help
+        (None, None) => {
+            println!("Usage: qrawl <URL> or qrawl policy <COMMAND> or qrawl --help");
+        }
+        // Invalid combination
+        (Some(_), Some(_)) => {
+            println!("Cannot specify both a URL and a subcommand. Use qrawl --help for usage.");
         }
     }
 }
@@ -233,7 +270,7 @@ fn policy_cmd(store: &LocalFsStore, components: &Components, pc: PolicyCmd) {
                             if let Some(cfg) = st.config {
                                 obj.insert(
                                     "config".into(),
-                                    json!({ "crawl": cfg.crawl, "scrape": cfg.scrape }),
+                                    json!({ "fetch": cfg.fetch, "scrape": cfg.scrape }),
                                 );
                             }
                         }
