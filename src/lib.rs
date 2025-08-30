@@ -6,6 +6,7 @@ pub mod engine;
 pub mod error;
 pub mod impls;
 pub mod infer;
+pub mod log;
 pub mod policy;
 pub mod store;
 pub mod types;

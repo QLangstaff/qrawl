@@ -17,6 +17,9 @@ pub struct Cli {
 enum Command {
     #[command(subcommand)]
     Policy(PolicyCmd),
+
+    /// View activity logs
+    Log(LogArgs),
 }
 
 #[derive(Subcommand)]
@@ -48,6 +51,17 @@ struct ExtractArgs {
     /// The URL to extract. The engine will use the known pipeline if a policy exists,
     /// otherwise it will run the unknown pipeline and create a policy automatically.
     url: String,
+}
+
+#[derive(Args)]
+struct LogArgs {
+    /// Show only logs for this domain
+    #[arg(long)]
+    domain: Option<String>,
+
+    /// Show only error entries
+    #[arg(long)]
+    errors: bool,
 }
 
 /* ---------- helpers: presentation ---------- */
@@ -84,6 +98,10 @@ pub fn run() {
         // Policy subcommands
         (None, Some(Command::Policy(pc))) => {
             policy_cmd(&store, &components, pc);
+        }
+        // Log subcommand
+        (None, Some(Command::Log(log_args))) => {
+            log_cmd(log_args);
         }
         // No arguments - show help
         (None, None) => {
@@ -147,4 +165,28 @@ fn finish<T: serde::Serialize>(res: crate::Result<T>) {
 }
 fn print_json<T: serde::Serialize>(val: T) {
     println!("{}", serde_json::to_string_pretty(&val).unwrap());
+}
+
+fn log_cmd(args: LogArgs) {
+    match crate::log::ActivityLogger::new() {
+        Ok(logger) => match logger.read_logs(args.domain.as_deref(), args.errors) {
+            Ok(lines) => {
+                if lines.is_empty() {
+                    println!("No log entries found");
+                } else {
+                    for line in lines {
+                        println!("{}", line);
+                    }
+                }
+            }
+            Err(e) => print_json(ApiResponse::<()>::err(format!(
+                "failed to read logs: {}",
+                e
+            ))),
+        },
+        Err(e) => print_json(ApiResponse::<()>::err(format!(
+            "failed to initialize logger: {}",
+            e
+        ))),
+    }
 }

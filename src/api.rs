@@ -1,6 +1,22 @@
 use crate::impls::{DefaultScraper, ReqwestFetcher};
 use crate::{engine::*, error::*, store::*, types::*};
+use std::time::Instant;
 use url::Url;
+
+// Helper function for logging - ignores errors to not break main operations
+fn log_info(domain: Option<&str>, event: &str, details: Option<&str>) -> crate::Result<()> {
+    match crate::log::ActivityLogger::new() {
+        Ok(logger) => logger.info(domain, event, details),
+        Err(_) => Ok(()), // Silently ignore logging errors
+    }
+}
+
+fn log_error(domain: Option<&str>, event: &str, details: Option<&str>) -> crate::Result<()> {
+    match crate::log::ActivityLogger::new() {
+        Ok(logger) => logger.error(domain, event, details),
+        Err(_) => Ok(()), // Silently ignore logging errors
+    }
+}
 
 /* ------------ public facade components ------------ */
 
@@ -42,7 +58,11 @@ pub fn create_policy<PS: PolicyStore>(
     domain: Domain,
     components: &Components,
 ) -> Result<Policy> {
+    let start_time = Instant::now();
     if store.get(&domain)?.is_some() {
+        let duration = start_time.elapsed();
+        let details = format!("skipped in {}ms", duration.as_millis());
+        let _ = log_info(Some(&domain.0), "create_policy", Some(&details));
         return Err(QrawlError::Other(format!(
             "policy already exists for domain {}",
             domain.0
@@ -52,6 +72,9 @@ pub fn create_policy<PS: PolicyStore>(
     let pol = crate::infer::infer_policy(&*components.fetcher, &*components.scraper, &domain)?;
     // Persist without verification - policy will be refined during actual extraction
     store.set(&pol)?;
+    let duration = start_time.elapsed();
+    let details = format!("succeeded in {}ms", duration.as_millis());
+    let _ = log_info(Some(&domain.0), "create_policy", Some(&details));
     Ok(pol)
 }
 
@@ -67,10 +90,48 @@ pub fn list_domains<PS: PolicyStore>(store: &PS) -> Result<Vec<String>> {
 }
 
 pub fn delete_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<()> {
+    let start_time = Instant::now();
     if target == "all" {
-        return store.delete_all();
+        let result = store.delete_all();
+        let duration = start_time.elapsed();
+        match &result {
+            Ok(_) => {
+                let _ = log_info(
+                    None,
+                    "delete_policy",
+                    Some(&format!("succeeded in {}ms", duration.as_millis())),
+                );
+            }
+            Err(_) => {
+                let _ = log_error(
+                    None,
+                    "delete_policy",
+                    Some(&format!("failed in {}ms", duration.as_millis())),
+                );
+            }
+        }
+        return result;
     }
-    store.delete(&Domain::from_raw(target))
+    let domain = Domain::from_raw(target);
+    let result = store.delete(&domain);
+    let duration = start_time.elapsed();
+    match &result {
+        Ok(_) => {
+            let _ = log_info(
+                Some(&domain.0),
+                "delete_policy",
+                Some(&format!("succeeded in {}ms", duration.as_millis())),
+            );
+        }
+        Err(_) => {
+            let _ = log_error(
+                Some(&domain.0),
+                "delete_policy",
+                Some(&format!("failed in {}ms", duration.as_millis())),
+            );
+        }
+    }
+    result
 }
 
 /* ------------ extraction entrypoints ------------ */
@@ -80,6 +141,7 @@ pub fn extract_url<PS: PolicyStore>(
     url: &str,
     components: &Components,
 ) -> Result<ExtractionBundle> {
+    let start_time = Instant::now();
     let domain = {
         let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
@@ -87,12 +149,26 @@ pub fn extract_url<PS: PolicyStore>(
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {
-        create_policy(store, domain, components)?;
+        create_policy(store, domain.clone(), components)?;
     }
 
     // Always use policy-based extraction
     let engine = make_engine(store, components);
-    engine.extract(url)
+    let result = engine.extract(url);
+    let duration = start_time.elapsed();
+
+    match &result {
+        Ok(_) => {
+            let details = format!("succeeded in {}ms", duration.as_millis());
+            let _ = log_info(Some(&domain.0), "extract_url", Some(&details));
+        }
+        Err(_) => {
+            let details = format!("failed in {}ms", duration.as_millis());
+            let _ = log_error(Some(&domain.0), "extract_url", Some(&details));
+        }
+    }
+
+    result
 }
 
 pub async fn extract_url_async<PS: PolicyStore>(
@@ -100,6 +176,7 @@ pub async fn extract_url_async<PS: PolicyStore>(
     url: &str,
     components: &Components,
 ) -> Result<ExtractionBundle> {
+    let start_time = Instant::now();
     let domain = {
         let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
@@ -107,10 +184,24 @@ pub async fn extract_url_async<PS: PolicyStore>(
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {
-        create_policy(store, domain, components)?;
+        create_policy(store, domain.clone(), components)?;
     }
 
     // Always use policy-based extraction
     let engine = make_engine(store, components);
-    engine.extract_async(url).await
+    let result = engine.extract_async(url).await;
+    let duration = start_time.elapsed();
+
+    match &result {
+        Ok(_) => {
+            let details = format!("succeeded in {}ms", duration.as_millis());
+            let _ = log_info(Some(&domain.0), "extract_url_async", Some(&details));
+        }
+        Err(_) => {
+            let details = format!("failed in {}ms", duration.as_millis());
+            let _ = log_error(Some(&domain.0), "extract_url_async", Some(&details));
+        }
+    }
+
+    result
 }
