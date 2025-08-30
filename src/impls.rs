@@ -3,11 +3,13 @@ use crate::{
     error::*,
     types::*,
 };
+use async_trait::async_trait;
 use reqwest::blocking::Client;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CACHE_CONTROL, CONNECTION,
-    REFERER, UPGRADE_INSECURE_REQUESTS, USER_AGENT,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CACHE_CONTROL,
+    CONNECTION, REFERER, UPGRADE_INSECURE_REQUESTS, USER_AGENT,
 };
+use reqwest::Client as AsyncClient;
 use scraper::{ElementRef, Html, Selector};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -53,8 +55,42 @@ impl ReqwestFetcher {
 
         Ok(builder.build()?)
     }
+
+    fn build_async_client_for_policy(&self, cfg: &FetchConfig) -> Result<AsyncClient> {
+        if matches!(cfg.bot_evasion_strategy, BotEvadeStrategy::UltraMinimal) {
+            return Ok(AsyncClient::builder()
+                .timeout(Duration::from_secs(30))
+                .build()?);
+        }
+
+        // For other strategies, use full-featured client
+        let mut builder = AsyncClient::builder()
+            .cookie_store(true)
+            .gzip(true)
+            .brotli(true)
+            .deflate(true)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(Duration::from_secs(10));
+
+        // Configure HTTP version based on policy
+        match cfg.http_version {
+            HttpVersion::Http1Only => {
+                builder = builder.http1_only();
+            }
+            HttpVersion::Http2Only => {
+                builder = builder.http2_prior_knowledge();
+            }
+            HttpVersion::Http2WithHttp1Fallback => {
+                // Default reqwest behavior - try HTTP/2, fallback to HTTP/1.1
+                // No additional configuration needed
+            }
+        }
+
+        Ok(builder.build()?)
+    }
 }
 
+#[async_trait]
 impl FetcherT for ReqwestFetcher {
     fn name(&self) -> &'static str {
         "reqwest-blocking"
@@ -120,6 +156,82 @@ impl FetcherT for ReqwestFetcher {
             // Between strategies - longer pause
             if strategy_idx < strategies.len() - 1 {
                 std::thread::sleep(std::time::Duration::from_millis(300 + jitter_ms(200)));
+            }
+        }
+
+        // Shouldn't reach here, but keep a fallback
+        Err(QrawlError::Other(
+            "request failed after all evasion strategies".into(),
+        ))
+    }
+
+    async fn fetch_async(&self, url: &str, cfg: &FetchConfig) -> Result<String> {
+        let parsed = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
+        let origin = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
+
+        // Build async client based on policy configuration
+        let client = self.build_async_client_for_policy(cfg)?;
+
+        let uas: Vec<&str> = if cfg.user_agents.is_empty() {
+            vec!["Mozilla/5.0"]
+        } else {
+            cfg.user_agents.iter().map(|s| s.as_str()).collect()
+        };
+
+        let base = to_headermap(&cfg.default_headers, None)?;
+
+        // Determine evasion strategies to try
+        let strategies = match &cfg.bot_evasion_strategy {
+            BotEvadeStrategy::Adaptive => {
+                // Progressive fallback: UltraMinimal -> Minimal -> Standard -> Advanced
+                // Start with ultra-minimal approach for sophisticated detection
+                vec![
+                    BotEvadeStrategy::UltraMinimal,
+                    BotEvadeStrategy::Minimal,
+                    BotEvadeStrategy::Standard,
+                    BotEvadeStrategy::Advanced,
+                ]
+            }
+            other => vec![other.clone()],
+        };
+
+        for (strategy_idx, strategy) in strategies.iter().enumerate() {
+            for (ua_idx, ua) in uas.iter().enumerate() {
+                // Attempt 1: strategy with no referer
+                if let Ok(text) = self
+                    .try_once_async(&client, url, base.clone(), ua, None, strategy)
+                    .await
+                {
+                    return Ok(text);
+                }
+
+                // Small jitter before the optional referrer retry (only for first UA of first strategy)
+                if strategy_idx == 0 && ua_idx == 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(80 + jitter_ms(120)))
+                        .await;
+                }
+
+                // Attempt 2: same-site Referer
+                match self
+                    .try_once_async(&client, url, base.clone(), ua, Some(&origin), strategy)
+                    .await
+                {
+                    Ok(text) => return Ok(text),
+                    Err(e) => {
+                        // If this was the last strategy's last UA's last attempt, propagate error
+                        if strategy_idx == strategies.len() - 1 && ua_idx == uas.len() - 1 {
+                            return Err(e);
+                        }
+                    }
+                }
+
+                // Between UAs within same strategy
+                tokio::time::sleep(tokio::time::Duration::from_millis(120 + jitter_ms(160))).await;
+            }
+
+            // Between strategies - longer pause
+            if strategy_idx < strategies.len() - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(300 + jitter_ms(200))).await;
             }
         }
 
@@ -239,16 +351,18 @@ impl ReqwestFetcher {
                 // Default to Standard for individual attempts - apply directly to avoid recursion
                 headers.insert(
                     ACCEPT,
-                    HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                    HeaderValue::from_static(
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    ),
                 );
                 headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
-                headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+                headers.insert(
+                    ACCEPT_ENCODING,
+                    HeaderValue::from_static("gzip, deflate, br"),
+                );
                 headers.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
                 headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
-                headers.insert(
-                    CACHE_CONTROL,
-                    HeaderValue::from_static("max-age=0"),
-                );
+                headers.insert(CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
                 if let Some(ref_url) = referer {
                     if let Ok(ref_value) = HeaderValue::from_str(ref_url) {
                         headers.insert(REFERER, ref_value);
@@ -272,6 +386,30 @@ impl ReqwestFetcher {
         if let Some(r) = referer {
             headers.insert(REFERER, HeaderValue::from_str(r).unwrap());
         }
+    }
+
+    async fn try_once_async(
+        &self,
+        client: &AsyncClient,
+        url: &str,
+        mut headers: HeaderMap,
+        ua: &str,
+        referer: Option<&str>,
+        strategy: &BotEvadeStrategy,
+    ) -> Result<String> {
+        self.apply_evasion_strategy(&mut headers, ua, referer, strategy);
+
+        let resp = client.get(url).headers(headers).send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+
+        if status.is_success() && !looks_blocked(&text) {
+            return Ok(text);
+        }
+        Err(QrawlError::Other(format!(
+            "http status {} for {}",
+            status, url
+        )))
     }
 }
 

@@ -7,10 +7,17 @@ use url::Url;
 pub struct Domain(pub String);
 
 impl Domain {
-    /// Canonicalize host to a stable key: lowercase + IDNA/Punycode
+    /// Canonicalize host to a stable key: lowercase + IDNA/Punycode + strip www
     fn canonicalize(host: &str) -> String {
         let lower = host.to_ascii_lowercase();
-        idna::domain_to_ascii(&lower).unwrap_or(lower)
+        let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
+
+        // Strip www. prefix to normalize domains
+        if idna.starts_with("www.") && idna.len() > 4 {
+            idna[4..].to_string()
+        } else {
+            idna
+        }
     }
 
     pub fn from_url(url: &Url) -> Option<Self> {
@@ -50,7 +57,7 @@ pub enum BotEvadeStrategy {
     Standard,     // Current qrawl approach (full browser simulation)
     Advanced,     // Enhanced browser fingerprint with security headers
     #[default]
-    Adaptive,     // Try multiple approaches automatically
+    Adaptive, // Try multiple approaches automatically
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,5 @@
 use crate::impls::{DefaultScraper, ReqwestFetcher};
 use crate::{engine::*, error::*, store::*, types::*};
-use serde::Serialize;
-use std::collections::BTreeMap;
 use url::Url;
 
 /* ------------ public facade components ------------ */
@@ -35,46 +33,11 @@ pub fn make_engine<'a, PS: PolicyStore>(
     )
 }
 
-/* ------------ shared runtime verification ------------ */
-
-fn verify_policy_runtime(components: &Components, pol: &Policy) -> Result<()> {
-    // Try https://<domain>/, then http://
-    let https = format!("https://{}/", pol.domain.0);
-    let attempt = components
-        .fetcher
-        .fetch_blocking(&https, &pol.fetch)
-        .and_then(|html| components.scraper.scrape(&https, &html, &pol.scrape))
-        .or_else(|_| {
-            let http = format!("http://{}/", pol.domain.0);
-            components
-                .fetcher
-                .fetch_blocking(&http, &pol.fetch)
-                .and_then(|html| components.scraper.scrape(&http, &html, &pol.scrape))
-        });
-
-    let page = attempt.map_err(|e| QrawlError::Other(format!("fetch/scrape failed: {e}")))?;
-    let has_any_content = !page.json_ld.is_empty()
-        || page.areas.iter().any(|a| {
-            a.title
-                .as_ref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false)
-                || !a.content.is_empty()
-        });
-
-    if !has_any_content {
-        return Err(QrawlError::Other(
-            "scrape succeeded but produced no content — adjust selectors".into(),
-        ));
-    }
-    Ok(())
-}
-
 /* ------------ policy helpers ------------ */
 
 /// Automatically probe/infer a working policy, verify live, then save it.
 /// Refuses to overwrite an existing policy.
-pub fn policy_create_auto<PS: PolicyStore>(
+pub fn create_policy<PS: PolicyStore>(
     store: &PS,
     domain: Domain,
     components: &Components,
@@ -92,29 +55,18 @@ pub fn policy_create_auto<PS: PolicyStore>(
     Ok(pol)
 }
 
-/// Update (or create-if-missing) ONLY if supplied config works (manual path).
-pub fn policy_update_checked<PS: PolicyStore>(
-    store: &PS,
-    policy: &Policy,
-    components: &Components,
-) -> Result<()> {
-    crate::policy::validate_policy(policy)?;
-    verify_policy_runtime(components, policy)?;
-    store.set(policy)
-}
-
-pub fn policy_read<PS: PolicyStore>(store: &PS, target: &str) -> Result<Option<Policy>> {
+pub fn read_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<Option<Policy>> {
     if target == "all" {
-        return Err(QrawlError::Other("use policy_list for 'all'".into()));
+        return Err(QrawlError::Other("use list_domains for 'all'".into()));
     }
     store.get(&Domain::from_raw(target))
 }
 
-pub fn policy_list<PS: PolicyStore>(store: &PS) -> Result<Vec<Policy>> {
-    store.list()
+pub fn list_domains<PS: PolicyStore>(store: &PS) -> Result<Vec<String>> {
+    Ok(store.list()?.into_iter().map(|p| p.domain.0).collect())
 }
 
-pub fn policy_delete<PS: PolicyStore>(store: &PS, target: &str) -> Result<()> {
+pub fn delete_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<()> {
     if target == "all" {
         return store.delete_all();
     }
@@ -126,81 +78,39 @@ pub fn policy_delete<PS: PolicyStore>(store: &PS, target: &str) -> Result<()> {
 pub fn extract_url<PS: PolicyStore>(
     store: &PS,
     url: &str,
-    unknown: bool,
     components: &Components,
 ) -> Result<ExtractionBundle> {
-    let engine = make_engine(store, components);
-    if unknown {
-        engine.extract_unknown(url)
-    } else {
-        engine.extract_known(url)
-    }
-}
-
-pub fn extract_url_auto<PS: PolicyStore>(
-    store: &PS,
-    url: &str,
-    components: &Components,
-) -> Result<ExtractionBundle> {
-    let engine = make_engine(store, components);
-
     let domain = {
         let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
     };
 
-    if store.get(&domain)?.is_some() {
-        engine.extract_known(url)
-    } else {
-        engine.extract_unknown(url)
+    // Ensure policy exists - create if needed
+    if store.get(&domain)?.is_none() {
+        create_policy(store, domain, components)?;
     }
+
+    // Always use policy-based extraction
+    let engine = make_engine(store, components);
+    engine.extract(url)
 }
 
-/* ------------ policy status (audit) ------------ */
-
-#[derive(Serialize)]
-pub struct PolicyStatus {
-    pub status: String, // "pass" | "fail"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<PolicyConfig>, // when verbose
-}
-
-pub fn policy_status_all<PS: PolicyStore>(
+pub async fn extract_url_async<PS: PolicyStore>(
     store: &PS,
+    url: &str,
     components: &Components,
-    verbose: bool,
-) -> Result<BTreeMap<String, PolicyStatus>> {
-    let mut out: BTreeMap<String, PolicyStatus> = BTreeMap::new();
-    for pol in store.list()? {
-        let status = match verify_policy_runtime(components, &pol) {
-            Ok(_) => PolicyStatus {
-                status: "pass".into(),
-                error: None,
-                config: if verbose {
-                    Some(PolicyConfig {
-                        fetch: pol.fetch.clone(),
-                        scrape: pol.scrape.clone(),
-                    })
-                } else {
-                    None
-                },
-            },
-            Err(e) => PolicyStatus {
-                status: "fail".into(),
-                error: Some(e.to_string()),
-                config: if verbose {
-                    Some(PolicyConfig {
-                        fetch: pol.fetch.clone(),
-                        scrape: pol.scrape.clone(),
-                    })
-                } else {
-                    None
-                },
-            },
-        };
-        out.insert(pol.domain.0.clone(), status);
+) -> Result<ExtractionBundle> {
+    let domain = {
+        let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
+        Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
+    };
+
+    // Ensure policy exists - create if needed
+    if store.get(&domain)?.is_none() {
+        create_policy(store, domain, components)?;
     }
-    Ok(out)
+
+    // Always use policy-based extraction
+    let engine = make_engine(store, components);
+    engine.extract_async(url).await
 }

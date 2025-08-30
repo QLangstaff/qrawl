@@ -1,11 +1,17 @@
 use crate::{error::*, store::PolicyStore, types::*};
-use std::collections::{BTreeMap, HashSet};
+use async_trait::async_trait;
+use std::collections::HashSet;
 use url::Url;
 
 /* ---------- Traits that impls.rs provides ---------- */
 
+#[async_trait]
 pub trait Fetcher: Send + Sync {
     fn fetch_blocking(&self, url: &str, cfg: &FetchConfig) -> crate::Result<String>;
+
+    /// Async variant of fetch_blocking. Must be implemented by concrete types.
+    async fn fetch_async(&self, url: &str, cfg: &FetchConfig) -> crate::Result<String>;
+
     /// Optional; concrete impls (like reqwest) can override.
     fn name(&self) -> &'static str {
         "fetcher"
@@ -22,15 +28,9 @@ pub trait Scraper: Send + Sync {
 
 /* ---------- Engine options ---------- */
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct EngineOptions {
     pub max_children: usize,
-}
-
-impl Default for EngineOptions {
-    fn default() -> Self {
-        Self { max_children: 50 }
-    }
 }
 
 /* ---------- Engine ---------- */
@@ -57,7 +57,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
         }
     }
 
-    pub fn extract_known(&self, url: &str) -> Result<ExtractionBundle> {
+    pub fn extract(&self, url: &str) -> Result<ExtractionBundle> {
         let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         let domain = Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?;
         let pol = self
@@ -72,15 +72,19 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
         Ok(ExtractionBundle { parent, children })
     }
 
-    pub fn extract_unknown(&self, url: &str) -> Result<ExtractionBundle> {
+    pub async fn extract_async(&self, url: &str) -> Result<ExtractionBundle> {
         let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
         let domain = Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?;
+        let pol = self
+            .store
+            .get(&domain)?
+            .ok_or_else(|| QrawlError::Other(format!("no policy for domain {}", domain.0)))?;
 
-        let pol = transient_unknown_policy(domain);
-
-        let html = self.fetcher.fetch_blocking(url, &pol.fetch)?;
+        let html = self.fetcher.fetch_async(url, &pol.fetch).await?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
-        let children = self.follow_itemlist_children(url, &parent, &pol)?;
+        let children = self
+            .follow_itemlist_children_async(url, &parent, &pol)
+            .await?;
 
         Ok(ExtractionBundle { parent, children })
     }
@@ -179,56 +183,97 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
         }
         Ok(out)
     }
-}
 
-/* ---------- Transient unknown-policy (NOT saved) ---------- */
+    async fn follow_itemlist_children_async(
+        &self,
+        base_url: &str,
+        parent: &PageExtraction,
+        pol: &Policy,
+    ) -> Result<Vec<PageExtraction>> {
+        // Determine effective follow config:
+        // 1) find first area with follow_links.enabled
+        let maybe_cfg = pol
+            .scrape
+            .areas
+            .iter()
+            .find(|a| a.follow_links.enabled)
+            .map(|a| a.follow_links.clone());
 
-fn transient_unknown_policy(domain: Domain) -> Policy {
-    // Schema-first unknown policy: JSON-LD only, no CSS selectors, no follow by default
-    Policy {
-        domain,
-        fetch: FetchConfig {
-            user_agents: vec![
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".into(),
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15".into(),
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0".into(),
-            ],
-            default_headers: HeaderSet(
-                [
-                    ("Accept".into(), "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8".into()),
-                    ("Accept-Encoding".into(), "gzip, deflate, br".into()),
-                    ("Accept-Language".into(), "en-US,en;q=0.9".into()),
-                    ("Connection".into(), "keep-alive".into()),
-                ].into_iter().collect()
-            ),
-            http_version: HttpVersion::default(),
-            bot_evasion_strategy: BotEvadeStrategy::default(),
-            respect_robots_txt: true,
-            timeout_ms: 20_000,
-        },
-        scrape: ScrapeConfig {
-            extract_json_ld: true,
-            json_ld_schemas: vec![], // empty = extract all schemas
-            open_graph: BTreeMap::new(),
-            twitter_cards: BTreeMap::new(),
-            areas: vec![AreaPolicy {
-                roots: vec![Sel("article".into()), Sel("main".into()), Sel(".content".into()), Sel(".entry-content".into())],
-                exclude_within: vec![],
-                role: AreaRole::Main,
-                fields: FieldSelectors::default(),
-                is_repeating: false,
-                follow_links: FollowLinks::default(), // disabled by default for unknown
-            }],
-        },
-        performance_profile: PerformanceProfile {
-            optimal_timeout_ms: 20_000,
-            working_strategy: BotEvadeStrategy::default(),
-            avg_response_size_bytes: 0, // Unknown for transient policy
-            strategies_tried: vec![],
-            strategies_failed: vec![],
-            last_tested_at: chrono::Utc::now(),
-            success_rate: 0.0, // Unknown success rate
-        },
+        // 2) If not explicitly enabled, auto-enable if parent has ItemList
+        let (enabled, scope, allow_domains, max, dedupe) = if let Some(cfg) = maybe_cfg {
+            (
+                true,
+                cfg.scope,
+                cfg.allow_domains.clone(),
+                cfg.max,
+                cfg.dedupe,
+            )
+        } else if parent_has_itemlist(&parent.json_ld) {
+            // Auto defaults when ItemList is present
+            (true, FollowScope::SameDomain, Vec::new(), 10, true)
+        } else {
+            (false, FollowScope::SameDomain, Vec::new(), 0, true)
+        };
+
+        if !enabled || max == 0 {
+            return Ok(vec![]);
+        }
+
+        let base = Url::parse(base_url).map_err(|_| QrawlError::InvalidUrl(base_url.into()))?;
+        let parent_domain = base.domain().unwrap_or("");
+
+        // Extract candidate URLs from JSON-LD ItemList and content areas
+        let mut links = extract_itemlist_urls(&parent.json_ld, &base);
+
+        // Also extract links from content areas
+        for area in &parent.areas {
+            for block in &area.content {
+                if let ContentBlock::Link { href, .. } = block {
+                    // Resolve relative URLs to absolute
+                    if let Ok(absolute_url) = base.join(href) {
+                        links.push(absolute_url.to_string());
+                    }
+                }
+            }
+        }
+
+        // Scope filtering
+        links.retain(|u| match scope {
+            FollowScope::SameDomain => Url::parse(u)
+                .ok()
+                .and_then(|uu| uu.domain().map(|d| d == parent_domain))
+                .unwrap_or(false),
+            FollowScope::AnyDomain => true,
+            FollowScope::AllowList => {
+                let dom = Url::parse(u)
+                    .ok()
+                    .and_then(|uu| uu.domain().map(|d| d.to_string()));
+                match dom {
+                    Some(d) => allow_domains.iter().any(|ad| ad.eq_ignore_ascii_case(&d)),
+                    None => false,
+                }
+            }
+        });
+
+        // Dedupe + limit
+        if dedupe {
+            let mut seen = HashSet::<String>::new();
+            links.retain(|u| seen.insert(u.clone()));
+        }
+        if links.len() as u32 > max {
+            links.truncate(max as usize);
+        }
+
+        // Fetch + scrape children asynchronously
+        let mut out = Vec::new();
+        for child in links {
+            if let Ok(html) = self.fetcher.fetch_async(&child, &pol.fetch).await {
+                if let Ok(page) = self.scraper.scrape(&child, &html, &pol.scrape) {
+                    out.push(page);
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
