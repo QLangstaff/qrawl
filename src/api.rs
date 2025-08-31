@@ -24,9 +24,26 @@ pub struct Components {
     pub scraper: Box<dyn Scraper>,
     pub opts: EngineOptions,
 }
+
+impl Components {
+    /// Create Components with proper error handling
+    pub fn new() -> crate::Result<Self> {
+        let fetcher = ReqwestFetcher::new()?;
+        let scraper = DefaultScraper;
+        Ok(Self {
+            fetcher: Box::new(fetcher),
+            scraper: Box::new(scraper),
+            opts: EngineOptions::default(),
+        })
+    }
+}
 impl Default for Components {
     fn default() -> Self {
-        let fetcher = ReqwestFetcher::new().expect("failed to init reqwest client");
+        // Note: ReqwestFetcher::new() currently never fails, but we handle it properly
+        let fetcher = ReqwestFetcher::new().unwrap_or_else(|_| {
+            // This should never happen with current implementation, but provides safety
+            panic!("Failed to initialize HTTP client - this indicates a serious system issue")
+        });
         let scraper = DefaultScraper;
         Self {
             fetcher: Box::new(fetcher),
@@ -62,10 +79,10 @@ pub fn create_policy<PS: PolicyStore>(
         let duration = start_time.elapsed();
         let details = format!("skipped in {}ms", duration.as_millis());
         let _ = log_info(Some(&domain.0), "create_policy", Some(&details));
-        return Err(QrawlError::Other(format!(
-            "policy already exists for domain {}",
-            domain.0
-        )));
+        return Err(QrawlError::validation_error(
+            "domain",
+            &format!("policy already exists for domain {}", domain.0),
+        ));
     }
     // Create minimal policy (no verification needed)
     let pol = crate::services::infer_policy(&*components.fetcher, &*components.scraper, &domain)?;
@@ -79,7 +96,10 @@ pub fn create_policy<PS: PolicyStore>(
 
 pub fn read_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<Option<Policy>> {
     if target == "all" {
-        return Err(QrawlError::Other("use list_domains for 'all'".into()));
+        return Err(QrawlError::validation_error(
+            "target",
+            "use list_domains for 'all'",
+        ));
     }
     store.get(&Domain::from_raw(target))
 }

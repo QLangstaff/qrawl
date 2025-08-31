@@ -31,8 +31,13 @@ impl Domain {
 
     /// Parse URL and extract domain in one step, with proper error handling
     pub fn parse_from_url(url: &str) -> crate::Result<(Url, Self)> {
-        let parsed_url = Url::parse(url).map_err(|_| crate::QrawlError::InvalidUrl(url.into()))?;
-        let domain = Self::from_url(&parsed_url).ok_or(crate::QrawlError::MissingDomain)?;
+        let parsed_url = Url::parse(url).map_err(|_| {
+            crate::QrawlError::validation_error("url", &format!("invalid URL: {}", url))
+        })?;
+        let domain = Self::from_url(&parsed_url).ok_or(crate::QrawlError::validation_error(
+            "url",
+            "URL missing domain",
+        ))?;
         Ok((parsed_url, domain))
     }
 }
@@ -321,9 +326,24 @@ pub type Result<T> = std::result::Result<T, QrawlError>;
 
 #[derive(Debug)]
 pub enum QrawlError {
-    InvalidUrl(String),
-    MissingDomain,
-    MissingPolicy(String),
+    // Service-specific errors
+    FetchError {
+        url: String,
+        reason: String,
+    },
+    InferenceError {
+        domain: String,
+        operation: String,
+        reason: String,
+    },
+    ValidationError {
+        field: String,
+        reason: String,
+    },
+    StorageError {
+        operation: String,
+        reason: String,
+    },
     Other(String),
 }
 
@@ -331,29 +351,81 @@ pub enum QrawlError {
 impl fmt::Display for QrawlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QrawlError::InvalidUrl(u) => write!(f, "invalid url: {u}"),
-            QrawlError::MissingDomain => write!(f, "missing domain in URL"),
-            QrawlError::MissingPolicy(domain) => write!(f, "no policy for domain {domain}"),
+            QrawlError::FetchError { url, reason } => write!(f, "fetch error for {url}: {reason}"),
+            QrawlError::InferenceError {
+                domain,
+                operation,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "inference error for {domain} during {operation}: {reason}"
+                )
+            }
+            QrawlError::ValidationError { field, reason } => {
+                write!(f, "validation error for {field}: {reason}")
+            }
+            QrawlError::StorageError { operation, reason } => {
+                write!(f, "storage error during {operation}: {reason}")
+            }
             QrawlError::Other(s) => write!(f, "{s}"),
         }
     }
 }
 impl std::error::Error for QrawlError {}
 
+impl QrawlError {
+    /// Create a fetch error for HTTP/network issues
+    pub fn fetch_error(url: &str, reason: &str) -> Self {
+        QrawlError::FetchError {
+            url: url.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Create an inference error for policy creation issues
+    pub fn inference_error(domain: &str, operation: &str, reason: &str) -> Self {
+        QrawlError::InferenceError {
+            domain: domain.to_string(),
+            operation: operation.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Create a validation error for invalid data
+    pub fn validation_error(field: &str, reason: &str) -> Self {
+        QrawlError::ValidationError {
+            field: field.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Create a storage error for file operations
+    pub fn storage_error(operation: &str, reason: &str) -> Self {
+        QrawlError::StorageError {
+            operation: operation.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+}
+
 /* Conversions so `?` works smoothly */
 impl From<std::io::Error> for QrawlError {
     fn from(e: std::io::Error) -> Self {
-        QrawlError::Other(e.to_string())
+        // Map I/O errors to storage errors since they're typically file operations
+        QrawlError::storage_error("file_operation", &e.to_string())
     }
 }
 impl From<serde_json::Error> for QrawlError {
     fn from(e: serde_json::Error) -> Self {
-        QrawlError::Other(e.to_string())
+        // Map JSON errors to storage errors since they're typically policy/data serialization
+        QrawlError::storage_error("json_serialization", &e.to_string())
     }
 }
 impl From<reqwest::Error> for QrawlError {
     fn from(e: reqwest::Error) -> Self {
-        QrawlError::Other(e.to_string())
+        // Map HTTP client errors to fetch errors with generic URL (context-specific code should use fetch_error directly)
+        QrawlError::fetch_error("unknown_url", &format!("HTTP client error: {}", e))
     }
 }
 
@@ -364,12 +436,16 @@ impl Policy {
     /// We enforce: at least one UA; at least one area; at least one field selector across title/headings/paragraphs.
     pub fn validate(&self) -> Result<()> {
         if self.fetch.user_agents.is_empty() {
-            return Err(QrawlError::Other(
-                "crawl.user_agents must not be empty".into(),
+            return Err(QrawlError::validation_error(
+                "fetch.user_agents",
+                "must not be empty",
             ));
         }
         if self.scrape.areas.is_empty() {
-            return Err(QrawlError::Other("scrape.areas must not be empty".into()));
+            return Err(QrawlError::validation_error(
+                "scrape.areas",
+                "must not be empty",
+            ));
         }
         let mut any_field = false;
         for a in &self.scrape.areas {
@@ -386,7 +462,7 @@ impl Policy {
             }
         }
         if !any_field {
-            return Err(QrawlError::Other("at least one selector (title/headings/paragraphs/images/links/lists/tables) is required".into()));
+            return Err(QrawlError::validation_error("scrape.areas.fields", "at least one selector (title/headings/paragraphs/images/links/lists/tables) is required"));
         }
         Ok(())
     }

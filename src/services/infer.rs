@@ -168,10 +168,11 @@ fn probe_domain_systematically(
         }
     }
 
-    Err(QrawlError::Other(format!(
-        "All bot evasion strategies failed for domain {}",
-        domain.0
-    )))
+    Err(QrawlError::inference_error(
+        &domain.0,
+        "strategy_testing",
+        "all bot evasion strategies failed",
+    ))
 }
 
 fn test_strategy(
@@ -202,10 +203,6 @@ fn test_strategy(
                     return Ok((html, timeout));
                 } else {
                     eprintln!("  ⚠️  Got response but content seems blocked/invalid");
-                    eprintln!(
-                        "  🔍 First 200 chars: {}",
-                        &html.chars().take(200).collect::<String>()
-                    );
                 }
             }
             Err(e) => {
@@ -214,8 +211,10 @@ fn test_strategy(
         }
     }
 
-    Err(QrawlError::Other(
-        "Strategy failed with all timeouts".into(),
+    Err(QrawlError::inference_error(
+        url,
+        "timeout_testing",
+        "strategy failed with all timeouts",
     ))
 }
 
@@ -655,10 +654,11 @@ pub fn infer_policy_with_seed(
     }
 
     let summary = summarize_reasons(&reasons, 8);
-    Err(QrawlError::Other(format!(
-        "unable to infer policy for {}. attempts={}. {}",
-        domain.0, attempts, summary
-    )))
+    Err(QrawlError::inference_error(
+        &domain.0,
+        "policy_creation",
+        &format!("failed after {} attempts: {}", attempts, summary),
+    ))
 }
 
 /* ---------------- helpers: diagnostics ---------------- */

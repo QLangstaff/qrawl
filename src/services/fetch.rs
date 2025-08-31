@@ -92,10 +92,10 @@ impl ReqwestFetcher {
         if is_valid_response(Some(status), &text) {
             return Ok(text);
         }
-        Err(QrawlError::Other(format!(
-            "http status {} for {}",
-            status, url
-        )))
+        Err(QrawlError::fetch_error(
+            url,
+            &format!("HTTP status {}", status),
+        ))
     }
 
     fn apply_evasion_strategy(
@@ -205,7 +205,10 @@ impl ReqwestFetcher {
             HeaderValue::from_str(user_agent).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
         );
         if let Some(r) = referer {
-            headers.insert(REFERER, HeaderValue::from_str(r).unwrap());
+            if let Ok(referer_value) = HeaderValue::from_str(r) {
+                headers.insert(REFERER, referer_value);
+            }
+            // Skip invalid referer values silently - this is evasion strategy, not critical
         }
     }
 
@@ -227,10 +230,10 @@ impl ReqwestFetcher {
         if is_valid_response(Some(status), &text) {
             return Ok(text);
         }
-        Err(QrawlError::Other(format!(
-            "http status {} for {}",
-            status, url
-        )))
+        Err(QrawlError::fetch_error(
+            url,
+            &format!("HTTP status {}", status),
+        ))
     }
 }
 
@@ -293,8 +296,9 @@ impl FetcherT for ReqwestFetcher {
             }
         }
 
-        Err(QrawlError::Other(
-            "request failed after all evasion strategies".into(),
+        Err(QrawlError::fetch_error(
+            url,
+            "request failed after all evasion strategies",
         ))
     }
 
@@ -358,8 +362,9 @@ impl FetcherT for ReqwestFetcher {
             }
         }
 
-        Err(QrawlError::Other(
-            "request failed after all evasion strategies".into(),
+        Err(QrawlError::fetch_error(
+            url,
+            "request failed after all evasion strategies",
         ))
     }
 }
@@ -367,10 +372,18 @@ impl FetcherT for ReqwestFetcher {
 fn to_headermap(hs: &HeaderSet, ua: Option<&str>) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     for (k, v) in &hs.0 {
-        let kn = HeaderName::from_bytes(k.as_bytes())
-            .map_err(|e| QrawlError::Other(format!("bad header name {}: {}", k, e)))?;
-        let vv = HeaderValue::from_str(v)
-            .map_err(|e| QrawlError::Other(format!("bad header value for {}: {}", k, e)))?;
+        let kn = HeaderName::from_bytes(k.as_bytes()).map_err(|e| {
+            QrawlError::validation_error(
+                &format!("header_name_{}", k),
+                &format!("invalid header name: {}", e),
+            )
+        })?;
+        let vv = HeaderValue::from_str(v).map_err(|e| {
+            QrawlError::validation_error(
+                &format!("header_value_{}", k),
+                &format!("invalid header value: {}", e),
+            )
+        })?;
         headers.insert(kn, vv);
     }
     if let Some(ua_str) = ua {

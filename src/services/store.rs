@@ -19,8 +19,9 @@ pub struct LocalFsStore {
 
 impl LocalFsStore {
     pub fn new() -> Result<Self> {
-        let proj = ProjectDirs::from("io", "qrawl", "qrawl")
-            .ok_or_else(|| QrawlError::Other("could not resolve data dir".into()))?;
+        let proj = ProjectDirs::from("io", "qrawl", "qrawl").ok_or_else(|| {
+            QrawlError::storage_error("initialization", "could not resolve data dir")
+        })?;
         let root = proj.data_local_dir().join("policies");
         fs::create_dir_all(&root)?;
         Ok(Self { root })
@@ -108,7 +109,10 @@ impl PolicyStore for LocalFsStore {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let fname = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let fname = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(name) => name,
+                None => continue, // Skip files with invalid filenames
+            };
             let domain = Domain::from_raw(fname);
 
             let file = match fs::File::open(&path) {

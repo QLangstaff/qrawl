@@ -59,10 +59,9 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
 
     pub fn extract(&self, url: &str) -> Result<ExtractionBundle> {
         let (_u, domain) = Domain::parse_from_url(url)?;
-        let pol = self
-            .store
-            .get(&domain)?
-            .ok_or_else(|| QrawlError::MissingPolicy(domain.0.clone()))?;
+        let pol = self.store.get(&domain)?.ok_or_else(|| {
+            QrawlError::inference_error(&domain.0, "policy_lookup", "no policy found for domain")
+        })?;
 
         let html = self.fetcher.fetch_blocking(url, &pol.fetch)?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
@@ -73,10 +72,9 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
 
     pub async fn extract_async(&self, url: &str) -> Result<ExtractionBundle> {
         let (_u, domain) = Domain::parse_from_url(url)?;
-        let pol = self
-            .store
-            .get(&domain)?
-            .ok_or_else(|| QrawlError::MissingPolicy(domain.0.clone()))?;
+        let pol = self.store.get(&domain)?.ok_or_else(|| {
+            QrawlError::inference_error(&domain.0, "policy_lookup", "no policy found for domain")
+        })?;
 
         let html = self.fetcher.fetch_async(url, &pol.fetch).await?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;

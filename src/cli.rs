@@ -81,14 +81,23 @@ fn policy_keyed_value(p: &Policy) -> Value {
 }
 
 fn print_json_value(v: Value) {
-    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+    match serde_json::to_string_pretty(&v) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Error formatting JSON output: {}", e),
+    }
 }
 
 /* -------------------------------------------------------------------- */
 
 pub fn run() {
     let cli = Cli::parse();
-    let store = LocalFsStore::new().unwrap();
+    let store = match LocalFsStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Error initializing policy store: {}", e);
+            std::process::exit(1);
+        }
+    };
     let components = Components::default();
 
     match (cli.url, cli.cmd) {
@@ -165,7 +174,10 @@ fn finish<T: serde::Serialize>(res: crate::Result<T>) {
     }
 }
 fn print_json<T: serde::Serialize>(val: T) {
-    println!("{}", serde_json::to_string_pretty(&val).unwrap());
+    match serde_json::to_string_pretty(&val) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Error formatting JSON output: {}", e),
+    }
 }
 
 fn log_cmd(args: LogArgs) {
