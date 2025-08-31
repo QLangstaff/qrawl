@@ -28,6 +28,13 @@ impl Domain {
     pub fn from_raw(host: &str) -> Self {
         Domain(Self::canonicalize(host))
     }
+
+    /// Parse URL and extract domain in one step, with proper error handling
+    pub fn parse_from_url(url: &str) -> crate::Result<(Url, Self)> {
+        let parsed_url = Url::parse(url).map_err(|_| crate::QrawlError::InvalidUrl(url.into()))?;
+        let domain = Self::from_url(&parsed_url).ok_or(crate::QrawlError::MissingDomain)?;
+        Ok((parsed_url, domain))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +46,35 @@ impl HeaderSet {
     pub fn with(mut self, k: &str, v: &str) -> Self {
         self.0.insert(k.to_string(), v.to_string());
         self
+    }
+
+    /// Standard browser headers for bot evasion strategies
+    pub fn for_strategy(strategy: &BotEvadeStrategy) -> Self {
+        match strategy {
+            BotEvadeStrategy::UltraMinimal => Self::empty(),
+            BotEvadeStrategy::Minimal => Self::empty()
+                .with("Accept", "text/html,application/xhtml+xml")
+                .with("Accept-Language", "en-US,en;q=0.9"),
+            _ => Self::empty()
+                .with(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                )
+                .with("Accept-Language", "en-US,en;q=0.9")
+                .with("Accept-Encoding", "gzip, deflate, br")
+                .with("Connection", "keep-alive"),
+        }
+    }
+
+    /// Legacy browser headers (used in seed inference)
+    pub fn legacy_browser() -> Self {
+        Self::empty()
+            .with("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .with("Accept-Encoding", "gzip, deflate, br")
+            .with("Accept-Language", "en-US,en;q=0.5")
+            .with("Connection", "keep-alive")
+            .with("DNT", "1")
+            .with("Upgrade-Insecure-Requests", "1")
     }
 }
 
@@ -58,6 +94,21 @@ pub enum BotEvadeStrategy {
     Advanced,     // Enhanced browser fingerprint with security headers
     #[default]
     Adaptive, // Try multiple approaches automatically
+}
+
+impl BotEvadeStrategy {
+    /// Get user agent strings for this bot evasion strategy
+    pub fn user_agents(&self) -> Vec<String> {
+        match self {
+            BotEvadeStrategy::UltraMinimal => vec![
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into(),
+            ],
+            _ => vec![
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".into(),
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15".into(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,5 +310,84 @@ impl<T> ApiResponse<T> {
             data: None,
             error: Some(msg.into()),
         }
+    }
+}
+
+/* ------------ Error Types (from error.rs) ------------ */
+
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, QrawlError>;
+
+#[derive(Debug)]
+pub enum QrawlError {
+    InvalidUrl(String),
+    MissingDomain,
+    MissingPolicy(String),
+    Other(String),
+}
+
+/* Display + Error for nicer to_string() */
+impl fmt::Display for QrawlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QrawlError::InvalidUrl(u) => write!(f, "invalid url: {u}"),
+            QrawlError::MissingDomain => write!(f, "missing domain in URL"),
+            QrawlError::MissingPolicy(domain) => write!(f, "no policy for domain {domain}"),
+            QrawlError::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+impl std::error::Error for QrawlError {}
+
+/* Conversions so `?` works smoothly */
+impl From<std::io::Error> for QrawlError {
+    fn from(e: std::io::Error) -> Self {
+        QrawlError::Other(e.to_string())
+    }
+}
+impl From<serde_json::Error> for QrawlError {
+    fn from(e: serde_json::Error) -> Self {
+        QrawlError::Other(e.to_string())
+    }
+}
+impl From<reqwest::Error> for QrawlError {
+    fn from(e: reqwest::Error) -> Self {
+        QrawlError::Other(e.to_string())
+    }
+}
+
+/* ------------ Policy Validation (from policy.rs) ------------ */
+
+impl Policy {
+    /// Quick syntactic checks (no defaults).
+    /// We enforce: at least one UA; at least one area; at least one field selector across title/headings/paragraphs.
+    pub fn validate(&self) -> Result<()> {
+        if self.fetch.user_agents.is_empty() {
+            return Err(QrawlError::Other(
+                "crawl.user_agents must not be empty".into(),
+            ));
+        }
+        if self.scrape.areas.is_empty() {
+            return Err(QrawlError::Other("scrape.areas must not be empty".into()));
+        }
+        let mut any_field = false;
+        for a in &self.scrape.areas {
+            if !(a.fields.title.is_empty()
+                && a.fields.headings.is_empty()
+                && a.fields.paragraphs.is_empty()
+                && a.fields.images.is_empty()
+                && a.fields.links.is_empty()
+                && a.fields.lists.is_empty()
+                && a.fields.tables.is_empty())
+            {
+                any_field = true;
+                break;
+            }
+        }
+        if !any_field {
+            return Err(QrawlError::Other("at least one selector (title/headings/paragraphs/images/links/lists/tables) is required".into()));
+        }
+        Ok(())
     }
 }

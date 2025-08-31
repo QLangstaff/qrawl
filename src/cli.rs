@@ -1,5 +1,6 @@
 use crate::api::{self, Components};
-use crate::{ApiResponse, Domain, LocalFsStore, Policy};
+use crate::services::LocalFsStore;
+use crate::{ApiResponse, Domain, Policy};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Map, Value};
 
@@ -168,7 +169,7 @@ fn print_json<T: serde::Serialize>(val: T) {
 }
 
 fn log_cmd(args: LogArgs) {
-    match crate::log::ActivityLogger::new() {
+    match crate::services::ActivityLogger::new() {
         Ok(logger) => match logger.read_logs(args.domain.as_deref(), args.errors) {
             Ok(lines) => {
                 if lines.is_empty() {

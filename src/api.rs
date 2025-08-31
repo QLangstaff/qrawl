@@ -1,18 +1,17 @@
-use crate::impls::{DefaultScraper, ReqwestFetcher};
-use crate::{engine::*, error::*, store::*, types::*};
+use crate::services::{ActivityLogger, DefaultScraper, PolicyStore, ReqwestFetcher};
+use crate::{engine::*, types::*};
 use std::time::Instant;
-use url::Url;
 
 // Helper function for logging - ignores errors to not break main operations
 fn log_info(domain: Option<&str>, event: &str, details: Option<&str>) -> crate::Result<()> {
-    match crate::log::ActivityLogger::new() {
+    match ActivityLogger::new() {
         Ok(logger) => logger.info(domain, event, details),
         Err(_) => Ok(()), // Silently ignore logging errors
     }
 }
 
 fn log_error(domain: Option<&str>, event: &str, details: Option<&str>) -> crate::Result<()> {
-    match crate::log::ActivityLogger::new() {
+    match ActivityLogger::new() {
         Ok(logger) => logger.error(domain, event, details),
         Err(_) => Ok(()), // Silently ignore logging errors
     }
@@ -69,7 +68,7 @@ pub fn create_policy<PS: PolicyStore>(
         )));
     }
     // Create minimal policy (no verification needed)
-    let pol = crate::infer::infer_policy(&*components.fetcher, &*components.scraper, &domain)?;
+    let pol = crate::services::infer_policy(&*components.fetcher, &*components.scraper, &domain)?;
     // Persist without verification - policy will be refined during actual extraction
     store.set(&pol)?;
     let duration = start_time.elapsed();
@@ -142,10 +141,7 @@ pub fn extract_url<PS: PolicyStore>(
     components: &Components,
 ) -> Result<ExtractionBundle> {
     let start_time = Instant::now();
-    let domain = {
-        let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
-        Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
-    };
+    let (_u, domain) = Domain::parse_from_url(url)?;
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {
@@ -177,10 +173,7 @@ pub async fn extract_url_async<PS: PolicyStore>(
     components: &Components,
 ) -> Result<ExtractionBundle> {
     let start_time = Instant::now();
-    let domain = {
-        let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
-        Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?
-    };
+    let (_u, domain) = Domain::parse_from_url(url)?;
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {

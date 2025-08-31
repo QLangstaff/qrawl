@@ -1,4 +1,4 @@
-use crate::{error::*, types::*};
+use crate::types::*;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,14 +31,6 @@ impl LocalFsStore {
     }
 }
 
-/* ---------- On-disk document shape ----------
-{
-  "<domain>": {
-    "config": { "fetch": {...}, "scrape": {...} }
-  }
-}
----------------------------------------------- */
-
 #[derive(Serialize, Deserialize)]
 struct PolicyConfigDoc {
     fetch: FetchConfig,
@@ -58,6 +50,7 @@ fn default_performance_profile() -> PerformanceProfile {
         success_rate: 0.0,
     }
 }
+
 #[derive(Serialize, Deserialize)]
 struct PolicyDoc {
     config: PolicyConfigDoc,
@@ -71,14 +64,10 @@ impl PolicyStore for LocalFsStore {
         }
         let file = fs::File::open(&p)?;
         let map: BTreeMap<String, PolicyDoc> = serde_json::from_reader(file)?;
+
+        // Only return policy if the exact domain key is found
+        // Remove dangerous fallback that could return wrong policy
         if let Some(doc) = map.get(&domain.0) {
-            Ok(Some(Policy {
-                domain: domain.clone(),
-                fetch: doc.config.fetch.clone(),
-                scrape: doc.config.scrape.clone(),
-                performance_profile: doc.config.performance_profile.clone(),
-            }))
-        } else if let Some(doc) = map.values().next() {
             Ok(Some(Policy {
                 domain: domain.clone(),
                 fetch: doc.config.fetch.clone(),
@@ -131,15 +120,8 @@ impl PolicyStore for LocalFsStore {
                 Err(_) => continue, // skip corrupt files
             };
 
-            // Prefer canonical key, else any first value
+            // Only use exact domain key matches to avoid confusion
             if let Some(doc) = map.get(&domain.0) {
-                out.push(Policy {
-                    domain: domain.clone(),
-                    fetch: doc.config.fetch.clone(),
-                    scrape: doc.config.scrape.clone(),
-                    performance_profile: doc.config.performance_profile.clone(),
-                });
-            } else if let Some(doc) = map.values().next() {
                 out.push(Policy {
                     domain: domain.clone(),
                     fetch: doc.config.fetch.clone(),

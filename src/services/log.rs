@@ -26,7 +26,7 @@ pub struct ActivityLogger {
 impl ActivityLogger {
     pub fn new() -> crate::Result<Self> {
         let user_dirs = directories::UserDirs::new().ok_or_else(|| {
-            crate::error::QrawlError::Other("could not determine home directory".into())
+            crate::types::QrawlError::Other("could not determine home directory".into())
         })?;
         let home = user_dirs.home_dir();
         let qrawl_dir = home.join(".qrawl");

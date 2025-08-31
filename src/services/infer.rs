@@ -1,12 +1,103 @@
-use crate::{error::*, types::*};
+use crate::types::*;
+use reqwest::StatusCode;
 use scraper::{Html, Selector};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use url::Url;
 
-/* -----------------------------------------------------------------------
-Inference: schema-first with www + language-root candidates and robots/sitemap
------------------------------------------------------------------------ */
+/// Internal enum for detailed response classification
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResponseType {
+    /// Scrapable HTML content
+    HtmlContent,
+    /// Captcha/bot detection pages  
+    BotChallenge,
+    /// Access denied pages
+    AccessDenied,
+}
+
+/// Check if an HTTP response contains valid content we can scrape
+/// Returns true only for scrapable HTML content
+pub fn is_valid_response(status: Option<StatusCode>, body: &str) -> bool {
+    matches!(
+        classify_response(status, body),
+        Some(ResponseType::HtmlContent)
+    )
+}
+
+/// Check if response content is valid for scraping (ignores HTTP status)
+/// Returns true only for scrapable HTML content
+pub fn is_valid_content(body: &str) -> bool {
+    matches!(classify_content(body), Some(ResponseType::HtmlContent))
+}
+
+/// Internal function to classify HTTP response with detailed type detection
+fn classify_response(status: Option<StatusCode>, body: &str) -> Option<ResponseType> {
+    // Primary check: HTTP status codes
+    if let Some(status) = status {
+        if status.is_client_error() || status.is_server_error() {
+            return None; // Failed basic checks
+        }
+        if !status.is_success() {
+            return None; // Failed basic checks
+        }
+    }
+
+    // Secondary check: Content-based heuristics
+    classify_content(body)
+}
+
+/// Internal function to classify response content only
+fn classify_content(body: &str) -> Option<ResponseType> {
+    // Basic validity checks
+    if body.len() < 500 {
+        return None; // Failed basic checks
+    }
+
+    let body_lower = body.to_ascii_lowercase();
+
+    // Must look like HTML
+    if !body_lower.contains("<html") && !body_lower.contains("<!doctype") {
+        return None; // Failed basic checks
+    }
+
+    // Check for access denied patterns (more specific than general bot challenges)
+    let access_denied_patterns = [
+        "access denied",
+        "permission denied",
+        "forbidden",
+        "unauthorized",
+    ];
+
+    for pattern in &access_denied_patterns {
+        if body_lower.contains(pattern) {
+            return Some(ResponseType::AccessDenied);
+        }
+    }
+
+    // Check for bot challenge/captcha patterns
+    let bot_challenge_patterns = [
+        "verify you are a human",
+        "please complete the captcha",
+        "solve this captcha",
+        "captcha challenge",
+        "cf-browser-verification",
+        "px-captcha",
+        "blocked by cloudflare",
+        "please enable javascript and cookies",
+        "suspicious activity",
+        "bot detection",
+    ];
+
+    for pattern in &bot_challenge_patterns {
+        if body_lower.contains(pattern) {
+            return Some(ResponseType::BotChallenge);
+        }
+    }
+
+    // If we get here, it appears to be scrapable HTML content
+    Some(ResponseType::HtmlContent)
+}
 
 pub fn infer_policy(
     fetcher: &dyn crate::engine::Fetcher,
@@ -95,8 +186,8 @@ fn test_strategy(
         eprintln!("  ⏱️  Testing timeout: {}ms", timeout);
 
         let test_config = FetchConfig {
-            user_agents: get_strategy_user_agents(strategy),
-            default_headers: get_strategy_headers(strategy),
+            user_agents: strategy.user_agents(),
+            default_headers: HeaderSet::for_strategy(strategy),
             http_version: HttpVersion::default(),
             bot_evasion_strategy: strategy.clone(),
             respect_robots_txt: true,
@@ -106,7 +197,7 @@ fn test_strategy(
         match fetcher.fetch_blocking(url, &test_config) {
             Ok(html) => {
                 eprintln!("  📄 Got {} bytes of content", html.len());
-                if is_valid_response(&html) {
+                if is_valid_content(&html) {
                     eprintln!("  ✅ Success with timeout {}ms", timeout);
                     return Ok((html, timeout));
                 } else {
@@ -126,55 +217,6 @@ fn test_strategy(
     Err(QrawlError::Other(
         "Strategy failed with all timeouts".into(),
     ))
-}
-
-fn get_strategy_user_agents(strategy: &BotEvadeStrategy) -> Vec<String> {
-    match strategy {
-        BotEvadeStrategy::UltraMinimal => vec![
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into(),
-        ],
-        _ => vec![
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".into(),
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15".into(),
-        ],
-    }
-}
-
-fn get_strategy_headers(strategy: &BotEvadeStrategy) -> HeaderSet {
-    match strategy {
-        BotEvadeStrategy::UltraMinimal => HeaderSet::empty(),
-        BotEvadeStrategy::Minimal => HeaderSet::empty()
-            .with("Accept", "text/html,application/xhtml+xml")
-            .with("Accept-Language", "en-US,en;q=0.9"),
-        _ => HeaderSet::empty()
-            .with(
-                "Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .with("Accept-Language", "en-US,en;q=0.9")
-            .with("Accept-Encoding", "gzip, deflate, br")
-            .with("Connection", "keep-alive"),
-    }
-}
-
-fn is_valid_response(html: &str) -> bool {
-    // Check if response contains actual content vs bot detection page
-    let html_lower = html.to_lowercase();
-
-    // Signs of successful response - be more specific about blocking patterns
-    html.len() > 500
-        && (html_lower.contains("<html") || html_lower.contains("<!doctype"))
-        && !html_lower.contains("access denied")
-        && !html_lower.contains("verify you are a human")
-        && !html_lower.contains("please complete the captcha")
-        && !html_lower.contains("solve this captcha")
-        && !html_lower.contains("captcha challenge")
-        && !html_lower.contains("cf-browser-verification")
-        && !html_lower.contains("px-captcha")
-        && !html_lower.contains("blocked by cloudflare")
-        && !html_lower.contains("please enable javascript and cookies")
-        && !html_lower.contains("suspicious activity")
-        && !html_lower.contains("bot detection")
 }
 
 #[derive(Debug)]
@@ -285,8 +327,6 @@ fn analyze_content_structure(
     }
 }
 
-/* -------- Social metadata helpers (duplicated from impls.rs) -------- */
-
 fn extract_open_graph_meta(doc: &Html) -> BTreeMap<String, String> {
     let mut og_data = BTreeMap::new();
 
@@ -386,8 +426,8 @@ fn create_learned_policy(
     Policy {
         domain,
         fetch: FetchConfig {
-            user_agents: get_strategy_user_agents(&strategy),
-            default_headers: get_strategy_headers(&strategy),
+            user_agents: strategy.user_agents(),
+            default_headers: HeaderSet::for_strategy(&strategy),
             http_version: HttpVersion::default(),
             bot_evasion_strategy: strategy,
             respect_robots_txt: true,
@@ -424,19 +464,7 @@ pub fn infer_policy_with_seed(
     ];
 
     // Headers to seed persisted policy
-    let base_headers = {
-        let mut h = HeaderSet::empty();
-        h = h.with(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        );
-        h = h.with("Accept-Encoding", "gzip, deflate, br");
-        h = h.with("Accept-Language", "en-US,en;q=0.5");
-        h = h.with("Connection", "keep-alive");
-        h = h.with("DNT", "1");
-        h = h.with("Upgrade-Insecure-Requests", "1");
-        h
-    };
+    let base_headers = HeaderSet::legacy_browser();
 
     let mut reasons: Vec<String> = Vec::new();
     let mut attempts: usize = 0;
@@ -826,4 +854,91 @@ fn try_fetch_with_learning(
     };
 
     Ok((content, inferred_strategy))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn test_legitimate_content() {
+        let html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head><title>Test Page</title></head>
+        <body>
+            <h1>Welcome to our site</h1>
+            <p>This is legitimate content with plenty of text to make it look real and pass the length check.</p>
+            <p>More content here to ensure we have enough text. Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
+            <p>Even more content to make sure we exceed the 500 character threshold for valid responses.</p>
+            <p>Additional paragraph with more text content to ensure proper length validation works correctly.</p>
+        </body>
+        </html>
+        "#;
+
+        assert!(is_valid_content(html));
+    }
+
+    #[test]
+    fn test_bot_challenge_captcha() {
+        let html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head><title>Verify You Are Human</title></head>
+        <body>
+            <h1>Please complete the captcha to continue</h1>
+            <p>We need to verify you are a human before proceeding to the requested content.</p>
+            <p>This page contains a captcha challenge that must be solved before access is granted.</p>
+            <p>Please solve the challenge below and then click continue to access the site content.</p>
+            <p>Additional text here to make sure we meet the minimum length requirements for testing.</p>
+        </body>
+        </html>
+        "#;
+
+        assert!(!is_valid_content(html));
+    }
+
+    #[test]
+    fn test_bot_challenge_cloudflare() {
+        let html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head><title>Blocked</title></head>
+        <body>
+            <h1>Access Denied</h1>
+            <p>This request has been blocked by Cloudflare security systems due to suspicious activity.</p>
+            <p>If you believe this is an error, please contact the site administrator with details.</p>
+            <p>Your request has been flagged by our bot detection systems and cannot be processed.</p>
+            <p>Additional content here to ensure we meet the minimum character count for proper testing.</p>
+        </body>
+        </html>
+        "#;
+
+        assert!(!is_valid_content(html));
+    }
+
+    #[test]
+    fn test_unusable_too_short() {
+        let html = "<html><body>Short</body></html>";
+        assert!(!is_valid_content(html));
+    }
+
+    #[test]
+    fn test_unusable_not_html() {
+        let content = "This is just plain text without any HTML tags and it's long enough to pass the length check but should still be invalid because it doesn't look like HTML content at all.";
+        assert!(!is_valid_content(content));
+    }
+
+    #[test]
+    fn test_with_http_status() {
+        let html = r#"<!DOCTYPE html><html><head><title>Test Page</title></head><body><h1>Test Page Title</h1><p>Valid content here with enough text to pass length validation. This needs to be quite a bit longer.</p><p>More content to ensure proper testing of the HTTP status code integration with content analysis functionality.</p><p>Additional paragraph text to meet minimum requirements for the 500 character threshold that we have set.</p><p>Even more text content for comprehensive testing to ensure all validation logic works properly.</p><p>Final paragraph to definitely exceed the character limit.</p></body></html>"#;
+
+        assert!(is_valid_response(Some(StatusCode::OK), html));
+        assert!(!is_valid_response(Some(StatusCode::NOT_FOUND), html));
+        assert!(!is_valid_response(
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            html
+        ));
+    }
 }

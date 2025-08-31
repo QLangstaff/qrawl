@@ -1,4 +1,4 @@
-use crate::{error::*, store::PolicyStore, types::*};
+use crate::{services::PolicyStore, types::*};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use url::Url;
@@ -58,12 +58,11 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
     }
 
     pub fn extract(&self, url: &str) -> Result<ExtractionBundle> {
-        let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
-        let domain = Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?;
+        let (_u, domain) = Domain::parse_from_url(url)?;
         let pol = self
             .store
             .get(&domain)?
-            .ok_or_else(|| QrawlError::Other(format!("no policy for domain {}", domain.0)))?;
+            .ok_or_else(|| QrawlError::MissingPolicy(domain.0.clone()))?;
 
         let html = self.fetcher.fetch_blocking(url, &pol.fetch)?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
@@ -73,12 +72,11 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
     }
 
     pub async fn extract_async(&self, url: &str) -> Result<ExtractionBundle> {
-        let u = Url::parse(url).map_err(|_| QrawlError::InvalidUrl(url.into()))?;
-        let domain = Domain::from_url(&u).ok_or(QrawlError::MissingDomain)?;
+        let (_u, domain) = Domain::parse_from_url(url)?;
         let pol = self
             .store
             .get(&domain)?
-            .ok_or_else(|| QrawlError::Other(format!("no policy for domain {}", domain.0)))?;
+            .ok_or_else(|| QrawlError::MissingPolicy(domain.0.clone()))?;
 
         let html = self.fetcher.fetch_async(url, &pol.fetch).await?;
         let parent = self.scraper.scrape(url, &html, &pol.scrape)?;
@@ -127,7 +125,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
             return Ok(vec![]);
         }
 
-        let base = Url::parse(base_url).map_err(|_| QrawlError::InvalidUrl(base_url.into()))?;
+        let (base, _domain) = Domain::parse_from_url(base_url)?;
         let parent_domain = base.domain().unwrap_or("");
 
         // Extract candidate URLs from JSON-LD ItemList and content areas
@@ -219,7 +217,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
             return Ok(vec![]);
         }
 
-        let base = Url::parse(base_url).map_err(|_| QrawlError::InvalidUrl(base_url.into()))?;
+        let (base, _domain) = Domain::parse_from_url(base_url)?;
         let parent_domain = base.domain().unwrap_or("");
 
         // Extract candidate URLs from JSON-LD ItemList and content areas
