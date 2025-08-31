@@ -58,7 +58,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
     }
 
     pub fn extract(&self, url: &str) -> Result<ExtractionBundle> {
-        let (_u, domain) = Domain::parse_from_url(url)?;
+        let domain = Domain::from_url(url)?;
         let pol = self.store.get(&domain)?.ok_or_else(|| {
             QrawlError::inference_error(&domain.0, "policy_lookup", "no policy found for domain")
         })?;
@@ -71,7 +71,7 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
     }
 
     pub async fn extract_async(&self, url: &str) -> Result<ExtractionBundle> {
-        let (_u, domain) = Domain::parse_from_url(url)?;
+        let domain = Domain::from_url(url)?;
         let pol = self.store.get(&domain)?.ok_or_else(|| {
             QrawlError::inference_error(&domain.0, "policy_lookup", "no policy found for domain")
         })?;
@@ -123,7 +123,9 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
             return Ok(vec![]);
         }
 
-        let (base, _domain) = Domain::parse_from_url(base_url)?;
+        let base = Url::parse(base_url).map_err(|_| {
+            QrawlError::validation_error("url", &format!("invalid URL: {}", base_url))
+        })?;
         let parent_domain = base.domain().unwrap_or("");
 
         // Extract candidate URLs from JSON-LD ItemList and content areas
@@ -215,7 +217,9 @@ impl<'a, PS: PolicyStore> Engine<'a, PS> {
             return Ok(vec![]);
         }
 
-        let (base, _domain) = Domain::parse_from_url(base_url)?;
+        let base = Url::parse(base_url).map_err(|_| {
+            QrawlError::validation_error("url", &format!("invalid URL: {}", base_url))
+        })?;
         let parent_domain = base.domain().unwrap_or("");
 
         // Extract candidate URLs from JSON-LD ItemList and content areas

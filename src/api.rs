@@ -101,7 +101,7 @@ pub fn read_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<Option<P
             "use list_domains for 'all'",
         ));
     }
-    store.get(&Domain::from_raw(target))
+    store.get(&Domain::new(target))
 }
 
 pub fn list_domains<PS: PolicyStore>(store: &PS) -> Result<Vec<String>> {
@@ -131,7 +131,7 @@ pub fn delete_policy<PS: PolicyStore>(store: &PS, target: &str) -> Result<()> {
         }
         return result;
     }
-    let domain = Domain::from_raw(target);
+    let domain = Domain::new(target);
     let result = store.delete(&domain);
     let duration = start_time.elapsed();
     match &result {
@@ -161,7 +161,7 @@ pub fn extract_url<PS: PolicyStore>(
     components: &Components,
 ) -> Result<ExtractionBundle> {
     let start_time = Instant::now();
-    let (_u, domain) = Domain::parse_from_url(url)?;
+    let domain = Domain::from_url(url)?;
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {
@@ -193,7 +193,7 @@ pub async fn extract_url_async<PS: PolicyStore>(
     components: &Components,
 ) -> Result<ExtractionBundle> {
     let start_time = Instant::now();
-    let (_u, domain) = Domain::parse_from_url(url)?;
+    let domain = Domain::from_url(url)?;
 
     // Ensure policy exists - create if needed
     if store.get(&domain)?.is_none() {

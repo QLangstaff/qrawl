@@ -113,7 +113,7 @@ impl PolicyStore for LocalFsStore {
                 Some(name) => name,
                 None => continue, // Skip files with invalid filenames
             };
-            let domain = Domain::from_raw(fname);
+            let domain = Domain::new(fname);
 
             let file = match fs::File::open(&path) {
                 Ok(f) => f,

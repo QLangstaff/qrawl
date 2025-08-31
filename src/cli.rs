@@ -128,7 +128,7 @@ fn policy_cmd(store: &LocalFsStore, components: &Components, pc: PolicyCmd) {
     match pc {
         // AUTO: infer + verify + save; refuses overwrite
         PolicyCmd::Create { domain } => {
-            let d = Domain::from_raw(&domain);
+            let d = Domain::new(&domain);
             match api::create_policy(store, d, components) {
                 Ok(saved) => print_json_value(policy_keyed_value(&saved)),
                 Err(e) => print_json(ApiResponse::<()>::err(e.to_string())),

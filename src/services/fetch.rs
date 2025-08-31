@@ -8,6 +8,7 @@ use reqwest::header::{
 };
 use reqwest::Client as AsyncClient;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use url::Url;
 
 pub struct ReqwestFetcher;
 
@@ -244,7 +245,8 @@ impl FetcherT for ReqwestFetcher {
     }
 
     fn fetch_blocking(&self, url: &str, cfg: &FetchConfig) -> Result<String> {
-        let (parsed, _domain) = Domain::parse_from_url(url)?;
+        let parsed = Url::parse(url)
+            .map_err(|_| QrawlError::validation_error("url", &format!("invalid URL: {}", url)))?;
         let origin = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
 
         let client = self.build_client_for_policy(cfg)?;
@@ -303,7 +305,8 @@ impl FetcherT for ReqwestFetcher {
     }
 
     async fn fetch_async(&self, url: &str, cfg: &FetchConfig) -> Result<String> {
-        let (parsed, _domain) = Domain::parse_from_url(url)?;
+        let parsed = Url::parse(url)
+            .map_err(|_| QrawlError::validation_error("url", &format!("invalid URL: {}", url)))?;
         let origin = format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""));
 
         let client = self.build_async_client_for_policy(cfg)?;

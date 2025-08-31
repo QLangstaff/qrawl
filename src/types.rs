@@ -12,7 +12,7 @@ impl Domain {
         let lower = host.to_ascii_lowercase();
         let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
 
-        // Strip www. prefix to normalize domains
+        // Always strip www. prefix to normalize domains
         if idna.starts_with("www.") && idna.len() > 4 {
             idna[4..].to_string()
         } else {
@@ -20,25 +20,23 @@ impl Domain {
         }
     }
 
-    pub fn from_url(url: &Url) -> Option<Self> {
-        url.domain().map(|d| Domain(Self::canonicalize(d)))
-    }
-
-    /// Build a Domain from raw user text (CLI, API callers, etc.)
-    pub fn from_raw(host: &str) -> Self {
+    /// Create domain from host string
+    pub fn new(host: &str) -> Self {
         Domain(Self::canonicalize(host))
     }
 
-    /// Parse URL and extract domain in one step, with proper error handling
-    pub fn parse_from_url(url: &str) -> crate::Result<(Url, Self)> {
-        let parsed_url = Url::parse(url).map_err(|_| {
+    /// Create domain from URL string
+    pub fn from_url(url: &str) -> crate::Result<Self> {
+        let parsed = Url::parse(url).map_err(|_| {
             crate::QrawlError::validation_error("url", &format!("invalid URL: {}", url))
         })?;
-        let domain = Self::from_url(&parsed_url).ok_or(crate::QrawlError::validation_error(
-            "url",
-            "URL missing domain",
-        ))?;
-        Ok((parsed_url, domain))
+        parsed
+            .domain()
+            .map(|d| Domain(Self::canonicalize(d)))
+            .ok_or(crate::QrawlError::validation_error(
+                "url",
+                "URL missing domain",
+            ))
     }
 }
 
@@ -465,5 +463,214 @@ impl Policy {
             return Err(QrawlError::validation_error("scrape.areas.fields", "at least one selector (title/headings/paragraphs/images/links/lists/tables) is required"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_domain_new_basic() {
+        assert_eq!(Domain::new("example.com").0, "example.com");
+        assert_eq!(Domain::new("github.com").0, "github.com");
+    }
+
+    #[test]
+    fn test_domain_new_canonicalization() {
+        // Test case normalization
+        assert_eq!(Domain::new("Example.com").0, "example.com");
+        assert_eq!(Domain::new("GITHUB.COM").0, "github.com");
+        assert_eq!(Domain::new("MiXeD.CaSe.CoM").0, "mixed.case.com");
+
+        // Test www stripping
+        assert_eq!(Domain::new("www.example.com").0, "example.com");
+        assert_eq!(Domain::new("www.github.com").0, "github.com");
+        assert_eq!(Domain::new("WWW.EXAMPLE.COM").0, "example.com");
+
+        // Test combined case + www
+        assert_eq!(Domain::new("WWW.Example.COM").0, "example.com");
+        assert_eq!(Domain::new("www.GitHub.com").0, "github.com");
+    }
+
+    #[test]
+    fn test_domain_new_edge_cases() {
+        // Don't strip www if it's the whole domain
+        assert_eq!(Domain::new("www").0, "www");
+        assert_eq!(Domain::new("www.").0, "www.");
+
+        // Always strip www when there's something after it
+        assert_eq!(Domain::new("www.a").0, "a");
+        assert_eq!(Domain::new("www.ab").0, "ab");
+        assert_eq!(Domain::new("www.abc").0, "abc");
+
+        // Subdomains with www
+        assert_eq!(Domain::new("api.www.example.com").0, "api.www.example.com");
+        assert_eq!(Domain::new("www.api.example.com").0, "api.example.com");
+    }
+
+    #[test]
+    fn test_domain_from_url_basic() {
+        assert_eq!(
+            Domain::from_url("https://example.com").unwrap().0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("http://github.com/user/repo").unwrap().0,
+            "github.com"
+        );
+        assert_eq!(
+            Domain::from_url("https://api.example.com/v1/data")
+                .unwrap()
+                .0,
+            "api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_domain_from_url_canonicalization() {
+        // Test case normalization in URLs
+        assert_eq!(
+            Domain::from_url("https://Example.com").unwrap().0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("HTTP://GITHUB.COM").unwrap().0,
+            "github.com"
+        );
+
+        // Test www stripping in URLs
+        assert_eq!(
+            Domain::from_url("https://www.example.com").unwrap().0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("http://www.github.com/user").unwrap().0,
+            "github.com"
+        );
+
+        // Test combined case + www in URLs
+        assert_eq!(
+            Domain::from_url("HTTPS://WWW.Example.COM/path").unwrap().0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("http://www.GitHub.com").unwrap().0,
+            "github.com"
+        );
+    }
+
+    #[test]
+    fn test_domain_from_url_with_ports_and_paths() {
+        assert_eq!(
+            Domain::from_url("https://example.com:8080").unwrap().0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("http://www.example.com:3000/api/v1")
+                .unwrap()
+                .0,
+            "example.com"
+        );
+        assert_eq!(
+            Domain::from_url("https://API.Example.COM:443/data?q=test")
+                .unwrap()
+                .0,
+            "api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_domain_from_url_errors() {
+        // Invalid URLs
+        assert!(Domain::from_url("not-a-url").is_err());
+        assert!(Domain::from_url("").is_err());
+        assert!(Domain::from_url("://missing-scheme").is_err());
+        assert!(Domain::from_url("https://").is_err());
+
+        // URLs without domains
+        assert!(Domain::from_url("file:///path/to/file").is_err());
+        assert!(Domain::from_url("data:text/plain,hello").is_err());
+    }
+
+    #[test]
+    fn test_domain_consistency() {
+        // Same domain should be created consistently regardless of input method
+        let domain1 = Domain::new("example.com");
+        let domain2 = Domain::from_url("https://example.com").unwrap();
+        assert_eq!(domain1, domain2);
+
+        // Case variations should normalize to same domain
+        let domain3 = Domain::new("Example.COM");
+        let domain4 = Domain::from_url("HTTPS://Example.COM/path").unwrap();
+        assert_eq!(domain3, domain4);
+        assert_eq!(domain1, domain3);
+
+        // www variations should normalize to same domain
+        let domain5 = Domain::new("www.example.com");
+        let domain6 = Domain::from_url("https://www.example.com").unwrap();
+        assert_eq!(domain5, domain6);
+        assert_eq!(domain1, domain5);
+    }
+
+    #[test]
+    fn test_domain_policy_file_consistency() {
+        // These should all create the same policy filename
+        let domains = vec![
+            Domain::new("example.com"),
+            Domain::new("Example.com"),
+            Domain::new("EXAMPLE.COM"),
+            Domain::new("www.example.com"),
+            Domain::new("www.Example.com"),
+            Domain::new("WWW.EXAMPLE.COM"),
+            Domain::from_url("https://example.com").unwrap(),
+            Domain::from_url("HTTP://Example.com").unwrap(),
+            Domain::from_url("https://www.example.com").unwrap(),
+            Domain::from_url("HTTPS://WWW.Example.COM/path?query=1").unwrap(),
+        ];
+
+        let expected = "example.com";
+        for domain in domains {
+            assert_eq!(
+                domain.0, expected,
+                "Domain {:?} should normalize to {}",
+                domain.0, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_domain_real_world_cases() {
+        // Test real-world domains that users might encounter
+        assert_eq!(
+            Domain::from_url("https://www.GitHub.com/user/repo")
+                .unwrap()
+                .0,
+            "github.com"
+        );
+        assert_eq!(
+            Domain::from_url("HTTP://News.YCombinator.com").unwrap().0,
+            "news.ycombinator.com"
+        );
+        assert_eq!(
+            Domain::from_url("https://WWW.REDDIT.COM/r/rust").unwrap().0,
+            "reddit.com"
+        );
+        assert_eq!(
+            Domain::from_url("http://stackoverflow.COM/questions/123")
+                .unwrap()
+                .0,
+            "stackoverflow.com"
+        );
+
+        // Subdomains should be preserved but canonicalized
+        assert_eq!(
+            Domain::from_url("https://API.GitHub.com").unwrap().0,
+            "api.github.com"
+        );
+        assert_eq!(
+            Domain::from_url("https://www.api.example.COM").unwrap().0,
+            "api.example.com"
+        );
     }
 }
