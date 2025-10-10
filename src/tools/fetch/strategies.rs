@@ -27,7 +27,7 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
         .ok()
         .and_then(|u| u.host_str().map(|h| format!("{}://{}/", u.scheme(), h)));
 
-    let mut last_error = None;
+    let mut all_errors: Vec<String> = Vec::new();
     let mut attempts = 0;
 
     for (strategy_idx, &strategy) in strategies.iter().enumerate() {
@@ -44,7 +44,7 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
                     });
                 }
                 Err(e) => {
-                    last_error = Some(e);
+                    all_errors.push(format!("{:?}: {}", strategy, &e));
                     continue;
                 }
             }
@@ -53,7 +53,8 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
         let client = match build_client(strategy) {
             Ok(c) => c,
             Err(e) => {
-                last_error = Some(format!("Client build failed: {}", e));
+                let error_msg = format!("Client build failed: {}", e);
+                all_errors.push(format!("{:?}: {}", strategy, &error_msg));
                 continue;
             }
         };
@@ -70,7 +71,7 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
                 });
             }
             Err(e) => {
-                last_error = Some(e);
+                all_errors.push(format!("{:?}: {}", strategy, &e));
 
                 // Small delay after first attempt
                 if strategy_idx == 0 {
@@ -93,8 +94,8 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
                             attempts,
                         });
                     }
-                    Err(e) => {
-                        last_error = Some(e);
+                    Err(_e) => {
+                        // Don't add to all_errors - already added from first attempt
                     }
                 }
             }
@@ -109,8 +110,17 @@ pub(crate) async fn fetch_with_adaptive_strategy(url: &str) -> Result<FetchResul
         }
     }
 
-    // All strategies failed
-    Err(last_error.unwrap_or_else(|| format!("Failed to fetch url {}", url)))
+    // All strategies failed - return comprehensive error
+    if all_errors.is_empty() {
+        Err(format!("Failed to fetch url {}", url))
+    } else {
+        Err(format!(
+            "All {} strategies failed ({} attempts): [{}]",
+            strategies.len(),
+            attempts,
+            all_errors.join("; ")
+        ))
+    }
 }
 
 /// Fetch with extreme bot evasion: session building, external referrers, long delays.
@@ -223,8 +233,7 @@ async fn fetch_with_strategy_and_referer(
     // Validate response content (checks for bot challenges, access denied, invalid content, etc.)
     if let Err(reason) = validate_response(status_code, &html) {
         return Err(format!(
-            "Failed to fetch with strategy {:?}: status {} ({})",
-            strategy,
+            "status {} ({})",
             status_code.as_u16(),
             reason
         ));

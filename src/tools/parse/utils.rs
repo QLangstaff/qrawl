@@ -1,5 +1,6 @@
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // Lazy static regexes for HTML cleaning - compiled once
@@ -128,14 +129,28 @@ pub fn main_html(html: &str) -> String {
 /// Detect siblings by scanning entire tree and finding richest sibling group.
 /// Goes all the way down, finds all groups at all levels, returns the richest
 /// (highest structural complexity, then most items).
-pub fn siblings_html(html: &str) -> Vec<String> {
+///
+/// # Arguments
+/// * `html` - HTML to parse
+/// * `exclude_domains` - Optional domains to exclude (filters groups during detection)
+/// * `include_domains` - Optional domains to include (filters groups during detection)
+pub fn siblings_html(
+    html: &str,
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
+) -> Vec<String> {
     let doc = Html::parse_document(html);
     let root = doc.root_element();
 
     // Scan entire tree and find ALL sibling groups at ALL levels
     // Each entry is (in_article, pattern_length, group_of_siblings)
     let mut all_sibling_groups: Vec<(bool, usize, Vec<String>)> = Vec::new();
-    scan_for_all_sibling_groups(&root, &mut all_sibling_groups);
+    scan_for_all_sibling_groups(
+        &root,
+        &mut all_sibling_groups,
+        exclude_domains,
+        include_domains,
+    );
 
     // Return using deterministic hierarchy: article context > quantity > pattern_len
     all_sibling_groups
@@ -162,9 +177,9 @@ fn is_in_article(element: &ElementRef) -> bool {
 fn scan_for_all_sibling_groups<'a>(
     element: &'a ElementRef<'a>,
     all_groups: &mut Vec<(bool, usize, Vec<String>)>,
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
 ) {
-    use std::collections::HashMap;
-
     // Get children at this level (filter junk)
     let children: Vec<_> = element
         .children()
@@ -208,18 +223,29 @@ fn scan_for_all_sibling_groups<'a>(
         for (tags, indices) in pattern_groups {
             if indices.len() >= 2 && !tags.is_empty() {
                 let siblings: Vec<String> = indices.iter().map(|&i| children[i].html()).collect();
-                let in_article = is_in_article(&children[indices[0]]);
-                all_groups.push((in_article, 1, siblings));
+
+                // Filter by domain before adding to groups (critical: before scoring!)
+                // Only apply filter if domain options are actually set
+                let should_include = if exclude_domains.is_some() || include_domains.is_some() {
+                    group_has_valid_urls(&siblings, exclude_domains, include_domains)
+                } else {
+                    true // No filtering when no domain options set
+                };
+
+                if should_include {
+                    let in_article = is_in_article(&children[indices[0]]);
+                    all_groups.push((in_article, 1, siblings));
+                }
             }
         }
 
         // 2. Detect multi-element patterns (new behavior)
-        detect_multi_element_patterns(&children, all_groups);
+        detect_multi_element_patterns(&children, all_groups, exclude_domains, include_domains);
     }
 
     // Recurse into ALL children to scan deeper levels
     for child in children {
-        scan_for_all_sibling_groups(&child, all_groups);
+        scan_for_all_sibling_groups(&child, all_groups, exclude_domains, include_domains);
     }
 }
 
@@ -228,6 +254,8 @@ fn scan_for_all_sibling_groups<'a>(
 fn detect_multi_element_patterns(
     children: &[ElementRef],
     all_groups: &mut Vec<(bool, usize, Vec<String>)>,
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
 ) {
     use std::collections::HashMap;
 
@@ -302,24 +330,81 @@ fn detect_multi_element_patterns(
                                 .join("")
                         })
                         .collect();
-                    let in_article = is_in_article(&children[non_overlapping[0]]);
-                    all_groups.push((in_article, pattern_len, siblings));
+
+                    // Filter by domain before adding to groups (critical: before scoring!)
+                    // Only apply filter if domain options are actually set
+                    let should_include = if exclude_domains.is_some() || include_domains.is_some() {
+                        group_has_valid_urls(&siblings, exclude_domains, include_domains)
+                    } else {
+                        true // No filtering when no domain options set
+                    };
+
+                    if should_include {
+                        let in_article = is_in_article(&children[non_overlapping[0]]);
+                        all_groups.push((in_article, pattern_len, siblings));
+                    }
                 }
             }
         }
     }
 }
 
+/// Check if a sibling group has valid URLs according to domain filters.
+/// Used during sibling detection to filter groups before scoring.
+pub fn group_has_valid_urls(
+    siblings: &[String],
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
+) -> bool {
+    // Extract all URLs from the sibling group
+    let href_regex = Regex::new(r#"href=["']([^"']+)["']"#).unwrap();
+    let urls: Vec<String> = siblings
+        .iter()
+        .flat_map(|html| {
+            href_regex
+                .captures_iter(html)
+                .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        })
+        .collect();
+
+    // If no URLs found, group is invalid
+    if urls.is_empty() {
+        return false;
+    }
+
+    // Check domain filters
+    if let Some(include) = include_domains {
+        // Whitelist mode: at least one URL must match included domains
+        urls.iter()
+            .any(|url| include.iter().any(|domain| url.contains(domain.as_str())))
+    } else if let Some(exclude) = exclude_domains {
+        // Blacklist mode: at least one URL must NOT match excluded domains
+        urls.iter()
+            .any(|url| !exclude.iter().any(|domain| url.contains(domain.as_str())))
+    } else {
+        // No filtering: group is valid if it has URLs
+        true
+    }
+}
+
 /// Return HTML from siblings with children links (e.g. roundups).
-pub fn children_html(html: &str) -> Vec<String> {
-    let siblings = siblings_html(html);
+///
+/// # Arguments
+/// * `html` - HTML to parse
+/// * `exclude_domains` - Optional domains to exclude (filters groups during detection)
+/// * `include_domains` - Optional domains to include (filters groups during detection)
+pub fn children_html(
+    html: &str,
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
+) -> Vec<String> {
+    let siblings = siblings_html(html, exclude_domains, include_domains);
 
     siblings
         .into_iter()
         .filter(|sibling| {
-            // Check if sibling contains external links
-            // TODO: add external link regex
-            sibling.contains("https://")
+            // Check if sibling contains links (relative or absolute)
+            sibling.contains("href=")
         })
         .collect()
 }
