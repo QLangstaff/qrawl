@@ -152,10 +152,15 @@ pub fn siblings_html(
         include_domains,
     );
 
-    // Return using deterministic hierarchy: article context > quantity > pattern_len
+    // Return using deterministic hierarchy: article context > coverage > quantity > pattern_len
+    // Coverage = pattern_len * quantity (total elements explained by this pattern)
+    // This handles remainders: [job+timestamp]*30 covers 60 elements vs timestamp*31 covers 31
     all_sibling_groups
         .into_iter()
-        .max_by_key(|(in_article, pattern_len, group)| (*in_article, group.len(), *pattern_len))
+        .max_by_key(|(in_article, pattern_len, group)| {
+            let coverage = *pattern_len * group.len();
+            (*in_article, coverage, group.len(), *pattern_len)
+        })
         .map(|(_, _, group)| group)
         .unwrap_or_default()
 }
@@ -224,8 +229,7 @@ fn scan_for_all_sibling_groups<'a>(
             if indices.len() >= 2 && !tags.is_empty() {
                 let siblings: Vec<String> = indices.iter().map(|&i| children[i].html()).collect();
 
-                // Filter by domain before adding to groups (critical: before scoring!)
-                // Only apply filter if domain options are actually set
+                // Step 1: Validate group has ≥1 valid URL
                 let should_include = if exclude_domains.is_some() || include_domains.is_some() {
                     group_has_valid_urls(&siblings, exclude_domains, include_domains)
                 } else {
@@ -233,8 +237,21 @@ fn scan_for_all_sibling_groups<'a>(
                 };
 
                 if should_include {
-                    let in_article = is_in_article(&children[indices[0]]);
-                    all_groups.push((in_article, 1, siblings));
+                    // Step 2: Strip excluded URL siblings (noise removal) - only if filters are non-empty
+                    let has_filters = exclude_domains.map_or(false, |e| !e.is_empty())
+                        || include_domains.map_or(false, |i| !i.is_empty());
+
+                    let filtered_siblings = if has_filters {
+                        filter_siblings_by_domain(&siblings, exclude_domains, include_domains)
+                    } else {
+                        siblings
+                    };
+
+                    // Step 3: Only add if still has ≥2 siblings after filtering
+                    if filtered_siblings.len() >= 2 {
+                        let in_article = is_in_article(&children[indices[0]]);
+                        all_groups.push((in_article, 1, filtered_siblings));
+                    }
                 }
             }
         }
@@ -331,8 +348,7 @@ fn detect_multi_element_patterns(
                         })
                         .collect();
 
-                    // Filter by domain before adding to groups (critical: before scoring!)
-                    // Only apply filter if domain options are actually set
+                    // Step 1: Validate group has ≥1 valid URL
                     let should_include = if exclude_domains.is_some() || include_domains.is_some() {
                         group_has_valid_urls(&siblings, exclude_domains, include_domains)
                     } else {
@@ -340,8 +356,21 @@ fn detect_multi_element_patterns(
                     };
 
                     if should_include {
-                        let in_article = is_in_article(&children[non_overlapping[0]]);
-                        all_groups.push((in_article, pattern_len, siblings));
+                        // Step 2: Strip excluded URL siblings (noise removal) - only if filters are non-empty
+                        let has_filters = exclude_domains.map_or(false, |e| !e.is_empty())
+                            || include_domains.map_or(false, |i| !i.is_empty());
+
+                        let filtered_siblings = if has_filters {
+                            filter_siblings_by_domain(&siblings, exclude_domains, include_domains)
+                        } else {
+                            siblings
+                        };
+
+                        // Step 3: Only add if still has ≥2 siblings after filtering
+                        if filtered_siblings.len() >= 2 {
+                            let in_article = is_in_article(&children[non_overlapping[0]]);
+                            all_groups.push((in_article, pattern_len, filtered_siblings));
+                        }
                     }
                 }
             }
@@ -385,6 +414,50 @@ pub fn group_has_valid_urls(
         // No filtering: group is valid if it has URLs
         true
     }
+}
+
+/// Filter individual siblings to remove excluded domain URLs.
+/// Returns only siblings containing valid URLs according to domain rules.
+///
+/// This removes "noise" siblings (social share buttons, ads) from sibling groups
+/// before scoring, ensuring group richness reflects actual content.
+fn filter_siblings_by_domain(
+    siblings: &[String],
+    exclude_domains: Option<&HashSet<String>>,
+    include_domains: Option<&HashSet<String>>,
+) -> Vec<String> {
+    let href_regex = Regex::new(r#"href=["']([^"']+)["']"#).unwrap();
+
+    siblings
+        .iter()
+        .filter(|sibling| {
+            // Extract URLs from this sibling
+            let urls: Vec<String> = href_regex
+                .captures_iter(sibling)
+                .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+                .collect();
+
+            // No URLs = skip sibling
+            if urls.is_empty() {
+                return false;
+            }
+
+            // Check domain filters (same logic as group_has_valid_urls)
+            if let Some(include) = include_domains {
+                // Whitelist: sibling must have included URL
+                urls.iter()
+                    .any(|url| include.iter().any(|domain| url.contains(domain.as_str())))
+            } else if let Some(exclude) = exclude_domains {
+                // Blacklist: sibling must have non-excluded URL
+                urls.iter()
+                    .any(|url| !exclude.iter().any(|domain| url.contains(domain.as_str())))
+            } else {
+                // No filtering
+                true
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// Return HTML from siblings with children links (e.g. roundups).
