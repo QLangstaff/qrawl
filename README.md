@@ -1,17 +1,29 @@
 # Qrawl
 
-Crawl at scale with domain-specific policies.
+Composable web crawling tools for Rust
 
+| Tool | Purpose |
+|------|---------|
+| [fetch](src/tools/fetch) | Fetch with adaptive strategies |
+| [scrape](src/tools/scrape) | Scrape body, JSON-LD, and metadata |
+| [parse](src/tools/parse) | Parse main content |
+| [extract](src/tools/extract) | Extract structured data |
+| [map](src/tools/map) | Map URL relationships |
+| [classify](src/tools/classify) | Classify page types |
+| [batch](src/tools/batch) | Batch operations concurrently |
 
-## Key Features
-- **Simulate human browsing**
-- **Follow child links**
-- **Extract structured data**
+## Use Cases
+
+- Simulate human browsing
+- Build custom pipelines
+- Extract structured data
 
 ## Get Started
+
 ```bash
 cargo install qrawl
 ```
 
 ## License
+
 MIT
