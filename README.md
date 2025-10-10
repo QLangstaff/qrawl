@@ -4,13 +4,14 @@ Composable web crawling tools for Rust
 
 | Tool | Purpose |
 |------|---------|
-| [fetch](src/tools/fetch) | Fetch with adaptive strategies |
-| [scrape](src/tools/scrape) | Scrape body, JSON-LD, and metadata |
-| [parse](src/tools/parse) | Parse main content |
-| [extract](src/tools/extract) | Extract structured data |
-| [map](src/tools/map) | Map URL relationships |
-| [classify](src/tools/classify) | Classify page types |
 | [batch](src/tools/batch) | Batch operations concurrently |
+| [classify](src/tools/classify) | Classify page types |
+| [clean](src/tools/clean) | Clean text |
+| [extract](src/tools/extract) | Extract structured data |
+| [fetch](src/tools/fetch) | Fetch with adaptive strategies |
+| [map](src/tools/map) | Map URL relationships |
+| [parse](src/tools/parse) | Parse main content |
+| [scrape](src/tools/scrape) | Scrape body, JSON-LD, and metadata |
 
 ## Use Cases
 
@@ -21,7 +22,7 @@ Composable web crawling tools for Rust
 ## Get Started
 
 ```bash
-cargo install qrawl
+cargo add qrawl
 ```
 
 ## License
