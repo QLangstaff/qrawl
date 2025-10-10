@@ -33,7 +33,16 @@ pub fn scrape_jsonld_scripts(html: &str) -> Jsonld {
 fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
         serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
-        serde_json::Value::Object(_) => vec![value],
+        serde_json::Value::Object(mut obj) => {
+            // Handle JSON-LD @graph format: extract items from @graph array
+            if let Some(graph) = obj.remove("@graph") {
+                if let serde_json::Value::Array(arr) = graph {
+                    return arr.into_iter().flat_map(flatten_jsonld).collect();
+                }
+            }
+            // Return the object itself if no @graph or not an array
+            vec![serde_json::Value::Object(obj)]
+        }
         _ => Vec::new(),
     }
 }
