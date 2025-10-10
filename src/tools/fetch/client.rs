@@ -1,4 +1,4 @@
-use super::strategies::FetchStrategy;
+use super::types::FetchStrategy;
 use reqwest::{redirect, Client};
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ pub(crate) fn build_client(strategy: FetchStrategy) -> Result<Client, String> {
         .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS));
 
     // Minimal strategy: even simpler client
+    // Extreme uses same client as Stealth (difference is in orchestration)
     let builder = match strategy {
         FetchStrategy::Minimal => {
             builder
@@ -41,8 +42,9 @@ mod tests {
             FetchStrategy::Browser,
             FetchStrategy::Mobile,
             FetchStrategy::Stealth,
+            FetchStrategy::Extreme,
         ] {
-            let result = build_client(strategy, None);
+            let result = build_client(strategy);
             assert!(result.is_ok(), "Failed for {:?}", strategy);
         }
     }

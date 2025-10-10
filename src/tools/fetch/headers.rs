@@ -1,4 +1,4 @@
-use super::strategies::FetchStrategy;
+use super::types::FetchStrategy;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
 /// Build complete header map for the given strategy, including User-Agent.
@@ -31,16 +31,18 @@ fn user_agent_for_strategy(strategy: FetchStrategy) -> &'static str {
             // Minimal UA - simple but identifies as browser
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
         }
-        FetchStrategy::Browser => {
+        FetchStrategy::Browser | FetchStrategy::Adaptive => {
             // Standard desktop browser - Chrome on macOS
+            // Adaptive uses Browser headers as default
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         }
         FetchStrategy::Mobile => {
             // Mobile browser - Android Chrome
             "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.127 Mobile Safari/537.36"
         }
-        FetchStrategy::Stealth => {
+        FetchStrategy::Stealth | FetchStrategy::Extreme => {
             // Same as Mobile but with more aggressive headers
+            // Extreme uses Stealth headers (difference is in orchestration, not headers)
             "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.127 Mobile Safari/537.36"
         }
     }
@@ -53,8 +55,9 @@ fn header_pairs_for_strategy(strategy: FetchStrategy) -> Vec<(&'static str, &'st
             // Bare minimum - just like curl
             vec![("Accept", "*/*"), ("Accept-Encoding", "gzip, deflate")]
         }
-        FetchStrategy::Browser => {
+        FetchStrategy::Browser | FetchStrategy::Adaptive => {
             // Standard desktop browser headers - Chrome on macOS
+            // Adaptive uses Browser headers as default
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
@@ -86,8 +89,9 @@ fn header_pairs_for_strategy(strategy: FetchStrategy) -> Vec<(&'static str, &'st
                 ("Sec-Ch-Ua-Platform", "\"Android\""),
             ]
         }
-        FetchStrategy::Stealth => {
+        FetchStrategy::Stealth | FetchStrategy::Extreme => {
             // Aggressive anti-bot evasion - full sec-ch-ua suite
+            // Extreme uses same headers as Stealth (difference is in orchestration)
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
