@@ -1,11 +1,15 @@
 #![doc = include_str!("../README.md")]
 
-pub mod api;
+#[macro_use]
+pub mod macros;
+
 pub mod cli;
-pub mod engine;
-pub mod services;
+pub mod templates;
+pub mod tools;
 pub mod types;
 
-pub use engine::*;
-pub use services::*;
-pub use types::*;
+#[cfg(test)]
+mod tests;
+
+// Re-export commonly used items
+pub use types::{Context, Options};

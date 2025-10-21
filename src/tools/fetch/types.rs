@@ -2,11 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub use super::profile::FetchProfile;
 
-/// Batteries included presets for fetching HTML.
-///
-/// Most callers only need to choose between raw speed and reliability. The
-/// presets hide profile juggling while [`FetchResult::profile_used`] still tells
-/// you what eventually worked.
+/// Fetch Strategy
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FetchStrategy {
     /// Fastest option: one attempt using the Minimal profile.
@@ -34,28 +30,12 @@ impl Default for FetchStrategy {
     }
 }
 
-/// Result of a fetch operation including telemetry metadata.
+/// Fetch Result
 ///
 /// Contains the fetched HTML and metadata about the fetch operation:
 /// - Which profile succeeded
 /// - How long the operation took
 /// - How many attempts before success
-///
-/// # Examples
-/// ```no_run
-/// use qrawl::tools::fetch::{fetch, FetchResult};
-///
-/// # async fn example() -> Result<(), String> {
-/// let result = fetch("https://example.com").await?;
-/// println!("Fetched {} bytes with {:?} in {}ms ({} attempts)",
-///     result.html.len(),
-///     result.profile_used,
-///     result.duration_ms,
-///     result.attempts
-/// );
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchResult {
     /// The fetched HTML content

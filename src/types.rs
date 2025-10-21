@@ -66,9 +66,7 @@ pub fn get_options() -> Options {
 }
 
 pub fn get_concurrency() -> usize {
-    CTX.try_with(|ctx| ctx.concurrency)
-        .ok()
-        .unwrap_or(200)
+    CTX.try_with(|ctx| ctx.concurrency).ok().unwrap_or(200)
 }
 
 /// Options to customize tool behavior

@@ -1,5 +1,5 @@
-use crate::types::Context;
 use crate::tools::fetch::fetch_auto;
+use crate::types::Context;
 
 /// Qrawl children from URLs.
 pub async fn qrawl_children(

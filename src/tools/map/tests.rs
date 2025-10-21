@@ -399,8 +399,7 @@ mod tests {
             </body></html>
         "#;
 
-        let ctx =
-            Arc::new(Context::new().with_allow_domains(&["stripe.com", "openai.com"]));
+        let ctx = Arc::new(Context::new().with_allow_domains(&["stripe.com", "openai.com"]));
         let urls = CTX
             .scope(ctx, async move {
                 map_children(html, "https://example.com").await
