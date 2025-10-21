@@ -1,5 +1,7 @@
-use crate::types::Options;
-use once_cell::sync::Lazy;
+use crate::{
+    selectors::{JSONLD_SELECTOR, LINK_SELECTOR},
+    types::Options,
+};
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use url::Url;
@@ -19,9 +21,6 @@ const MIN_PATTERN_LEN: usize = 2;
 /// Maximum pattern length as a ratio of total children (e.g., 2 = half).
 const MAX_PATTERN_RATIO: usize = 2;
 
-/// Whether to allow HTTP URLs (false = HTTPS only, true = HTTP and HTTPS).
-const ALLOW_HTTP: bool = true;
-
 /// HTML tag name for main content elements.
 const MAIN_TAG: &str = "main";
 
@@ -30,13 +29,6 @@ const JUNK_TAGS: &[&str] = &["script", "style", "iframe", "noscript"];
 
 /// HTML tags that indicate navigation/non-main-content (should be deprioritized).
 const NAV_TAGS: &[&str] = &["nav", "footer", "aside", "header"];
-
-// Lazy static selectors - compiled once for the entire program
-static LINK_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("a[href]").expect("valid selector"));
-
-static JSONLD_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("script[type='application/ld+json']").expect("valid selector"));
 
 /// Structure pattern for sibling detection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -76,7 +68,7 @@ impl SiblingGroup {
 ///
 /// Detects sibling patterns in HTML structure and extracts the first URL from each sibling.
 /// Domain filtering happens during detection to affect group selection.
-pub(crate) fn map_siblings(html: &str, base_url: &str, options: &Options) -> Vec<String> {
+pub(super) fn map_siblings(html: &str, base_url: &str, options: &Options) -> Vec<String> {
     let siblings = map_body_siblings(html, options);
     map_sibling_link(&siblings, base_url, options)
 }
@@ -84,7 +76,7 @@ pub(crate) fn map_siblings(html: &str, base_url: &str, options: &Options) -> Vec
 /// Map child URLs from JSON-LD ItemList.
 ///
 /// Extracts ItemList from JSON-LD and resolves URLs (including anchor references).
-pub(crate) fn map_itemlist(html: &str, base_url: &str, options: &Options) -> Vec<String> {
+pub(super) fn map_itemlist(html: &str, base_url: &str, options: &Options) -> Vec<String> {
     let doc = Html::parse_document(html);
     let itemlist = map_jsonld_itemlist_from_doc(&doc);
     map_itemlist_link(&itemlist, &doc, base_url, options)
@@ -115,50 +107,13 @@ pub(crate) fn map_itemlist(html: &str, base_url: &str, options: &Options) -> Vec
 /// Domain filtering happens during detection to affect group selection.
 /// Groups with only blocked domains are excluded before scoring.
 ///
-pub fn map_body_siblings(html: &str, options: &Options) -> Vec<String> {
+pub(super) fn map_body_siblings(html: &str, options: &Options) -> Vec<String> {
     let doc = Html::parse_document(html);
     let root = doc.root_element();
 
     // Scan entire tree and find ALL sibling groups at ALL levels
     let mut all_sibling_groups: Vec<SiblingGroup> = Vec::new();
     map_sibling_groups_recursive(&root, &mut all_sibling_groups, options);
-
-    if std::env::var("QRAWL_DEBUG_SIBLINGS").is_ok() {
-        eprintln!(
-            "\n=== Found {} sibling groups ===",
-            all_sibling_groups.len()
-        );
-
-        // Extract URLs from each group for comparison
-        let base_for_debug = Url::parse("https://www.bbcgoodfood.com").ok();
-
-        for (i, group) in all_sibling_groups.iter().enumerate() {
-            if group.quantity() >= 3 {
-                // Show all groups with 3+ siblings
-                eprintln!(
-                    "\nGroup {}: in_main={}, in_nav={}, coverage={}, qty={}, pattern_len={}",
-                    i + 1,
-                    group.in_main,
-                    group.in_navigation,
-                    group.coverage(),
-                    group.quantity(),
-                    group.pattern_len
-                );
-
-                // Show URLs from this group
-                if let Some(base) = &base_for_debug {
-                    let urls = map_sibling_link(&group.siblings, base.as_str(), options);
-                    eprintln!("  URLs in group:");
-                    for (j, url) in urls.iter().take(5).enumerate() {
-                        eprintln!("    {}. {}", j + 1, url);
-                    }
-                    if urls.len() > 5 {
-                        eprintln!("    ... and {} more", urls.len() - 5);
-                    }
-                }
-            }
-        }
-    }
 
     // Select best group using scoring hierarchy
     let selected = all_sibling_groups.into_iter().max_by_key(|group| {
@@ -170,15 +125,6 @@ pub fn map_body_siblings(html: &str, options: &Options) -> Vec<String> {
             group.pattern_len,    // Prefer longer patterns
         )
     });
-
-    if std::env::var("QRAWL_DEBUG_SIBLINGS").is_ok() {
-        if let Some(ref group) = selected {
-            eprintln!(
-                "\n=== Selected group with {} siblings ===",
-                group.siblings.len()
-            );
-        }
-    }
 
     selected.map(|group| group.siblings).unwrap_or_default()
 }
@@ -197,7 +143,7 @@ fn clean_href(href: &str) -> String {
 
 /// Check if URL scheme is acceptable (http/https based on ALLOW_HTTP constant).
 fn is_valid_scheme(url: &Url) -> bool {
-    url.scheme() == "https" || (ALLOW_HTTP && url.scheme() == "http")
+    url.scheme() == "https"
 }
 
 /// Check if element is inside a specific HTML tag.
@@ -282,16 +228,13 @@ fn map_sibling_groups_recursive<'a>(
             if indices.len() >= MIN_SIBLING_GROUP_SIZE && !tags.is_empty() {
                 let siblings: Vec<String> = indices.iter().map(|&i| children[i].html()).collect();
 
-                // Filter by domains
-                let filtered_siblings = filter_siblings_by_domains(&siblings, options);
-
-                if filtered_siblings.len() >= MIN_SIBLING_GROUP_SIZE {
+                if siblings.len() >= MIN_SIBLING_GROUP_SIZE {
                     let first_child = &children[indices[0]];
                     all_groups.push(SiblingGroup {
                         in_main: is_inside_tag(first_child, MAIN_TAG),
                         in_navigation: NAV_TAGS.iter().any(|tag| is_inside_tag(first_child, tag)),
                         pattern_len: SINGLE_ELEMENT_PATTERN_LEN,
-                        siblings: filtered_siblings,
+                        siblings,
                     });
                 }
             }
@@ -316,7 +259,7 @@ fn map_sibling_groups_recursive<'a>(
 fn map_multi_element_patterns(
     children: &[ElementRef],
     all_groups: &mut Vec<SiblingGroup>,
-    options: &Options,
+    _options: &Options,
 ) {
     use std::collections::HashMap;
 
@@ -378,10 +321,7 @@ fn map_multi_element_patterns(
                         })
                         .collect();
 
-                    // Filter by domains
-                    let filtered_siblings = filter_siblings_by_domains(&siblings, options);
-
-                    if filtered_siblings.len() >= MIN_SIBLING_GROUP_SIZE {
+                    if siblings.len() >= MIN_SIBLING_GROUP_SIZE {
                         let first_child = &children[non_overlapping[0]];
                         all_groups.push(SiblingGroup {
                             in_main: is_inside_tag(first_child, MAIN_TAG),
@@ -389,7 +329,7 @@ fn map_multi_element_patterns(
                                 .iter()
                                 .any(|tag| is_inside_tag(first_child, tag)),
                             pattern_len,
-                            siblings: filtered_siblings,
+                            siblings,
                         });
                     }
                 }
@@ -408,7 +348,11 @@ fn map_multi_element_patterns(
 /// - Fragments are small (individual sibling elements, not full pages)
 /// - Parsing overhead is minimal compared to network I/O
 /// - Alternative (keeping ElementRefs) would require major API refactor
-pub fn map_sibling_link(siblings: &[String], base_url: &str, options: &Options) -> Vec<String> {
+pub(super) fn map_sibling_link(
+    siblings: &[String],
+    base_url: &str,
+    _options: &Options,
+) -> Vec<String> {
     let base = match Url::parse(base_url) {
         Ok(u) => u,
         Err(e) => {
@@ -427,10 +371,6 @@ pub fn map_sibling_link(siblings: &[String], base_url: &str, options: &Options) 
                 let href_raw = link.value().attr("href")?;
                 let href = clean_href(href_raw);
 
-                if std::env::var("QRAWL_DEBUG_HREF").is_ok() {
-                    eprintln!("Raw href: {:?} -> Cleaned: {:?}", href_raw, href);
-                }
-
                 // Handle protocol-relative URLs
                 let url = if href.starts_with("//") {
                     let full_href = format!("{}:{}", base.scheme(), href);
@@ -441,13 +381,8 @@ pub fn map_sibling_link(siblings: &[String], base_url: &str, options: &Options) 
 
                 // Only accept HTTP and HTTPS schemes
                 let scheme = url.scheme();
-                if scheme == "http" || scheme == "https" {
-                    let url_str = url.to_string();
-
-                    // Check domain filters
-                    if is_valid_url(&url_str, options) {
-                        return Some(url_str);
-                    }
+                if scheme == "https" {
+                    return Some(url.to_string());
                 }
             }
 
@@ -457,20 +392,46 @@ pub fn map_sibling_link(siblings: &[String], base_url: &str, options: &Options) 
 }
 
 /// Map JSON-LD script tags to ItemList objects from parsed HTML document.
-pub(crate) fn map_jsonld_itemlist_from_doc(doc: &Html) -> Vec<Value> {
-    doc.select(&JSONLD_SELECTOR)
-        .filter_map(|script| {
-            let json_str = script.inner_html();
-            let value: Value = serde_json::from_str(&json_str).ok()?;
+pub(super) fn map_jsonld_itemlist_from_doc(doc: &Html) -> Vec<Value> {
+    let mut itemlists = Vec::new();
 
-            // Check if this is an ItemList
-            if value.get("@type")?.as_str()? == "ItemList" {
-                Some(value)
-            } else {
-                None
+    for script in doc.select(&JSONLD_SELECTOR) {
+        let json_str = script.inner_html();
+        if let Ok(value) = serde_json::from_str::<Value>(&json_str) {
+            collect_itemlists(&value, &mut itemlists);
+        }
+    }
+
+    itemlists
+}
+
+fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Array(arr) => {
+            for item in arr {
+                collect_itemlists(item, out);
             }
-        })
-        .collect()
+        }
+        Value::Object(obj) => {
+            if obj
+                .get("@type")
+                .and_then(Value::as_str)
+                .map(|t| t.eq_ignore_ascii_case("ItemList"))
+                .unwrap_or(false)
+            {
+                out.push(Value::Object(obj.clone()));
+            }
+
+            if let Some(graph) = obj.get("@graph") {
+                collect_itemlists(graph, out);
+            }
+
+            if let Some(main_entity) = obj.get("mainEntity") {
+                collect_itemlists(main_entity, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Map ItemList items to URLs, resolving anchors to real links and filtering by domain.
@@ -479,11 +440,11 @@ pub(crate) fn map_jsonld_itemlist_from_doc(doc: &Html) -> Vec<Value> {
 /// 1. Full external URLs - Return as-is
 /// 2. Anchor references (#id) - Find element and extract link
 /// 3. Relative URLs - Resolve to absolute
-pub fn map_itemlist_link(
+pub(super) fn map_itemlist_link(
     itemlist: &[Value],
     doc: &Html,
     base_url: &str,
-    options: &Options,
+    _options: &Options,
 ) -> Vec<String> {
     let base = match Url::parse(base_url) {
         Ok(u) => u,
@@ -507,21 +468,24 @@ pub fn map_itemlist_link(
                         // Case 1: Anchor reference (#id)
                         if let Some(anchor_id) = url_str.strip_prefix('#') {
                             let resolved = map_anchor_to_link(anchor_id, doc, &base);
-                            if let Some(ref url) = resolved {
-                                if is_valid_url(url, options) {
-                                    return resolved;
-                                }
-                            }
-                            return None;
+                            return resolved;
                         }
 
                         // Case 2: Absolute URL
                         if let Ok(url) = Url::parse(url_str) {
                             if is_valid_scheme(&url) {
-                                let url_str = url.to_string();
-                                if is_valid_url(&url_str, options) {
-                                    return Some(url_str);
+                                if let Some(fragment) = url.fragment() {
+                                    if url.scheme() == base.scheme()
+                                        && url.host_str() == base.host_str()
+                                    {
+                                        if let Some(resolved) =
+                                            map_anchor_to_link(fragment, doc, &base)
+                                        {
+                                            return Some(resolved);
+                                        }
+                                    }
                                 }
+                                return Some(url.to_string());
                             }
                         }
 
@@ -530,7 +494,6 @@ pub fn map_itemlist_link(
                             .ok()
                             .filter(is_valid_scheme)
                             .map(|u| u.to_string())
-                            .filter(|url_str| is_valid_url(url_str, options))
                     })
                     .collect::<Vec<String>>(),
             )
@@ -567,41 +530,5 @@ fn map_anchor_to_link(anchor_id: &str, doc: &Html, base: &Url) -> Option<String>
         Some(url.to_string())
     } else {
         None
-    }
-}
-
-/// Filter individual siblings by domain - keeps only siblings whose URLs all pass the filter.
-pub fn filter_siblings_by_domains(siblings: &[String], options: &Options) -> Vec<String> {
-    siblings
-        .iter()
-        .filter(|sibling| {
-            // Parse sibling fragment and extract all URLs using LINK_SELECTOR
-            let doc = Html::parse_fragment(sibling);
-            let urls: Vec<String> = doc
-                .select(&LINK_SELECTOR)
-                .filter_map(|link| link.value().attr("href"))
-                .map(|href| href.to_string())
-                .collect();
-
-            // Keep sibling if it has no URLs (valid) OR if all URLs pass the filter
-            urls.is_empty() || urls.iter().all(|url| is_valid_url(url, options))
-        })
-        .cloned()
-        .collect()
-}
-
-/// Check if a single URL is valid based on domain filters.
-fn is_valid_url(url: &str, options: &Options) -> bool {
-    // If no domain filters are set, accept everything
-    if options.allow_domains.is_none() && options.block_domains.is_none() {
-        return true;
-    }
-
-    if let Some(ref allow) = options.allow_domains {
-        allow.iter().any(|domain| url.contains(domain.as_str()))
-    } else if let Some(ref block) = options.block_domains {
-        !block.iter().any(|domain| url.contains(domain.as_str()))
-    } else {
-        true
     }
 }

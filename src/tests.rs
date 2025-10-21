@@ -1,8 +1,6 @@
 //! Tests
 
-use crate::tools::clean::{clean_html, clean_urls};
 use crate::tools::fetch::fetch_auto;
-use crate::tools::map::map_children;
 use crate::types::Context;
 
 #[cfg(test)]

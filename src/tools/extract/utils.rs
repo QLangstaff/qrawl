@@ -1,10 +1,8 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use scraper::{Html, Selector};
+use scraper::Html;
 
-// Lazy static selectors - compiled once for the entire program
-static LINK_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("a[href]").expect("valid selector"));
+use crate::selectors::LINK_SELECTOR;
 
 // Lazy static regex patterns
 static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {

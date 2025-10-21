@@ -3,6 +3,8 @@
 mod tests;
 mod utils;
 
+use crate::selectors::LINK_SELECTOR;
+
 /// Map URLs from HTML.
 pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
     let html = html.to_string();
@@ -14,12 +16,8 @@ pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
         };
 
         let doc = scraper::Html::parse_document(&html);
-        let link_selector = match scraper::Selector::parse("a[href]") {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
 
-        doc.select(&link_selector)
+        doc.select(&LINK_SELECTOR)
             .filter_map(|link| {
                 let href = link
                     .value()
@@ -40,7 +38,7 @@ pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
                 };
 
                 // Only accept HTTP and HTTPS schemes
-                if url.scheme() == "http" || url.scheme() == "https" {
+                if url.scheme() == "https" {
                     Some(url.to_string())
                 } else {
                     None

@@ -166,16 +166,15 @@ pub(super) fn canonicalize_url(url: &str) -> String {
     // Prepend https:// if protocol is missing (case-insensitive check)
     // Only prepend if it looks like a domain (contains a dot)
     let url_lower = url.to_lowercase();
-    let url_with_protocol =
-        if !url_lower.starts_with("http://") && !url_lower.starts_with("https://") {
-            if url.contains('.') {
-                format!("https://{}", url)
-            } else {
-                url.to_string()
-            }
+    let url_with_protocol = if !url_lower.starts_with("https://") {
+        if url.contains('.') {
+            format!("https://{}", url)
         } else {
             url.to_string()
-        };
+        }
+    } else {
+        url.to_string()
+    };
 
     let mut parsed = match Url::parse(&url_with_protocol) {
         Ok(u) => u,
