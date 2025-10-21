@@ -47,13 +47,10 @@ pub(crate) fn is_unauthorized(body: &str) -> Option<&'static str> {
         "unauthorized",
     ];
 
-    for &pattern in &patterns {
-        if body_lower.contains(pattern) {
-            return Some(pattern);
-        }
-    }
-
-    None
+    patterns
+        .iter()
+        .copied()
+        .find(|pattern| body_lower.contains(pattern))
 }
 
 /// Check if response contains bot challenge patterns.
@@ -77,13 +74,10 @@ pub(crate) fn is_suspicious(body: &str) -> Option<&'static str> {
         "perimeterx",
     ];
 
-    for &pattern in &patterns {
-        if body_lower.contains(pattern) {
-            return Some(pattern);
-        }
-    }
-
-    None
+    patterns
+        .iter()
+        .copied()
+        .find(|pattern| body_lower.contains(pattern))
 }
 
 /// Validate HTTP response for scrapable content.
@@ -92,8 +86,12 @@ pub(crate) fn is_suspicious(body: &str) -> Option<&'static str> {
 /// Checks for:
 /// - Non-success status codes
 /// - Invalid HTML content
-/// - Access denied patterns
-/// - Bot challenge patterns
+/// - Access denied patterns (skipped if JSON-LD present)
+/// - Bot challenge patterns (skipped if JSON-LD present)
+///
+/// Pages with JSON-LD structured data are considered valid even if they
+/// contain "forbidden" or "unauthorized" text, since recipe sites often
+/// have such text in unrelated page elements.
 pub(crate) fn validate_response(
     status_code: reqwest::StatusCode,
     body: &str,
@@ -120,6 +118,15 @@ pub(crate) fn validate_response(
         return Err(format!("status {} (unknown error)", status_code.as_u16()));
     }
 
+    // If page has JSON-LD structured data, accept it
+    if body.contains("application/ld+json") {
+        if let Some(reason) = is_invalid(body) {
+            return Err(format!("invalid - {}", reason));
+        }
+        return Ok(());
+    }
+
+    // Strict validation for pages without JSON-LD
     if let Some(reason) = is_invalid(body) {
         return Err(format!("invalid - {}", reason));
     }

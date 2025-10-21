@@ -1,30 +1,45 @@
 use serde::{Deserialize, Serialize};
 
-/// Strategy for fetching content with different levels of bot evasion.
+pub use super::profile::FetchProfile;
+
+/// Batteries included presets for fetching HTML.
 ///
-/// Use different strategies to balance speed vs reliability:
-/// - `Minimal`: Fastest, single attempt with minimal headers (~100ms per URL)
-/// - `Browser`: Medium speed, browser headers with retry (~500ms per URL)
-/// - `Mobile`: Medium speed, mobile headers with retry (~500ms per URL)
-/// - `Stealth`: Slowest, full bot evasion with retry (~1-2s per URL)
-/// - `Extreme`: Maximum evasion with session building (~2-5s per URL)
-/// - `Adaptive`: Tries all strategies until one succeeds (~1-6s per URL)
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+/// Most callers only need to choose between raw speed and reliability. The
+/// presets hide profile juggling while [`FetchResult::profile_used`] still tells
+/// you what eventually worked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FetchStrategy {
-    Minimal,
-    Browser,
-    Mobile,
-    Stealth,
-    Extreme,
+    /// Fastest option: one attempt using the Minimal profile.
+    Fast,
+
+    /// Reliable option: Minimal → Windows → IOS with brief delays in between.
     Adaptive,
+}
+
+impl FetchStrategy {
+    /// Convenience constructor for [`FetchStrategy::Fast`].
+    pub fn fast() -> Self {
+        Self::Fast
+    }
+
+    /// Convenience constructor for [`FetchStrategy::Adaptive`].
+    pub fn adaptive() -> Self {
+        Self::Adaptive
+    }
+}
+
+impl Default for FetchStrategy {
+    fn default() -> Self {
+        Self::Adaptive
+    }
 }
 
 /// Result of a fetch operation including telemetry metadata.
 ///
 /// Contains the fetched HTML and metadata about the fetch operation:
-/// - Which strategy succeeded
+/// - Which profile succeeded
 /// - How long the operation took
-/// - How many strategies were attempted before success
+/// - How many attempts before success
 ///
 /// # Examples
 /// ```no_run
@@ -32,13 +47,12 @@ pub enum FetchStrategy {
 ///
 /// # async fn example() -> Result<(), String> {
 /// let result = fetch("https://example.com").await?;
-/// println!("Fetched {} bytes with {:?} in {}ms (tried {} strategies)",
+/// println!("Fetched {} bytes with {:?} in {}ms ({} attempts)",
 ///     result.html.len(),
-///     result.strategy_used,
+///     result.profile_used,
 ///     result.duration_ms,
 ///     result.attempts
 /// );
-/// let html = result.html;
 /// # Ok(())
 /// # }
 /// ```
@@ -46,11 +60,11 @@ pub enum FetchStrategy {
 pub struct FetchResult {
     /// The fetched HTML content
     pub html: String,
-    /// The strategy that succeeded
-    pub strategy_used: FetchStrategy,
+    /// The profile that succeeded
+    pub profile_used: FetchProfile,
     /// Total duration in milliseconds
     pub duration_ms: u64,
-    /// Number of strategies attempted before success
+    /// Number of attempts before success
     pub attempts: usize,
 }
 

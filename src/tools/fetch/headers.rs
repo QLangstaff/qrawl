@@ -1,12 +1,12 @@
-use super::types::FetchStrategy;
+use super::profile::FetchProfile;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
-/// Build complete header map for the given strategy, including User-Agent.
-pub(crate) fn headers_for_strategy(strategy: FetchStrategy) -> HeaderMap {
+/// Build complete header map for the given profile, including User-Agent.
+pub(crate) fn headers_for_profile(profile: FetchProfile) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
-    // Add strategy-specific headers
-    for (k, v) in header_pairs_for_strategy(strategy) {
+    // Add profile-specific headers
+    for (k, v) in header_pairs_for_profile(profile) {
         let name = HeaderName::from_lowercase(k.to_ascii_lowercase().as_bytes())
             .unwrap_or_else(|_| HeaderName::from_static("accept"));
         if let Ok(val) = HeaderValue::from_str(v) {
@@ -15,7 +15,7 @@ pub(crate) fn headers_for_strategy(strategy: FetchStrategy) -> HeaderMap {
     }
 
     // Add User-Agent
-    let ua = user_agent_for_strategy(strategy);
+    let ua = user_agent_for_profile(profile);
     headers.insert(
         USER_AGENT,
         HeaderValue::from_str(ua).unwrap_or(HeaderValue::from_static("Mozilla/5.0")),
@@ -24,40 +24,41 @@ pub(crate) fn headers_for_strategy(strategy: FetchStrategy) -> HeaderMap {
     headers
 }
 
-/// Get User-Agent string for the given strategy (private, only used internally).
-fn user_agent_for_strategy(strategy: FetchStrategy) -> &'static str {
-    match strategy {
-        FetchStrategy::Minimal => {
+/// Get User-Agent string for the given profile (private, only used internally).
+fn user_agent_for_profile(profile: FetchProfile) -> &'static str {
+    match profile {
+        FetchProfile::Minimal => {
             // Minimal UA - simple but identifies as browser
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
         }
-        FetchStrategy::Browser | FetchStrategy::Adaptive => {
-            // Standard desktop browser - Chrome on macOS
-            // Adaptive uses Browser headers as default
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        FetchProfile::Windows => {
+            // Chrome on Windows 10 (most popular desktop)
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         }
-        FetchStrategy::Mobile => {
-            // Mobile browser - Android Chrome
-            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.127 Mobile Safari/537.36"
+        FetchProfile::MacOS => {
+            // Safari on macOS Sonoma (native browser)
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
         }
-        FetchStrategy::Stealth | FetchStrategy::Extreme => {
-            // Same as Mobile but with more aggressive headers
-            // Extreme uses Stealth headers (difference is in orchestration, not headers)
-            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.127 Mobile Safari/537.36"
+        FetchProfile::IOS => {
+            // Safari on iPhone (most popular mobile browser)
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        }
+        FetchProfile::Android => {
+            // Chrome on Android 14
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36"
         }
     }
 }
 
-/// Get header pairs for the given strategy (without User-Agent).
-fn header_pairs_for_strategy(strategy: FetchStrategy) -> Vec<(&'static str, &'static str)> {
-    match strategy {
-        FetchStrategy::Minimal => {
-            // Bare minimum - just like curl
-            vec![("Accept", "*/*"), ("Accept-Encoding", "gzip, deflate")]
+/// Get header pairs for the given profile (without User-Agent).
+fn header_pairs_for_profile(profile: FetchProfile) -> Vec<(&'static str, &'static str)> {
+    match profile {
+        FetchProfile::Minimal => {
+            // Truly minimal - no headers at all (just User-Agent)
+            vec![]
         }
-        FetchStrategy::Browser | FetchStrategy::Adaptive => {
-            // Standard desktop browser headers - Chrome on macOS
-            // Adaptive uses Browser headers as default
+        FetchProfile::Windows => {
+            // Chrome on Windows - full desktop headers
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
@@ -69,11 +70,35 @@ fn header_pairs_for_strategy(strategy: FetchStrategy) -> Vec<(&'static str, &'st
                 ("Sec-Fetch-Site", "none"),
                 ("Sec-Ch-Ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
                 ("Sec-Ch-Ua-Mobile", "?0"),
-                ("Sec-Ch-Ua-Platform", "\"macOS\""),
+                ("Sec-Ch-Ua-Platform", "\"Windows\""),
             ]
         }
-        FetchStrategy::Mobile => {
-            // Mobile browser headers - Android Chrome
+        FetchProfile::MacOS => {
+            // Safari on macOS - native browser headers
+            vec![
+                (
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                ),
+                ("Accept-Language", "en-US,en;q=0.9"),
+                ("Accept-Encoding", "gzip, deflate, br"),
+                ("Connection", "keep-alive"),
+            ]
+        }
+        FetchProfile::IOS => {
+            // Safari on iPhone - mobile Safari headers
+            vec![
+                (
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                ),
+                ("Accept-Language", "en-US,en;q=0.9"),
+                ("Accept-Encoding", "gzip, deflate, br"),
+                ("Connection", "keep-alive"),
+            ]
+        }
+        FetchProfile::Android => {
+            // Chrome on Android - mobile Chrome headers
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
@@ -84,39 +109,9 @@ fn header_pairs_for_strategy(strategy: FetchStrategy) -> Vec<(&'static str, &'st
                 ("Sec-Fetch-Mode", "navigate"),
                 ("Sec-Fetch-Site", "none"),
                 ("Sec-Fetch-User", "?1"),
-                ("Sec-Ch-Ua", "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\""),
+                ("Sec-Ch-Ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
                 ("Sec-Ch-Ua-Mobile", "?1"),
                 ("Sec-Ch-Ua-Platform", "\"Android\""),
-            ]
-        }
-        FetchStrategy::Stealth | FetchStrategy::Extreme => {
-            // Aggressive anti-bot evasion - full sec-ch-ua suite
-            // Extreme uses same headers as Stealth (difference is in orchestration)
-            vec![
-                ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
-                ("Accept-Language", "en-US,en;q=0.9"),
-                ("Accept-Encoding", "gzip, deflate, br, zstd"),
-                ("Cache-Control", "no-cache, no-store, must-revalidate"),
-                ("Pragma", "no-cache"),
-                ("Connection", "keep-alive"),
-                ("Upgrade-Insecure-Requests", "1"),
-                ("Sec-Fetch-Dest", "document"),
-                ("Sec-Fetch-Mode", "navigate"),
-                ("Sec-Fetch-Site", "none"),
-                ("Sec-Fetch-User", "?1"),
-                ("Sec-Ch-Ua", "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\""),
-                ("Sec-Ch-Ua-Mobile", "?1"),
-                ("Sec-Ch-Ua-Platform", "\"Android\""),
-                ("Sec-Ch-Ua-Platform-Version", "\"6.0\""),
-                ("Sec-Ch-Ua-Full-Version", "\"139.0.7258.127\""),
-                ("Sec-Ch-Ua-Full-Version-List", "\"Not;A=Brand\";v=\"99.0.0.0\", \"Google Chrome\";v=\"139.0.7258.127\", \"Chromium\";v=\"139.0.7258.127\""),
-                ("Sec-Ch-Ua-Model", "\"Nexus 5\""),
-                ("Sec-Ch-Ua-Arch", "\"\""),
-                ("Sec-Ch-Ua-Bitness", "\"64\""),
-                ("Sec-Ch-Ua-Form-Factors", "\"Desktop\""),
-                ("Sec-Ch-Ua-Wow64", "?0"),
-                ("Sec-Ch-Prefers-Color-Scheme", "dark"),
-                ("Dnt", "1"),
             ]
         }
     }
@@ -127,19 +122,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn minimal_has_basic_headers() {
-        let headers = headers_for_strategy(FetchStrategy::Minimal);
-        assert!(headers.contains_key("accept"));
+    fn minimal_has_only_user_agent() {
+        let headers = headers_for_profile(FetchProfile::Minimal);
         assert!(headers.contains_key("user-agent"));
-        // Should have minimal headers
-        assert!(headers.len() <= 3);
+        // Minimal has ONLY User-Agent (no other headers)
+        assert_eq!(headers.len(), 1);
     }
 
     #[test]
-    fn browser_has_sec_ch_headers() {
-        let headers = headers_for_strategy(FetchStrategy::Browser);
+    fn windows_has_chrome_headers() {
+        let headers = headers_for_profile(FetchProfile::Windows);
         assert!(headers.contains_key("sec-ch-ua"));
         assert!(headers.contains_key("sec-ch-ua-platform"));
+        assert_eq!(
+            headers
+                .get("sec-ch-ua-platform")
+                .and_then(|v| v.to_str().ok()),
+            Some("\"Windows\"")
+        );
         assert_eq!(
             headers
                 .get("sec-ch-ua-mobile")
@@ -149,12 +149,28 @@ mod tests {
     }
 
     #[test]
-    fn stealth_has_full_suite() {
-        let headers = headers_for_strategy(FetchStrategy::Stealth);
-        // Should have many sec-ch-ua headers
-        assert!(headers.contains_key("sec-ch-ua-full-version"));
-        assert!(headers.contains_key("sec-ch-ua-model"));
-        assert!(headers.contains_key("sec-ch-ua-bitness"));
-        assert!(headers.contains_key("cache-control"));
+    fn ios_has_safari_headers() {
+        let headers = headers_for_profile(FetchProfile::IOS);
+        assert!(headers.contains_key("accept"));
+        // Safari doesn't have sec-ch-ua headers
+        assert!(!headers.contains_key("sec-ch-ua"));
+    }
+
+    #[test]
+    fn android_has_mobile_chrome_headers() {
+        let headers = headers_for_profile(FetchProfile::Android);
+        assert!(headers.contains_key("sec-ch-ua-mobile"));
+        assert_eq!(
+            headers
+                .get("sec-ch-ua-mobile")
+                .and_then(|v| v.to_str().ok()),
+            Some("?1")
+        );
+        assert_eq!(
+            headers
+                .get("sec-ch-ua-platform")
+                .and_then(|v| v.to_str().ok()),
+            Some("\"Android\"")
+        );
     }
 }

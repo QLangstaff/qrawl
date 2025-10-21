@@ -1,28 +1,29 @@
-use super::types::FetchStrategy;
+use super::profile::FetchProfile;
 use reqwest::{redirect, Client};
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const REDIRECT_LIMIT: usize = 10;
+const POOL_IDLE_TIMEOUT_SEC: u64 = 90;
+const POOL_MAX_IDLE_PER_HOST: usize = 200; // Support high concurrency
 
-/// Build a reqwest client optimized for the given strategy.
-pub(crate) fn build_client(strategy: FetchStrategy) -> Result<Client, String> {
+/// Build a reqwest client optimized for the given profile.
+pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, String> {
     let builder = Client::builder()
         .cookie_store(true)
         .redirect(redirect::Policy::limited(REDIRECT_LIMIT))
         .gzip(true)
         .brotli(true)
         .deflate(true)
-        .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS));
+        .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS))
+        .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SEC))
+        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST);
 
-    // Minimal strategy: even simpler client
-    // Extreme uses same client as Stealth (difference is in orchestration)
-    let builder = match strategy {
-        FetchStrategy::Minimal => {
-            builder
-                .cookie_store(false) // No cookies for minimal
-                .redirect(redirect::Policy::limited(5)) // Fewer redirects
-        }
+    // Minimal profile: simpler client
+    let builder = match profile {
+        FetchProfile::Minimal => builder
+            .cookie_store(false) // No cookies for minimal
+            .redirect(redirect::Policy::limited(5)), // Fewer redirects
         _ => builder,
     };
 
@@ -36,22 +37,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_client_for_each_strategy() {
-        for strategy in [
-            FetchStrategy::Minimal,
-            FetchStrategy::Browser,
-            FetchStrategy::Mobile,
-            FetchStrategy::Stealth,
-            FetchStrategy::Extreme,
+    fn builds_client_for_each_profile() {
+        for profile in [
+            FetchProfile::Minimal,
+            FetchProfile::Windows,
+            FetchProfile::MacOS,
+            FetchProfile::IOS,
+            FetchProfile::Android,
         ] {
-            let result = build_client(strategy);
-            assert!(result.is_ok(), "Failed for {:?}", strategy);
+            let result = build_client_for_profile(profile);
+            assert!(result.is_ok(), "Failed for {:?}", profile);
         }
     }
 
     #[test]
     fn builds_client_with_default_timeout() {
-        let client = build_client(FetchStrategy::Browser).unwrap();
+        let client = build_client_for_profile(FetchProfile::Windows).unwrap();
         // Client is built successfully with default timeout
         assert!(format!("{:?}", client).contains("Client"));
     }
