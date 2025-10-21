@@ -19,8 +19,8 @@ cargo add qrawl
 
 ## Templates
 
-- **[qrawl_children](src/templates/qrawl_children)**: Qrawl children from parent URLs
-- **[qrawl_emails](src/templates/qrawl_emails)**: Qrawl emails from given URLs
+- **[qrawl_children](src/templates)**: Qrawl children from parent URLs
+- **[qrawl_emails](src/templates)**: Qrawl emails from given URLs
 
 ## License
 
