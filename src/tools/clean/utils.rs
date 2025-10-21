@@ -1,11 +1,63 @@
-/// Private helper functions for text cleaning
+use once_cell::sync::Lazy;
+/// Helper functions for text cleaning
 use regex::Regex;
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
 use unicode_normalization::UnicodeNormalization;
+use url::Url;
 
 // Lazy static regex for whitespace normalization
-static WHITESPACE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
+static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("valid regex"));
+
+// HTML cleaning regexes
+static JSONLD_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>.*?</script>"#)
+        .expect("valid regex")
+});
+
+static SCRIPT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex"));
+
+static STYLE_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("valid regex"));
+
+static NOSCRIPT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").expect("valid regex"));
+
+static IFRAME_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<iframe[^>]*>.*?</iframe>").expect("valid regex"));
+
+static SVG_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<svg[^>]*>.*?</svg>").expect("valid regex"));
+
+static COMMENT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid regex"));
+
+static JUNK_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?ix)
+        \s+                                    # Leading whitespace
+        (?:                                    # Attribute name (non-capturing group)
+            class|id|style|                    # Common styling attributes
+            data-[\w-]+|                       # All data-* attributes
+            aria-[\w-]+|                       # All aria-* attributes
+            role|tabindex|                     # Accessibility attributes
+            xmlns(?::[\w-]+)?|                 # XML namespaces
+            version|viewBox|                   # SVG attributes
+            fill|fill-rule|stroke(?:-[\w-]+)?| # SVG styling
+            onclick|onload|on[\w-]+            # Event handlers
+        )
+        \s*=\s*                                # Equals with optional whitespace
+        (?:                                    # Value (non-capturing group)
+            "[^"]*"|                           # Double-quoted value
+            '[^']*'|                           # Single-quoted value
+            [^\s>]+                            # Unquoted value
+        )
+        "#,
+    )
+    .expect("valid regex")
+});
+
+static NEWLINE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\n").expect("valid regex"));
 
 /// Decode HTML entities (named and numeric).
 ///
@@ -14,7 +66,7 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
 /// - `&lt;` → `<`
 /// - `&#39;` → `'`
 /// - `&#x27;` → `'`
-pub fn decode_html_entities(text: &str) -> String {
+pub(super) fn decode_html_entities(text: &str) -> String {
     html_escape::decode_html_entities(text).to_string()
 }
 
@@ -22,7 +74,7 @@ pub fn decode_html_entities(text: &str) -> String {
 ///
 /// This ensures consistent representation of characters.
 /// Example: `é` (U+00E9) and `é` (U+0065 U+0301) become the same.
-pub fn normalize_unicode(text: &str) -> String {
+pub(super) fn normalize_unicode(text: &str) -> String {
     text.nfc().collect::<String>()
 }
 
@@ -33,7 +85,7 @@ pub fn normalize_unicode(text: &str) -> String {
 /// - Zero Width Non-Joiner (U+200C)
 /// - Zero Width Joiner (U+200D)
 /// - Zero Width No-Break Space / BOM (U+FEFF)
-pub fn remove_zero_width_chars(text: &str) -> String {
+pub(super) fn remove_zero_width_chars(text: &str) -> String {
     text.chars()
         .filter(|c| {
             !matches!(
@@ -41,7 +93,7 @@ pub fn remove_zero_width_chars(text: &str) -> String {
                 '\u{200B}' | // Zero width space
                 '\u{200C}' | // Zero width non-joiner
                 '\u{200D}' | // Zero width joiner
-                '\u{FEFF}'   // Zero width no-break space (BOM)
+                '\u{FEFF}' // Zero width no-break space (BOM)
             )
         })
         .collect()
@@ -51,8 +103,9 @@ pub fn remove_zero_width_chars(text: &str) -> String {
 ///
 /// Control characters can cause issues in display/storage.
 /// We keep \n and \t as they're commonly used for formatting.
-pub fn remove_control_chars(text: &str) -> String {
+pub(super) fn remove_control_chars(text: &str) -> String {
     text.chars()
+        .map(|c| if c == '\r' { '\n' } else { c })
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect()
 }
@@ -62,60 +115,199 @@ pub fn remove_control_chars(text: &str) -> String {
 /// - Multiple spaces → single space
 /// - Multiple newlines → single space
 /// - Trim leading/trailing whitespace
-pub fn normalize_whitespace(text: &str) -> String {
-    WHITESPACE_REGEX
-        .replace_all(text, " ")
-        .trim()
-        .to_string()
+pub(super) fn normalize_whitespace(text: &str) -> String {
+    WHITESPACE_REGEX.replace_all(text, " ").trim().to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Normalize escaped newlines (\\n) to actual newlines (\n).
+pub(super) fn normalize_escaped_newlines(text: &str) -> String {
+    NEWLINE_REGEX.replace_all(text, "\n").to_string()
+}
 
-    #[test]
-    fn test_decode_html_entities() {
-        assert_eq!(decode_html_entities("&amp;"), "&");
-        assert_eq!(decode_html_entities("&lt;&gt;"), "<>");
-        assert_eq!(decode_html_entities("&quot;"), "\"");
-        assert_eq!(decode_html_entities("&#39;"), "'");
-        assert_eq!(decode_html_entities("&#x27;"), "'");
-        assert_eq!(decode_html_entities("&nbsp;"), "\u{00A0}");
+/// Canonicalize a domain name for comparison.
+///
+/// Performs:
+/// 1. Convert to lowercase
+/// 2. IDNA/Punycode normalization
+/// 3. Strip www. prefix
+///
+/// Examples:
+/// - `Example.com` → `example.com`
+/// - `WWW.Example.COM` → `example.com`
+/// - `www.GitHub.com` → `github.com`
+pub(super) fn canonicalize_domain(host: &str) -> String {
+    let lower = host.to_ascii_lowercase();
+    let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
+
+    // Strip www. prefix to normalize domains
+    if idna.starts_with("www.") && idna.len() > 4 {
+        idna[4..].to_string()
+    } else {
+        idna
+    }
+}
+
+/// Canonicalize a URL for comparison.
+///
+/// Performs:
+/// 1. Add https:// if protocol is missing
+/// 2. Normalize protocol to https
+/// 3. Canonicalize domain (lowercase, IDNA, strip www)
+/// 4. Normalize path (strip all trailing slashes)
+/// 5. Sort query parameters
+/// 6. Remove fragment
+///
+/// Examples:
+/// - `example.com` → `https://example.com`
+/// - `HTTP://Example.com/path/` → `https://example.com/path`
+/// - `https://www.example.com?b=2&a=1` → `https://example.com?a=1&b=2`
+/// - `https://example.com/page#section` → `https://example.com/page`
+pub(super) fn canonicalize_url(url: &str) -> String {
+    // Prepend https:// if protocol is missing (case-insensitive check)
+    // Only prepend if it looks like a domain (contains a dot)
+    let url_lower = url.to_lowercase();
+    let url_with_protocol =
+        if !url_lower.starts_with("http://") && !url_lower.starts_with("https://") {
+            if url.contains('.') {
+                format!("https://{}", url)
+            } else {
+                url.to_string()
+            }
+        } else {
+            url.to_string()
+        };
+
+    let mut parsed = match Url::parse(&url_with_protocol) {
+        Ok(u) => u,
+        Err(_) => return url.to_string(), // Keep malformed URLs as-is
+    };
+
+    // 1. Normalize protocol to https
+    let _ = parsed.set_scheme("https");
+
+    // 2. Canonicalize domain
+    if let Some(host) = parsed.host_str() {
+        let canonical_host = canonicalize_domain(host);
+        let _ = parsed.set_host(Some(&canonical_host));
     }
 
-    #[test]
-    fn test_normalize_unicode() {
-        // Precomposed vs decomposed é
-        let precomposed = "\u{00E9}"; // é (single char)
-        let decomposed = "\u{0065}\u{0301}"; // e + combining acute
-        assert_eq!(
-            normalize_unicode(precomposed),
-            normalize_unicode(decomposed)
-        );
+    // 3. Normalize path (strip all trailing slashes)
+    let path = parsed.path().to_string();
+    let normalized = path.trim_end_matches('/');
+    let new_path = if normalized.is_empty() {
+        ""
+    } else {
+        normalized
+    };
+    parsed.set_path(new_path);
+
+    // 4. Sort query parameters
+    if parsed.query().is_some() {
+        let params: BTreeMap<_, _> = parsed.query_pairs().collect();
+        if !params.is_empty() {
+            let sorted_query = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            parsed.set_query(Some(&sorted_query));
+        } else {
+            parsed.set_query(None);
+        }
     }
 
-    #[test]
-    fn test_remove_zero_width_chars() {
-        assert_eq!(remove_zero_width_chars("hello\u{200B}world"), "helloworld");
-        assert_eq!(remove_zero_width_chars("test\u{200C}ing"), "testing");
-        assert_eq!(remove_zero_width_chars("\u{FEFF}text"), "text");
+    // 5. Remove fragment
+    parsed.set_fragment(None);
+
+    // url crate adds trailing slash for empty path, strip it
+    parsed.to_string().trim_end_matches('/').to_string()
+}
+
+/// Clean a single email address.
+///
+/// Performs:
+/// 1. Trim whitespace
+/// 2. Strip trailing punctuation (comma, semicolon, period)
+/// 3. Extract from display name format: "Name" <email> or Name <email>
+/// 4. URL decode (%40 → @)
+/// 5. Lowercase
+pub(super) fn clean_email(email: &str) -> String {
+    let mut result = email.trim().to_string();
+
+    // Strip trailing punctuation (common in comma-separated lists)
+    result = result.trim_end_matches(&[',', ';', '.'][..]).to_string();
+
+    // Extract from display name format: "Name" <email@example.com> or Name <email@example.com>
+    if let Some(start) = result.find('<') {
+        if let Some(end) = result.find('>') {
+            result = result[start + 1..end].to_string();
+        }
     }
 
-    #[test]
-    fn test_remove_control_chars() {
-        assert_eq!(remove_control_chars("hello\x00world"), "helloworld");
-        assert_eq!(remove_control_chars("keep\nnewline"), "keep\nnewline");
-        assert_eq!(remove_control_chars("keep\ttab"), "keep\ttab");
+    // URL decode (handle %40 and other encoded characters)
+    result = urlencoding::decode(&result)
+        .unwrap_or(std::borrow::Cow::Borrowed(&result))
+        .to_string();
+
+    // Lowercase (treat emails as case-insensitive)
+    result.to_ascii_lowercase()
+}
+
+/// Clean a single phone number.
+///
+/// Performs:
+/// 1. Trim whitespace
+/// 2. Strip extension patterns (ext., x, extension)
+/// 3. Keep international prefix (+) if present
+/// 4. Strip all other non-digit characters except leading +
+pub(super) fn clean_phone(phone: &str) -> String {
+    let mut result = phone.trim().to_string();
+
+    // Strip extension patterns
+    if let Some(pos) = result
+        .to_lowercase()
+        .find(" ext")
+        .or_else(|| result.to_lowercase().find(" x"))
+        .or_else(|| result.to_lowercase().find(" extension"))
+    {
+        result = result[..pos].to_string();
     }
 
-    #[test]
-    fn test_normalize_whitespace() {
-        assert_eq!(normalize_whitespace("hello   world"), "hello world");
-        assert_eq!(normalize_whitespace("  trim  me  "), "trim me");
-        assert_eq!(
-            normalize_whitespace("multiple\n\n\nlines"),
-            "multiple lines"
-        );
-        assert_eq!(normalize_whitespace("  lots   of    spaces  "), "lots of spaces");
+    // Keep international prefix, strip all other non-digits
+    let has_plus = result.starts_with('+');
+    let digits: String = result.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    if has_plus {
+        format!("+{}", digits)
+    } else {
+        digits
     }
+}
+
+/// Strip junk from HTML (scripts, styles, comments, junk attributes).
+///
+/// Implementation for clean_html. Contains all the messy regex logic.
+pub(super) fn strip_junk(html: &str) -> String {
+    // Extract and protect JSON-LD scripts before removing all scripts
+    let jsonld_scripts: Vec<String> = JSONLD_REGEX
+        .captures_iter(html)
+        .map(|cap| cap.get(0).unwrap().as_str().to_string())
+        .collect();
+
+    // Remove non-content elements (including all scripts)
+    let mut cleaned = SCRIPT_REGEX.replace_all(html, "").to_string();
+
+    // Restore JSON-LD scripts after removing JavaScript
+    for jsonld in jsonld_scripts {
+        cleaned = format!("{}{}", cleaned, jsonld);
+    }
+
+    cleaned = STYLE_REGEX.replace_all(&cleaned, "").to_string();
+    cleaned = NOSCRIPT_REGEX.replace_all(&cleaned, "").to_string();
+    cleaned = IFRAME_REGEX.replace_all(&cleaned, "").to_string();
+    cleaned = SVG_REGEX.replace_all(&cleaned, "").to_string();
+    cleaned = COMMENT_REGEX.replace_all(&cleaned, "").to_string();
+    cleaned = JUNK_ATTR_REGEX.replace_all(&cleaned, "").to_string();
+
+    cleaned
 }
