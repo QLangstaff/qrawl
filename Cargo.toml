@@ -1,37 +1,33 @@
 [package]
 name = "qrawl"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
-description = "Crawl at scale with domain-specific policies (CLI + Rust API)."
+description = "Composable web crawling tools for Rust"
 repository = "https://github.com/QLangstaff/qrawl"
 homepage = "https://github.com/QLangstaff/qrawl"
 documentation = "https://docs.rs/qrawl"
 readme = "README.md"
-keywords = ["crawl", "scrape", "policy", "json-ld", "cli"]
+keywords = ["web-crawler", "web-scraper", "web-scraping", "async", "html"]
 categories = ["command-line-utilities", "web-programming::http-client", "parsing"]
 rust-version = "1.74"
 
-
-# Keep the crate tarball lean and predictable
-include = [
-  "Cargo.toml",
-  "README.md",
-  "LICENSE*",
-  "src/**",
-]
+include = ["Cargo.toml", "README.md", "LICENSE*", "src/**"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-directories = "5"
 url = "2"
 clap = { version = "4.5", features = ["derive"] }
-reqwest = { version = "0.11", features = ["blocking", "gzip", "brotli", "deflate", "cookies", "json", "rustls-tls"] }
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }
+reqwest = { version = "0.11", features = ["blocking", "cookies", "brotli", "gzip", "deflate", "json", "native-tls", "stream"] }
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time"] }
 async-trait = "0.1"
-anyhow = "1.0"
 scraper = "0.19"
 idna = "0.5"
+regex = "1.10"
+futures-util = "0.3"
+dashmap = "6.0"
+urlencoding = "2.1"
+html-escape = "0.2"
+unicode-normalization = "0.1"
+once_cell = "1.19"
