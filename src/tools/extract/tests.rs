@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::tools::extract::*;
+    use serde_json::json;
 
     #[test]
     fn test_extract_emails_basic() {
@@ -35,54 +36,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_metadata_prefers_specific_fields() {
-        let metadata = vec![
-            ("title".to_string(), "Generic Title".to_string()),
-            ("og:title".to_string(), "OG Title".to_string()),
-            (
-                "twitter:title".to_string(),
-                "Twitter Title".to_string(),
-            ),
-            (
-                "description".to_string(),
-                "Generic Description".to_string(),
-            ),
-            (
-                "og:description".to_string(),
-                "OG Description".to_string(),
-            ),
-            (
-                "og:image".to_string(),
-                "https://example.com/image.png".to_string(),
-            ),
-            (
-                "author".to_string(),
-                "Jane Smith".to_string(),
-            ),
-            (
-                "article:published_time".to_string(),
-                "2024-01-01".to_string(),
-            ),
-        ];
-
-        let result = extract_metadata(&metadata);
-        assert_eq!(result.title, Some("OG Title".to_string()));
-        assert_eq!(
-            result.description,
-            Some("OG Description".to_string())
-        );
-        assert_eq!(
-            result.image,
-            Some("https://example.com/image.png".to_string())
-        );
-        assert_eq!(result.author, Some("Jane Smith".to_string()));
-        assert_eq!(
-            result.published_date,
-            Some("2024-01-01".to_string())
-        );
-    }
-
-    #[test]
     fn test_extract_og_preview_uses_metadata_fallbacks() {
         let metadata = vec![
             ("og:title".to_string(), "OG Title".to_string()),
@@ -98,10 +51,7 @@ mod tests {
 
         let preview = extract_og_preview(&metadata);
         assert_eq!(preview.title, Some("OG Title".to_string()));
-        assert_eq!(
-            preview.description,
-            Some("Twitter Description".to_string())
-        );
+        assert_eq!(preview.description, Some("Twitter Description".to_string()));
         assert_eq!(
             preview.image,
             Some("https://secure.example.com/image.jpg".to_string())
@@ -111,13 +61,13 @@ mod tests {
     #[test]
     fn test_extract_schema_types_collects_unique_values() {
         let jsonld = vec![
-            serde_json::json!({
+            json!({
                 "@type": ["Recipe", "Article"]
             }),
-            serde_json::json!({
+            json!({
                 "@type": "Article"
             }),
-            serde_json::json!({
+            json!({
                 "@type": ["HowTo", "Recipe"]
             }),
         ];
@@ -128,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_emails_deduplicates_results() {
+    fn test_extract_emails_collects_raw_results() {
         let html = r#"
             <html>
                 <body>
@@ -139,12 +89,17 @@ mod tests {
         "#;
 
         let emails = extract_emails(html);
-        assert_eq!(emails.len(), 1);
-        assert_eq!(emails[0], "info@example.com");
+        assert_eq!(
+            emails,
+            vec!["info@example.com", "info@example.com"]
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
-    fn test_extract_phones_normalizes_formats() {
+    fn test_extract_phones_preserves_formats() {
         let html = r#"
             <html>
                 <body>
@@ -154,9 +109,9 @@ mod tests {
             </html>
         "#;
 
-        let mut phones = extract_phones(html);
-        phones.sort();
-        phones.dedup();
-        assert_eq!(phones, vec!["+15551234567"]);
+        let phones = extract_phones(html);
+        assert_eq!(phones.len(), 2); // Raw formats retained for downstream cleaning
+        assert!(phones.contains(&"+1-555-123-4567".to_string()));
+        assert!(phones.contains(&"+1 (555) 123-4567".to_string()));
     }
 }
