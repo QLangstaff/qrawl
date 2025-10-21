@@ -168,7 +168,7 @@ mod tests {
         let urls = map_siblings(
             html,
             "https://example.com",
-            &crate::tools::types::Options::default(),
+            &crate::types::Options::default(),
         );
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/recipe/1".to_string()));
@@ -314,7 +314,7 @@ mod tests {
         let urls = map_itemlist(
             html,
             "https://example.com",
-            &crate::tools::types::Options::default(),
+            &crate::types::Options::default(),
         );
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://site.com/recipe-1".to_string()));
