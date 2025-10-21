@@ -1,7 +1,9 @@
-use crate::tools::types::{Jsonld, Metadata};
 use scraper::{Html, Selector};
+use serde_json::Value;
 
-pub fn scrape_body_content(html: &str) -> String {
+use crate::tools::types::{Jsonld, Metadata};
+
+pub(super) fn scrape_body_content(html: &str) -> String {
     let document = Html::parse_document(html);
 
     if let Ok(selector) = Selector::parse("body") {
@@ -13,7 +15,7 @@ pub fn scrape_body_content(html: &str) -> String {
     html.to_string()
 }
 
-pub fn scrape_jsonld_scripts(html: &str) -> Jsonld {
+pub(super) fn scrape_jsonld_scripts(html: &str) -> Jsonld {
     let document = Html::parse_document(html);
     let selector = match Selector::parse("script[type='application/ld+json']") {
         Ok(sel) => sel,
@@ -30,24 +32,20 @@ pub fn scrape_jsonld_scripts(html: &str) -> Jsonld {
         .collect()
 }
 
-fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
+fn flatten_jsonld(value: Value) -> Vec<Value> {
     match value {
-        serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
-        serde_json::Value::Object(mut obj) => {
-            // Handle JSON-LD @graph format: extract items from @graph array
-            if let Some(graph) = obj.remove("@graph") {
-                if let serde_json::Value::Array(arr) = graph {
-                    return arr.into_iter().flat_map(flatten_jsonld).collect();
-                }
+        Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
+        Value::Object(mut obj) => {
+            if let Some(Value::Array(arr)) = obj.remove("@graph") {
+                return arr.into_iter().flat_map(flatten_jsonld).collect();
             }
-            // Return the object itself if no @graph or not an array
-            vec![serde_json::Value::Object(obj)]
+            vec![Value::Object(obj)]
         }
         _ => Vec::new(),
     }
 }
 
-pub fn scrape_metadata_tags(html: &str) -> Metadata {
+pub(super) fn scrape_metadata_tags(html: &str) -> Metadata {
     let document = Html::parse_document(html);
     let mut tags = Vec::new();
 
@@ -68,7 +66,6 @@ pub fn scrape_metadata_tags(html: &str) -> Metadata {
                 .or_else(|| el.value().attr("property"))
                 .map(|s| s.to_string());
             let value = el.value().attr("content").map(|s| s.to_string());
-
             if let (Some(k), Some(v)) = (key, value) {
                 if !v.trim().is_empty() {
                     tags.push((k, v));

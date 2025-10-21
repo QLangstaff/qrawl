@@ -3,8 +3,8 @@ mod tests {
     use crate::tools::extract::*;
     use serde_json::json;
 
-    #[test]
-    fn test_extract_emails_basic() {
+    #[tokio::test]
+    async fn test_extract_emails_basic() {
         let html = r#"
             <html>
                 <body>
@@ -14,14 +14,14 @@ mod tests {
             </html>
         "#;
 
-        let emails = extract_emails(html);
+        let emails = extract_emails(html).await;
         assert!(emails.len() >= 2);
         assert!(emails.contains(&"john@example.com".to_string()));
         assert!(emails.contains(&"support@example.com".to_string()));
     }
 
-    #[test]
-    fn test_extract_phones_basic() {
+    #[tokio::test]
+    async fn test_extract_phones_basic() {
         let html = r#"
             <html>
                 <body>
@@ -31,7 +31,7 @@ mod tests {
             </html>
         "#;
 
-        let phones = extract_phones(html);
+        let phones = extract_phones(html).await;
         assert!(phones.len() >= 2);
     }
 
@@ -77,8 +77,8 @@ mod tests {
         assert_eq!(types, vec!["Article", "HowTo", "Recipe"]);
     }
 
-    #[test]
-    fn test_extract_emails_collects_raw_results() {
+    #[tokio::test]
+    async fn test_extract_emails_collects_raw_results() {
         let html = r#"
             <html>
                 <body>
@@ -88,7 +88,7 @@ mod tests {
             </html>
         "#;
 
-        let emails = extract_emails(html);
+        let emails = extract_emails(html).await;
         assert_eq!(
             emails,
             vec!["info@example.com", "info@example.com"]
@@ -98,8 +98,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_extract_phones_preserves_formats() {
+    #[tokio::test]
+    async fn test_extract_phones_preserves_formats() {
         let html = r#"
             <html>
                 <body>
@@ -109,7 +109,7 @@ mod tests {
             </html>
         "#;
 
-        let phones = extract_phones(html);
+        let phones = extract_phones(html).await;
         assert_eq!(phones.len(), 2); // Raw formats retained for downstream cleaning
         assert!(phones.contains(&"+1-555-123-4567".to_string()));
         assert!(phones.contains(&"+1 (555) 123-4567".to_string()));

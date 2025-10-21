@@ -46,11 +46,17 @@ pub fn extract_og_preview(metadata: &Metadata) -> ExtractPreviewResult {
 }
 
 /// Extract email addresses from HTML.
-pub fn extract_emails(html: &str) -> Vec<String> {
-    utils::extract_email_elements(html)
+pub async fn extract_emails(html: &str) -> Vec<String> {
+    let html = html.to_string();
+    tokio::task::spawn_blocking(move || utils::extract_email_elements(&html))
+        .await
+        .expect("extract_emails: spawn_blocking failed")
 }
 
 /// Extract phone numbers from HTML.
-pub fn extract_phones(html: &str) -> Vec<String> {
-    utils::extract_phone_elements(html)
+pub async fn extract_phones(html: &str) -> Vec<String> {
+    let html = html.to_string();
+    tokio::task::spawn_blocking(move || utils::extract_phone_elements(&html))
+        .await
+        .expect("extract_phones: spawn_blocking failed")
 }

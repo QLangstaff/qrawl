@@ -48,9 +48,12 @@ mod tests {
 
         let items = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-        let results = batch(items, 3, |_n| {
-            let max_concurrent = Arc::clone(&max_concurrent);
-            let current = Arc::clone(&current);
+        let max_concurrent_handle = Arc::clone(&max_concurrent);
+        let current_handle = Arc::clone(&current);
+
+        let results = batch(items, 3, move |_n| {
+            let max_concurrent = Arc::clone(&max_concurrent_handle);
+            let current = Arc::clone(&current_handle);
 
             async move {
                 // Increment current

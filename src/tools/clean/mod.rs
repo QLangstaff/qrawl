@@ -10,16 +10,19 @@ mod utils;
 /// - Remove zero-width characters
 /// - Remove control characters
 /// - Normalize whitespace
-pub fn clean_text(text: &str) -> String {
-    let mut result = text.to_string();
-
-    result = utils::decode_html_entities(&result);
-    result = utils::normalize_unicode(&result);
-    result = utils::remove_zero_width_chars(&result);
-    result = utils::remove_control_chars(&result);
-    result = utils::normalize_whitespace(&result);
-
-    result
+pub async fn clean_text(text: &str) -> String {
+    let text = text.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut result = text;
+        result = utils::decode_html_entities(&result);
+        result = utils::normalize_unicode(&result);
+        result = utils::remove_zero_width_chars(&result);
+        result = utils::remove_control_chars(&result);
+        result = utils::normalize_whitespace(&result);
+        result
+    })
+    .await
+    .expect("clean_text: spawn_blocking failed")
 }
 
 /// Clean HTML
@@ -27,14 +30,17 @@ pub fn clean_text(text: &str) -> String {
 /// - Normalize escaped newlines
 /// - Strip junk elements (comments, scripts, styles, etc.)
 /// - Normalize whitespace
-pub fn clean_html(html: &str) -> String {
-    let mut result = html.to_string();
-
-    result = utils::normalize_escaped_newlines(&result);
-    result = utils::strip_junk(&result);
-    result = utils::normalize_whitespace(&result);
-
-    result
+pub async fn clean_html(html: &str) -> String {
+    let html = html.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut result = html;
+        result = utils::normalize_escaped_newlines(&result);
+        result = utils::strip_junk(&result);
+        result = utils::normalize_whitespace(&result);
+        result
+    })
+    .await
+    .expect("clean_html: spawn_blocking failed")
 }
 
 /// Clean URLs
@@ -46,7 +52,7 @@ pub fn clean_html(html: &str) -> String {
 /// - Sort query parameters
 /// - Remove fragment
 /// - Deduplicate
-pub fn clean_urls(urls: &[String]) -> Vec<String> {
+pub async fn clean_urls(urls: &[String]) -> Vec<String> {
     crate::dedupe!(urls, utils::canonicalize_url)
 }
 
@@ -58,7 +64,7 @@ pub fn clean_urls(urls: &[String]) -> Vec<String> {
 /// - URL decode
 /// - Lowercase
 /// - Deduplicate
-pub fn clean_emails(emails: &[String]) -> Vec<String> {
+pub async fn clean_emails(emails: &[String]) -> Vec<String> {
     crate::dedupe!(emails, utils::clean_email)
 }
 
@@ -69,6 +75,6 @@ pub fn clean_emails(emails: &[String]) -> Vec<String> {
 /// - Keep leading `+` for international numbers
 /// - Remove non-digit characters
 /// - Deduplicate
-pub fn clean_phones(phones: &[String]) -> Vec<String> {
+pub async fn clean_phones(phones: &[String]) -> Vec<String> {
     crate::dedupe!(phones, utils::clean_phone)
 }
