@@ -1,7 +1,7 @@
 use scraper::{Html, Selector};
 use serde_json::Value;
 
-use crate::tools::types::{Jsonld, Metadata};
+use crate::types::{Jsonld, Metadata};
 
 pub(super) fn scrape_body_content(html: &str) -> String {
     let document = Html::parse_document(html);

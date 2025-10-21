@@ -2,7 +2,7 @@
 mod tests {
     use crate::tools::map::utils::*;
     use crate::tools::map::*;
-    use crate::tools::types::Options;
+    use crate::types::Options;
     use scraper::Html;
 
     #[tokio::test]
@@ -353,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_children_block_domains() {
-        use crate::pipelines::{PipelineContext, PIPELINE_CTX};
+        use crate::types::{Context, CTX};
         use std::sync::Arc;
 
         let html = r#"
@@ -367,8 +367,8 @@ mod tests {
             </body></html>
         "#;
 
-        let ctx = Arc::new(PipelineContext::new().with_block_domains(&["reddit.com"]));
-        let urls = PIPELINE_CTX
+        let ctx = Arc::new(Context::new().with_block_domains(&["reddit.com"]));
+        let urls = CTX
             .scope(ctx, async move {
                 map_children(html, "https://example.com").await
             })
@@ -384,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_children_allow_domains() {
-        use crate::pipelines::{PipelineContext, PIPELINE_CTX};
+        use crate::types::{Context, CTX};
         use std::sync::Arc;
 
         let html = r#"
@@ -400,8 +400,8 @@ mod tests {
         "#;
 
         let ctx =
-            Arc::new(PipelineContext::new().with_allow_domains(&["stripe.com", "openai.com"]));
-        let urls = PIPELINE_CTX
+            Arc::new(Context::new().with_allow_domains(&["stripe.com", "openai.com"]));
+        let urls = CTX
             .scope(ctx, async move {
                 map_children(html, "https://example.com").await
             })
@@ -498,7 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_no_children() {
-        use crate::pipelines::{PipelineContext, PIPELINE_CTX};
+        use crate::types::{Context, CTX};
         use std::sync::Arc;
 
         let html = r###"
@@ -507,8 +507,8 @@ mod tests {
 
         // Block cook profile URLs - this page has photo credits with links to cook profiles
         // that form a sibling pattern, but we don't want to extract those
-        let ctx = Arc::new(PipelineContext::new().with_block_domains(&["allrecipes.com/cook"]));
-        let urls = PIPELINE_CTX
+        let ctx = Arc::new(Context::new().with_block_domains(&["allrecipes.com/cook"]));
+        let urls = CTX
             .scope(ctx, async move {
                 map_children(html, "https://www.allrecipes.com").await
             })

@@ -1,6 +1,6 @@
 //! Scrape Tools
 
-use crate::tools::types::{Jsonld, Metadata};
+use crate::types::{Jsonld, Metadata};
 
 mod utils;
 

@@ -1,4 +1,4 @@
-use crate::tools::types::Options;
+use crate::types::Options;
 use once_cell::sync::Lazy;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;

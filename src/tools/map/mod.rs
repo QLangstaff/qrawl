@@ -56,7 +56,7 @@ pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
 pub async fn map_children(html: &str, base_url: &str) -> Vec<String> {
     let html = html.to_string();
     let base_url = base_url.to_string();
-    let options = crate::pipelines::get_options();
+    let options = crate::types::get_options();
     tokio::task::spawn_blocking(move || {
         let siblings = utils::map_siblings(&html, &base_url, &options);
         let itemlist = utils::map_itemlist(&html, &base_url, &options);

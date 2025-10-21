@@ -4,7 +4,7 @@ mod tests;
 pub mod types;
 mod utils;
 
-use crate::tools::types::{Jsonld, Metadata};
+use crate::types::{Jsonld, Metadata};
 pub use types::ExtractPreviewResult;
 
 /// Extract schema.org `@type` values from JSON-LD.

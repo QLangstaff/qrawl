@@ -5,6 +5,8 @@ mod tests {
     };
     use crate::tools::clean::*;
 
+    // Tests for clean_text()
+
     #[tokio::test]
     async fn test_html_entities_named() {
         assert_eq!(clean_text("&amp;").await, "&");
