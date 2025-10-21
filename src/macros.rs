@@ -148,8 +148,7 @@ macro_rules! merge {
 macro_rules! run {
     // For Vec<String> input with async processor
     (@vec_async $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
-        let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
-        let result = runtime.block_on($processor(&$input $(, $arg)*));
+        let result = $crate::runtime::block_on($processor(&$input $(, $arg)*));
         $crate::cli::print_json(&result);
     }};
     // For Vec<String> input with sync processor
@@ -159,9 +158,8 @@ macro_rules! run {
     }};
     // For String input with two-step async -> async processor chain
     (@async_chain $input:expr, [$first:expr, $second:expr] $(,)?) => {{
-        let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
         let data = $crate::cli::read_input(&$input);
-        let result = runtime.block_on(async {
+        let result = $crate::runtime::block_on(async move {
             let intermediate = $first(&data).await;
             $second(&intermediate).await  // Both async
         });
@@ -169,9 +167,8 @@ macro_rules! run {
     }};
     // For String input with two-step async -> sync processor chain
     (@async $input:expr, [$first:expr, $second:expr] $(,)?) => {{
-        let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
         let data = $crate::cli::read_input(&$input);
-        let result = runtime.block_on(async {
+        let result = $crate::runtime::block_on(async move {
             let intermediate = $first(&data).await;
             $second(&intermediate)  // Second is sync
         });
@@ -179,9 +176,8 @@ macro_rules! run {
     }};
     // For String input with async processor
     (@async $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
-        let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
         let data = $crate::cli::read_input(&$input);
-        let result = runtime.block_on($processor(&data $(, $arg)*));
+        let result = $crate::runtime::block_on($processor(&data $(, $arg)*));
         $crate::cli::print_json(&result);
     }};
     // For String input with two-step sync processor chain

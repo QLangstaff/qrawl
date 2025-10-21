@@ -3,6 +3,9 @@
 use clap::{Parser, Subcommand};
 use std::io::{self, Read};
 
+use crate::runtime;
+use crate::tools::fetch::fetch_auto;
+
 #[derive(Parser)]
 #[command(
     name = "qrawl",
@@ -22,13 +25,13 @@ enum Commands {
         url: String,
     },
 
-    /// Map Children
+    /// Map Children URLs
     Children {
         /// URL
         url: String,
     },
 
-    /// Map Page
+    /// Map Page URLs
     Page {
         /// URL
         url: String,
@@ -58,7 +61,7 @@ enum Commands {
         url: String,
     },
 
-    /// Scrape & Extract Schema Types
+    /// Scrape & Extract JSON-LD Schema Types
     Schemas {
         /// URL
         url: String,
@@ -77,7 +80,6 @@ enum Commands {
     },
 }
 
-/// Read input from file, URL, or stdin
 pub fn read_input(input: &str) -> String {
     if input == "-" {
         // Read from stdin
@@ -98,18 +100,13 @@ pub fn read_input(input: &str) -> String {
     }
 }
 
-/// Fetch URL
 pub fn fetch_url(url: &str) -> String {
-    use crate::tools::fetch::fetch_auto;
-
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
-    runtime.block_on(fetch_auto(url)).unwrap_or_else(|e| {
+    runtime::block_on(fetch_auto(url)).unwrap_or_else(|e| {
         eprintln!("Failed to fetch {}: {}", url, e);
         std::process::exit(1);
     })
 }
 
-/// Print a value as pretty JSON to stdout
 pub fn print_json<T: serde::Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
         Ok(json) => println!("{}", json),
@@ -124,16 +121,14 @@ pub fn run() {
 
     match cli.command {
         Commands::Fetch { url } => {
-            // Validate URL
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                eprintln!("Error: URL must start with http:// or https://");
+            if !url.starts_with("https://") {
+                eprintln!("Error: URL must start with https://");
                 std::process::exit(1);
             }
 
-            let runtime = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
             eprintln!("Fetching {}...", url);
 
-            match runtime.block_on(tools::fetch::fetch_auto_with_result(&url)) {
+            match runtime::block_on(tools::fetch::fetch_auto_with_result(&url)) {
                 Ok(result) => {
                     eprintln!(
                         "✓ Success\n  Profile: {:?}\n  Attempts: {}\n  Duration: {}ms",
@@ -146,15 +141,31 @@ pub fn run() {
                 }
             }
         }
+
+        Commands::Children { url } => {
+            run!(
+                @async url.clone(),
+                tools::map::map_children,
+                &url
+            )
+        }
+
+        Commands::Page { url } => {
+            run!(@async url.clone(), tools::map::map_page, &url)
+        }
+
         Commands::Body { url } => {
             run!(@async url, tools::scrape::scrape_body)
         }
+
         Commands::Jsonld { url } => {
             run!(@async url, tools::scrape::scrape_jsonld)
         }
+
         Commands::Metadata { url } => {
             run!(@async url, tools::scrape::scrape_metadata)
         }
+
         Commands::Preview { url } => run!(
             @async url,
             [
@@ -180,17 +191,5 @@ pub fn run() {
             @async_chain url,
             [tools::extract::extract_phones, tools::clean::clean_phones]
         ),
-
-        Commands::Children { url } => {
-            run!(
-                @async url.clone(),
-                tools::map::map_children,
-                &url
-            )
-        }
-
-        Commands::Page { url } => {
-            run!(@async url.clone(), tools::map::map_page, &url)
-        }
     }
 }

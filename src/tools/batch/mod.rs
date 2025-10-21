@@ -13,9 +13,8 @@ where
     R: Send + 'static,
 {
     stream::iter(items)
-        .map(|item| tokio::spawn(operation(item)))
+        .map(operation)
         .buffer_unordered(concurrency)
-        .filter_map(|result| async move { result.ok() })
         .collect()
         .await
 }
