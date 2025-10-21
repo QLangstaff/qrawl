@@ -6,7 +6,6 @@ pub mod profile;
 mod strategies;
 mod utils;
 
-pub mod cli;
 pub mod tests;
 pub mod types;
 
@@ -25,4 +24,9 @@ pub async fn fetch_auto(url: &str) -> Result<String, String> {
     strategies::fetch_auto_with_client(url)
         .await
         .map(|r| r.html)
+}
+
+/// Fetch with auto strategy, returning full result with metadata
+pub async fn fetch_auto_with_result(url: &str) -> Result<FetchResult, String> {
+    strategies::fetch_auto_with_client(url).await
 }
