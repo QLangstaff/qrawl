@@ -2,28 +2,25 @@
 
 Composable web crawling tools for Rust
 
-| Tool | Purpose |
-|------|---------|
-| [batch](src/tools/batch) | Batch operations concurrently |
-| [classify](src/tools/classify) | Classify page types |
-| [clean](src/tools/clean) | Clean text |
-| [extract](src/tools/extract) | Extract structured data |
-| [fetch](src/tools/fetch) | Fetch with adaptive strategies |
-| [map](src/tools/map) | Map URL relationships |
-| [parse](src/tools/parse) | Parse main content |
-| [scrape](src/tools/scrape) | Scrape body, JSON-LD, and metadata |
-
-## Use Cases
-
-- Simulate human browsing
-- Build custom pipelines
-- Extract structured data
-
-## Get Started
+## Install
 
 ```bash
 cargo add qrawl
 ```
+
+## Tools
+
+- **[batch](src/tools/batch)**: Batch operations concurrently 
+- **[clean](src/tools/clean)**: Clean raw data
+- **[extract](src/tools/extract)**: Extract structured data
+- **[fetch](src/tools/fetch)**: Fetch with auto or fast strategy
+- **[map](src/tools/map)**: Map URLs
+- **[scrape](src/tools/scrape)**: Scrape raw data
+
+## Templates
+
+- **[qrawl_children](src/templates/qrawl_children)**: Qrawl children from parent URLs
+- **[qrawl_emails](src/templates/qrawl_emails)**: Qrawl emails from given URLs
 
 ## License
 
