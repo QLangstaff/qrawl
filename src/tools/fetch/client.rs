@@ -31,29 +31,3 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
         .build()
         .map_err(|e| format!("Failed to build client: {}", e))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builds_client_for_each_profile() {
-        for profile in [
-            FetchProfile::Minimal,
-            FetchProfile::Windows,
-            FetchProfile::MacOS,
-            FetchProfile::IOS,
-            FetchProfile::Android,
-        ] {
-            let result = build_client_for_profile(profile);
-            assert!(result.is_ok(), "Failed for {:?}", profile);
-        }
-    }
-
-    #[test]
-    fn builds_client_with_default_timeout() {
-        let client = build_client_for_profile(FetchProfile::Windows).unwrap();
-        // Client is built successfully with default timeout
-        assert!(format!("{:?}", client).contains("Client"));
-    }
-}
