@@ -132,8 +132,12 @@ pub(super) fn map_body_siblings(html: &str, options: &Options) -> Vec<String> {
 /// Clean href by stripping escape sequences, quotes, and whitespace.
 /// Handles malformed HTML where hrefs have literal quote characters or escape sequences.
 fn clean_href(href: &str) -> String {
-    // Remove backslashes and quotes, then trim
+    // Remove backslashes, HTML entities for quotes, and quotes, then trim
     href.replace('\\', "")
+        .replace("&quot;", "")
+        .replace("&#34;", "")
+        .replace("&apos;", "")
+        .replace("&#39;", "")
         .trim()
         .trim_matches('"')
         .trim_matches('\'')
@@ -141,9 +145,9 @@ fn clean_href(href: &str) -> String {
         .to_string()
 }
 
-/// Check if URL scheme is acceptable (http/https based on ALLOW_HTTP constant).
+/// Check if URL scheme is acceptable (http/https).
 fn is_valid_scheme(url: &Url) -> bool {
-    url.scheme() == "https"
+    matches!(url.scheme(), "http" | "https")
 }
 
 /// Check if element is inside a specific HTML tag.
@@ -365,28 +369,7 @@ pub(super) fn map_sibling_link(
         .iter()
         .filter_map(|html| {
             let doc = Html::parse_fragment(html);
-
-            // Find first valid link that is not excluded
-            for link in doc.select(&LINK_SELECTOR) {
-                let href_raw = link.value().attr("href")?;
-                let href = clean_href(href_raw);
-
-                // Handle protocol-relative URLs
-                let url = if href.starts_with("//") {
-                    let full_href = format!("{}:{}", base.scheme(), href);
-                    Url::parse(&full_href).ok()?
-                } else {
-                    Url::parse(&href).ok().or_else(|| base.join(&href).ok())?
-                };
-
-                // Only accept HTTP and HTTPS schemes
-                let scheme = url.scheme();
-                if scheme == "https" {
-                    return Some(url.to_string());
-                }
-            }
-
-            None
+            select_primary_link_in_document(&doc, &base)
         })
         .collect()
 }
@@ -467,8 +450,12 @@ pub(super) fn map_itemlist_link(
 
                         // Case 1: Anchor reference (#id)
                         if let Some(anchor_id) = url_str.strip_prefix('#') {
-                            let resolved = map_anchor_to_link(anchor_id, doc, &base);
-                            return resolved;
+                            if let Some(resolved) =
+                                map_anchor_to_link(anchor_id, doc, &base)
+                            {
+                                return Some(resolved);
+                            }
+                            return None;
                         }
 
                         // Case 2: Absolute URL
@@ -483,6 +470,7 @@ pub(super) fn map_itemlist_link(
                                         {
                                             return Some(resolved);
                                         }
+                                        return None;
                                     }
                                 }
                                 return Some(url.to_string());
@@ -511,24 +499,132 @@ fn map_anchor_to_link(anchor_id: &str, doc: &Html, base: &Url) -> Option<String>
     // Dynamic selector - necessary because anchor_id is runtime data
     let selector = Selector::parse(&format!("[id='{}']", anchor_id)).ok()?;
     let element = doc.select(&selector).next()?;
+    select_primary_link_in_element(&element, base)
+}
 
-    // Find first link in element
-    let link = element.select(&LINK_SELECTOR).next()?;
-    let href_raw = link.value().attr("href")?;
-    let href = clean_href(href_raw);
+fn has_meaningful_text(text: &str) -> bool {
+    !text.trim().is_empty()
+}
 
-    // Resolve to absolute URL
-    let url = if href.starts_with("//") {
-        let full_href = format!("{}:{}", base.scheme(), href);
-        Url::parse(&full_href).ok()?
-    } else {
-        Url::parse(&href).ok().or_else(|| base.join(&href).ok())?
-    };
-
-    // Only accept HTTP and HTTPS
-    if is_valid_scheme(&url) {
-        Some(url.to_string())
-    } else {
-        None
+fn is_heading_link(link: &ElementRef, text: &str) -> bool {
+    if !has_meaningful_text(text) {
+        return false;
     }
+
+    let tag = link.value().name();
+    if matches!(tag, "h1" | "h2" | "h3" | "h4") {
+        return true;
+    }
+
+    for heading in ["h1", "h2", "h3", "h4"].iter() {
+        if is_inside_tag(link, heading) {
+            return true;
+        }
+    }
+
+    for descendant in link.descendants() {
+        if let Some(elem) = ElementRef::wrap(descendant) {
+            match elem.value().name() {
+                "h1" | "h2" | "h3" | "h4" => return true,
+                "strong" | "b" if has_meaningful_text(text) => return true,
+                _ => {}
+            }
+        }
+    }
+
+    is_inside_tag(link, "strong") || is_inside_tag(link, "b")
+}
+
+fn is_utility_text(text: &str) -> bool {
+    matches!(
+        text.trim().to_ascii_lowercase().as_str(),
+        "share"
+            | "print"
+            | "save"
+            | "pin"
+            | "email"
+            | "tweet"
+            | "facebook"
+            | "pinterest"
+            | "linkedin"
+            | "reddit"
+            | "copy link"
+            | "comment"
+            | "buy"
+    )
+}
+
+fn normalize_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn collect_heading_texts(element: &ElementRef) -> Vec<String> {
+    element
+        .descendants()
+        .filter_map(ElementRef::wrap)
+        .filter(|el| matches!(el.value().name(), "h1" | "h2" | "h3" | "h4"))
+        .map(|el| normalize_text(&el.text().collect::<String>()))
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+fn link_matches_heading(link_text_norm: &str, headings: &[String]) -> bool {
+    headings.iter().any(|h| {
+        !h.is_empty()
+            && !link_text_norm.is_empty()
+            && (link_text_norm == *h || link_text_norm.contains(h) || h.contains(link_text_norm))
+    })
+}
+
+fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<String> {
+    let headings = collect_heading_texts(element);
+    let mut primary_text: Option<String> = None;
+    let mut fallback: Option<String> = None;
+
+    for link in element.select(&LINK_SELECTOR) {
+        let href_raw = link.value().attr("href")?;
+        let href = clean_href(href_raw);
+
+        let url = if href.starts_with("//") {
+            let full_href = format!("{}:{}", base.scheme(), href);
+            Url::parse(&full_href).ok()?
+        } else {
+            Url::parse(&href).ok().or_else(|| base.join(&href).ok())?
+        };
+
+        if !is_valid_scheme(&url) {
+            continue;
+        }
+
+        if fallback.is_none() {
+            fallback = Some(url.to_string());
+        }
+
+        let text_raw = link.text().collect::<String>();
+        let text_norm = normalize_text(&text_raw);
+
+        if is_heading_link(&link, &text_raw) || link_matches_heading(&text_norm, &headings) {
+            return Some(url.to_string());
+        }
+
+        if primary_text.is_none() && has_meaningful_text(&text_raw) && !is_utility_text(&text_raw) {
+            primary_text = Some(url.to_string());
+        }
+    }
+
+    primary_text.or(fallback)
+}
+
+fn select_primary_link_in_document(doc: &Html, base: &Url) -> Option<String> {
+    for node in doc.tree.nodes() {
+        if let Some(element) = ElementRef::wrap(node) {
+            if let Some(link) = select_primary_link_in_element(&element, base) {
+                return Some(link);
+            }
+        }
+    }
+    None
 }
