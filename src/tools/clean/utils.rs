@@ -165,13 +165,12 @@ pub(super) fn canonicalize_domain(host: &str) -> String {
 pub(super) fn canonicalize_url(url: &str) -> String {
     // Prepend https:// if protocol is missing (case-insensitive check)
     // Only prepend if it looks like a domain (contains a dot)
-    let url_lower = url.to_lowercase();
-    let url_with_protocol = if !url_lower.starts_with("https://") {
-        if url.contains('.') {
-            format!("https://{}", url)
-        } else {
-            url.to_string()
-        }
+    let url_lower = url.to_ascii_lowercase();
+    let url_with_protocol = if url_lower.starts_with("http://") || url_lower.starts_with("https://")
+    {
+        url.to_string()
+    } else if url.contains('.') {
+        format!("https://{}", url)
     } else {
         url.to_string()
     };
