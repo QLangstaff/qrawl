@@ -27,6 +27,9 @@ pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Result<Vec<String>
         urls, ctx =>
         clean_urls ->
         fetch_auto ->
+        map_children ->
+        clean_urls ->
+        fetch_auto ->
         extract_emails ->
         clean_emails
     }
