@@ -38,7 +38,7 @@ pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
                 };
 
                 // Only accept HTTP and HTTPS schemes
-                if url.scheme() == "https" {
+                if matches!(url.scheme(), "http" | "https") {
                     Some(url.to_string())
                 } else {
                     None

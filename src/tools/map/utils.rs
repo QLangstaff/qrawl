@@ -450,9 +450,7 @@ pub(super) fn map_itemlist_link(
 
                         // Case 1: Anchor reference (#id)
                         if let Some(anchor_id) = url_str.strip_prefix('#') {
-                            if let Some(resolved) =
-                                map_anchor_to_link(anchor_id, doc, &base)
-                            {
+                            if let Some(resolved) = map_anchor_to_link(anchor_id, doc, &base) {
                                 return Some(resolved);
                             }
                             return None;
@@ -583,16 +581,27 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
     let headings = collect_heading_texts(element);
     let mut primary_text: Option<String> = None;
     let mut fallback: Option<String> = None;
+    let mut heading_links: Vec<(String, String)> = Vec::new(); // (url, text) for heading links
 
+    // Collect links and categorize them
     for link in element.select(&LINK_SELECTOR) {
-        let href_raw = link.value().attr("href")?;
+        let href_raw = match link.value().attr("href") {
+            Some(h) => h,
+            None => continue,
+        };
         let href = clean_href(href_raw);
 
         let url = if href.starts_with("//") {
             let full_href = format!("{}:{}", base.scheme(), href);
-            Url::parse(&full_href).ok()?
+            match Url::parse(&full_href).ok() {
+                Some(u) => u,
+                None => continue,
+            }
         } else {
-            Url::parse(&href).ok().or_else(|| base.join(&href).ok())?
+            match Url::parse(&href).ok().or_else(|| base.join(&href).ok()) {
+                Some(u) => u,
+                None => continue,
+            }
         };
 
         if !is_valid_scheme(&url) {
@@ -605,17 +614,58 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
 
         let text_raw = link.text().collect::<String>();
         let text_norm = normalize_text(&text_raw);
+        let is_heading =
+            is_heading_link(&link, &text_raw) || link_matches_heading(&text_norm, &headings);
+        let is_meaningful = has_meaningful_text(&text_raw) && !is_utility_text(&text_raw);
 
-        if is_heading_link(&link, &text_raw) || link_matches_heading(&text_norm, &headings) {
-            return Some(url.to_string());
+        if is_heading {
+            heading_links.push((url.to_string(), text_norm.clone()));
         }
 
-        if primary_text.is_none() && has_meaningful_text(&text_raw) && !is_utility_text(&text_raw) {
+        if primary_text.is_none() && is_meaningful {
             primary_text = Some(url.to_string());
         }
     }
 
-    primary_text.or(fallback)
+    // Select heading link using deterministic priority matching
+    let heading_link = match heading_links.len() {
+        0 => None,
+        1 => Some(heading_links[0].0.clone()),
+        _ => {
+            // Multiple heading links: use deterministic priority matching
+            // Priority 1: Perfect match (link text == heading)
+            for (url, link_text) in &heading_links {
+                for h in &headings {
+                    if link_text == h {
+                        return Some(url.clone());
+                    }
+                }
+            }
+
+            // Priority 2: Link contains heading (more specific)
+            for (url, link_text) in &heading_links {
+                for h in &headings {
+                    if !h.is_empty() && link_text.contains(h) {
+                        return Some(url.clone());
+                    }
+                }
+            }
+
+            // Priority 3: Heading contains link (less specific)
+            for (url, link_text) in &heading_links {
+                for h in &headings {
+                    if !link_text.is_empty() && h.contains(link_text) {
+                        return Some(url.clone());
+                    }
+                }
+            }
+
+            // Fallback: return last heading link
+            heading_links.last().map(|(url, _)| url.clone())
+        }
+    };
+
+    heading_link.or(primary_text).or(fallback)
 }
 
 fn select_primary_link_in_document(doc: &Html, base: &Url) -> Option<String> {
