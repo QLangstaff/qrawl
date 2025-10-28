@@ -135,7 +135,7 @@ pub(super) fn normalize_escaped_newlines(text: &str) -> String {
 /// - `Example.com` → `example.com`
 /// - `WWW.Example.COM` → `example.com`
 /// - `www.GitHub.com` → `github.com`
-pub(super) fn canonicalize_domain(host: &str) -> String {
+pub fn canonicalize_domain(host: &str) -> String {
     let lower = host.to_ascii_lowercase();
     let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
 

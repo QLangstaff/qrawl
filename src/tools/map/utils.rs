@@ -460,9 +460,17 @@ pub(super) fn map_itemlist_link(
                         if let Ok(url) = Url::parse(url_str) {
                             if is_valid_scheme(&url) {
                                 if let Some(fragment) = url.fragment() {
-                                    if url.scheme() == base.scheme()
-                                        && url.host_str() == base.host_str()
-                                    {
+                                    // Compare hosts with canonicalization (strips www., lowercases, etc.)
+                                    let hosts_match = match (url.host_str(), base.host_str()) {
+                                        (Some(url_host), Some(base_host)) => {
+                                            use crate::tools::clean::utils::canonicalize_domain;
+                                            canonicalize_domain(url_host)
+                                                == canonicalize_domain(base_host)
+                                        }
+                                        _ => false,
+                                    };
+
+                                    if url.scheme() == base.scheme() && hosts_match {
                                         if let Some(resolved) =
                                             map_anchor_to_link(fragment, doc, &base)
                                         {

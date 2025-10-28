@@ -1,7 +1,7 @@
 //! Clean Tools
 
 mod tests;
-mod utils;
+pub mod utils;
 
 /// Clean text
 ///
