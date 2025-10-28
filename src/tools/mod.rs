@@ -1,3 +1,5 @@
+//! Composable Tools
+
 pub mod batch;
 pub mod clean;
 pub mod extract;

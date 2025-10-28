@@ -1,3 +1,5 @@
+//! Shared Selectors
+
 use once_cell::sync::Lazy;
 use scraper::Selector;
 

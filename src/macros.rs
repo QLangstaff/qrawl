@@ -1,6 +1,6 @@
 //! Shared Macros
 
-/// Chain tools
+/// Chain Tools
 #[macro_export]
 macro_rules! chain {
     // Base case: no more stages, return items
@@ -164,7 +164,7 @@ macro_rules! chain {
     }};
 }
 
-/// Merge multiple vectors into one.
+/// Merge Vectors
 #[macro_export]
 macro_rules! merge {
     ($($vec:expr),+ $(,)?) => {{
@@ -174,7 +174,7 @@ macro_rules! merge {
     }};
 }
 
-/// Run any processor function (handles both sync and async).
+/// Run Processor
 #[macro_export]
 macro_rules! run {
     // For Vec<String> input with async processor
@@ -235,7 +235,7 @@ macro_rules! run {
     }};
 }
 
-/// Deduplicate a collection while preserving order.
+/// Deduplicate Items
 #[macro_export]
 macro_rules! dedupe {
     // Deduplication

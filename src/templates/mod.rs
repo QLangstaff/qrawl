@@ -1,4 +1,4 @@
-//! Common Templates
+//! Example Templates
 
 use crate::tools::fetch::fetch_auto;
 use crate::types::Context;
