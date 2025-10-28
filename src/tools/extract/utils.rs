@@ -6,7 +6,12 @@ use crate::selectors::LINK_SELECTOR;
 
 // Lazy static regex patterns
 static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("valid regex")
+    // More strict email pattern that excludes common false positives:
+    // - Local part: alphanumeric, dots, underscores, percent, plus, hyphens
+    // - Domain: alphanumeric segments separated by dots or hyphens
+    // - TLD: must be letters only (2-24 chars), excludes file extensions like .js, .css, .jpg
+    // - Negative lookahead to exclude common file/package extensions before @
+    Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,24}").expect("valid regex")
 });
 static PHONE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")

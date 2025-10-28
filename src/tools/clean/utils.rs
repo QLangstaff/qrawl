@@ -229,6 +229,7 @@ pub(super) fn canonicalize_url(url: &str) -> String {
 /// 3. Extract from display name format: "Name" <email> or Name <email>
 /// 4. URL decode (%40 → @)
 /// 5. Lowercase
+/// 6. Validate format (returns empty string if invalid)
 pub(super) fn clean_email(email: &str) -> String {
     let mut result = email.trim().to_string();
 
@@ -248,7 +249,45 @@ pub(super) fn clean_email(email: &str) -> String {
         .to_string();
 
     // Lowercase (treat emails as case-insensitive)
-    result.to_ascii_lowercase()
+    result = result.to_ascii_lowercase();
+
+    // Validate: must have exactly one @, and domain must have valid TLD
+    if let Some(at_pos) = result.find('@') {
+        // Must have exactly one @
+        if result.matches('@').count() != 1 {
+            return String::new();
+        }
+
+        let (_local, domain) = result.split_at(at_pos);
+        let domain = &domain[1..]; // Skip the @
+
+        // Domain must have at least one dot
+        if !domain.contains('.') {
+            return String::new();
+        }
+
+        // Get TLD (last segment after final dot)
+        if let Some(tld) = domain.split('.').next_back() {
+            // TLD must be 2-24 letters only (no numbers, no file extensions)
+            if tld.len() < 2 || tld.len() > 24 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+                return String::new();
+            }
+
+            // Reject common file extensions that might slip through
+            let file_extensions = [
+                "js", "css", "jpg", "jpeg", "png", "gif", "svg", "webp", "ico", "pdf", "doc",
+                "docx", "xls", "xlsx", "zip", "tar", "gz", "mp3", "mp4", "avi", "mov", "prod",
+            ];
+            if file_extensions.contains(&tld) {
+                return String::new();
+            }
+        }
+    } else {
+        // No @ found
+        return String::new();
+    }
+
+    result
 }
 
 /// Clean a single phone number.
