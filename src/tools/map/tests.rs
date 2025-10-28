@@ -2,7 +2,6 @@
 mod tests {
     use crate::tools::map::utils::*;
     use crate::tools::map::*;
-    use crate::types::Options;
     use scraper::Html;
 
     #[tokio::test]
@@ -96,7 +95,7 @@ mod tests {
             </body></html>
         "#;
 
-        let siblings = map_body_siblings(html, &Options::default());
+        let siblings = map_body_siblings(html);
         assert_eq!(siblings.len(), 3);
         assert!(siblings[0].contains("Recipe 1"));
         assert!(siblings[1].contains("Recipe 2"));
@@ -110,7 +109,7 @@ mod tests {
             r#"<div><a href="/recipe/2">Recipe 2</a></div>"#.to_string(),
         ];
 
-        let urls = map_sibling_link(&siblings, "https://example.com", &Options::default());
+        let urls = map_sibling_link(&siblings, "https://example.com");
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/recipe/1");
         assert_eq!(urls[1], "https://example.com/recipe/2");
@@ -128,7 +127,7 @@ mod tests {
         "#
         .to_string()];
 
-        let urls = map_sibling_link(&siblings, "https://example.com", &Options::default());
+        let urls = map_sibling_link(&siblings, "https://example.com");
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0], "https://example.com/recipe/1");
     }
@@ -146,11 +145,7 @@ mod tests {
             </body></html>
         "#;
 
-        let urls = map_siblings(
-            html,
-            "https://example.com",
-            &crate::types::Options::default(),
-        );
+        let urls = map_siblings(html, "https://example.com");
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/recipe/1".to_string()));
         assert!(urls.contains(&"https://example.com/recipe/2".to_string()));
@@ -201,7 +196,7 @@ mod tests {
 
         let doc = Html::parse_document(html);
         let itemlist = map_jsonld_itemlist_from_doc(&doc);
-        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com", &Options::default());
+        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
 
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/recipe/1");
@@ -232,7 +227,7 @@ mod tests {
 
         let doc = Html::parse_document(html);
         let itemlist = map_jsonld_itemlist_from_doc(&doc);
-        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com", &Options::default());
+        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
 
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://site.com/choc-chip");
@@ -265,7 +260,7 @@ mod tests {
 
         let doc = Html::parse_document(html);
         let itemlist = map_jsonld_itemlist_from_doc(&doc);
-        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com", &Options::default());
+        let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
 
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0], "https://site.com/recipe");
@@ -292,11 +287,7 @@ mod tests {
             </html>
         "##;
 
-        let urls = map_itemlist(
-            html,
-            "https://example.com",
-            &crate::types::Options::default(),
-        );
+        let urls = map_itemlist(html, "https://example.com");
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://site.com/recipe-1".to_string()));
         assert!(urls.contains(&"https://direct.com/recipe-2".to_string()));
