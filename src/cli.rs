@@ -115,6 +115,7 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 pub fn run() {
+    use crate::templates;
     use crate::tools;
 
     let cli = Cli::parse();
@@ -143,11 +144,20 @@ pub fn run() {
         }
 
         Commands::Children { url } => {
-            run!(
-                @async url.clone(),
-                tools::map::map_children,
-                &url
-            )
+            let result = runtime::block_on(templates::qrawl_children(
+                vec![url.to_string()],
+                crate::types::Context::default(),
+            ));
+
+            // Extract only URLs from the (URL, HTML) tuples
+            let urls = result.map(|tuples| {
+                tuples
+                    .into_iter()
+                    .map(|(url, _html)| url)
+                    .collect::<Vec<String>>()
+            });
+
+            print_json(&urls);
         }
 
         Commands::Page { url } => {
@@ -182,10 +192,9 @@ pub fn run() {
             ]
         ),
 
-        Commands::Emails { url } => run!(
-            @async_chain url,
-            [tools::extract::extract_emails, tools::clean::clean_emails]
-        ),
+        Commands::Emails { url } => {
+            run!(@template url, templates::qrawl_emails)
+        }
 
         Commands::Phones { url } => run!(
             @async_chain url,

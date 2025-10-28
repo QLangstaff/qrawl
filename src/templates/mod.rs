@@ -30,10 +30,13 @@ pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Result<Vec<String>
         map_children ->
         clean_urls ->
         fetch_auto ->
+        map_page ->
+        clean_urls ->
+        fetch_auto ->
         extract_emails ->
         clean_emails
     }
     .await;
 
-    Ok(result.into_iter().flat_map(|(_, emails)| emails).collect())
+    Ok(result.into_iter().map(|(_, email)| email).collect())
 }

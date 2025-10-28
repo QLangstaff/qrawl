@@ -25,6 +25,18 @@ macro_rules! chain {
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
 
+    // Helper: Flatten and clean globally (Vec<(url, Vec<String>)> -> Vec<(url, String)>)
+    // Takes extracted lists (e.g., emails, phones), flattens all into one list,
+    // applies clean function globally, returns deduplicated flat tuples
+    (@process_flatten_and_clean $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
+        let data: Vec<String> = $items.into_iter()
+            .flat_map(|(_, list): (String, Vec<String>)| list)
+            .collect();
+        let cleaned = $fn(&data).await;
+        let items: Vec<(String, String)> = cleaned.into_iter().map(|d| (d.clone(), d)).collect();
+        $crate::chain!(@process items, $ctx $(, $rest)*)
+    }};
+
     // Helper: Extract functions (Vec<(url, String)> -> Vec<(url, Vec<String>)>)
     (@process_extract $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
         let concurrency = $ctx.concurrency;
@@ -47,14 +59,14 @@ macro_rules! chain {
         $crate::chain!(@process_list_dedupe $items, $ctx, $crate::tools::clean::clean_urls $(, $rest)*)
     }};
 
-    // Dispatch: clean_emails
+    // Dispatch: clean_emails (flattens and deduplicates globally)
     (@process $items:expr, $ctx:expr, clean_emails $(, $rest:ident)*) => {{
-        $crate::chain!(@process_per_url_list $items, $ctx, $crate::tools::clean::clean_emails $(, $rest)*)
+        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_emails $(, $rest)*)
     }};
 
-    // Dispatch: clean_phones
+    // Dispatch: clean_phones (flattens and deduplicates globally)
     (@process $items:expr, $ctx:expr, clean_phones $(, $rest:ident)*) => {{
-        $crate::chain!(@process_per_url_list $items, $ctx, $crate::tools::clean::clean_phones $(, $rest)*)
+        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_phones $(, $rest)*)
     }};
 
     // Dispatch: extract_emails
@@ -77,6 +89,25 @@ macro_rules! chain {
                 let children = $crate::tools::map::map_children(&html, &url).await;
                 children.into_iter()
                     .map(|child| (child.clone(), child))
+                    .collect::<Vec<(String, String)>>()
+            }
+        ).await
+        .into_iter()
+        .flatten()
+        .collect();
+        $crate::chain!(@process items, $ctx $(, $rest)*)
+    }};
+
+    // map_page: batched per-item, needs URL from tuple, flattens Vec<String> results
+    (@process $items:expr, $ctx:expr, map_page $(, $rest:ident)*) => {{
+        let concurrency = $ctx.concurrency;
+        let items: Vec<(String, String)> = $crate::tools::batch::batch(
+            $items,
+            concurrency,
+            |(url, html): (String, String)| async move {
+                let links = $crate::tools::map::map_page(&html, &url).await;
+                links.into_iter()
+                    .map(|link| (link.clone(), link))
                     .collect::<Vec<(String, String)>>()
             }
         ).await
@@ -154,6 +185,15 @@ macro_rules! run {
     // For Vec<String> input with sync processor
     (@vec $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
         let result = $processor(&$input $(, $arg)*);
+        $crate::cli::print_json(&result);
+    }};
+    // For template functions that take Vec<String> and Context
+    (@template $input:expr, $processor:expr $(,)?) => {{
+        let url = $input;
+        let result = $crate::runtime::block_on($processor(
+            vec![url.to_string()],
+            $crate::types::Context::default()
+        ));
         $crate::cli::print_json(&result);
     }};
     // For String input with two-step async -> async processor chain
