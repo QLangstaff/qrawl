@@ -65,18 +65,18 @@ impl SiblingGroup {
 ///
 /// Detects sibling patterns in HTML structure and extracts the first URL from each sibling.
 /// Domain filtering happens during detection to affect group selection.
-pub(super) fn map_siblings(html: &str, base_url: &str) -> Vec<String> {
+pub(super) fn map_siblings(html: &str, url: &str) -> Vec<String> {
     let siblings = map_body_siblings(html);
-    map_sibling_link(&siblings, base_url)
+    map_sibling_link(&siblings, url)
 }
 
 /// Map child URLs from JSON-LD ItemList.
 ///
 /// Extracts ItemList from JSON-LD and resolves URLs (including anchor references).
-pub(super) fn map_itemlist(html: &str, base_url: &str) -> Vec<String> {
+pub(super) fn map_itemlist(html: &str, url: &str) -> Vec<String> {
     let doc = Html::parse_document(html);
     let itemlist = map_jsonld_itemlist_from_doc(&doc);
-    map_itemlist_link(&itemlist, &doc, base_url)
+    map_itemlist_link(&itemlist, &doc, url)
 }
 
 /// Map body content to sibling HTML fragments.
@@ -344,11 +344,11 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 /// - Fragments are small (individual sibling elements, not full pages)
 /// - Parsing overhead is minimal compared to network I/O
 /// - Alternative (keeping ElementRefs) would require major API refactor
-pub(super) fn map_sibling_link(siblings: &[String], base_url: &str) -> Vec<String> {
-    let base = match Url::parse(base_url) {
+pub(super) fn map_sibling_link(siblings: &[String], url: &str) -> Vec<String> {
+    let base = match Url::parse(url) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("Warning: Invalid base URL '{}': {}", base_url, e);
+            eprintln!("Warning: Invalid URL '{}': {}", url, e);
             return Vec::new();
         }
     };
@@ -411,11 +411,11 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
 /// 1. Full external URLs - Return as-is
 /// 2. Anchor references (#id) - Find element and extract link
 /// 3. Relative URLs - Resolve to absolute
-pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, base_url: &str) -> Vec<String> {
-    let base = match Url::parse(base_url) {
+pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Vec<String> {
+    let base = match Url::parse(url) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("Warning: Invalid base URL '{}': {}", base_url, e);
+            eprintln!("Warning: Invalid URL '{}': {}", url, e);
             return Vec::new();
         }
     };

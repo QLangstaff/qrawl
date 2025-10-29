@@ -6,11 +6,11 @@ mod utils;
 use crate::selectors::LINK_SELECTOR;
 
 /// Map URLs from HTML.
-pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
+pub async fn map_page(html: &str, url: &str) -> Vec<String> {
     let html = html.to_string();
-    let base_url = base_url.to_string();
+    let url = url.to_string();
     tokio::task::spawn_blocking(move || {
-        let base = match url::Url::parse(&base_url) {
+        let base = match url::Url::parse(&url) {
             Ok(u) => u,
             Err(_) => return Vec::new(),
         };
@@ -51,13 +51,17 @@ pub async fn map_page(html: &str, base_url: &str) -> Vec<String> {
 }
 
 /// Map child URLs from HTML.
-pub async fn map_children(html: &str, base_url: &str) -> Vec<String> {
+pub async fn map_children(html: &str, url: &str) -> Vec<String> {
     let html = html.to_string();
-    let base_url = base_url.to_string();
+    let url = url.to_string();
     tokio::task::spawn_blocking(move || {
-        let siblings = utils::map_siblings(&html, &base_url);
-        let itemlist = utils::map_itemlist(&html, &base_url);
-        crate::merge!(siblings, itemlist)
+        let siblings = utils::map_siblings(&html, &url);
+        let itemlist = utils::map_itemlist(&html, &url);
+        let mut result = crate::merge!(siblings, itemlist);
+        if result.is_empty() {
+            result = vec![url];
+        }
+        result
     })
     .await
     .expect("map_children: spawn_blocking failed")
