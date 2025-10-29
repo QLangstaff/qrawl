@@ -7,11 +7,11 @@ use crate::selectors::LINK_SELECTOR;
 // Lazy static regex patterns
 static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
     // More strict email pattern that excludes common false positives:
+    // - Word boundaries (\b) ensure we match complete emails, not parts of concatenated text
     // - Local part: alphanumeric, dots, underscores, percent, plus, hyphens
     // - Domain: alphanumeric segments separated by dots or hyphens
     // - TLD: must be letters only (2-24 chars), excludes file extensions like .js, .css, .jpg
-    // - Negative lookahead to exclude common file/package extensions before @
-    Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,24}").expect("valid regex")
+    Regex::new(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,24}\b").expect("valid regex")
 });
 static PHONE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
@@ -23,7 +23,8 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
     for link in doc.select(&LINK_SELECTOR) {
         if let Some(href) = link.value().attr("href") {
             if let Some(value) = href.strip_prefix(prefix) {
-                let clean = value.split('?').next().unwrap_or(value);
+                // Trim whitespace and remove query parameters
+                let clean = value.split('?').next().unwrap_or(value).trim();
                 if !clean.is_empty() {
                     results.push(clean.to_string());
                 }
@@ -35,7 +36,10 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
 
 /// Extract values from text content using a regex pattern
 fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
-    let text = doc.root_element().text().collect::<String>();
+    // Join text nodes with spaces to prevent adjacent elements from creating false patterns
+    // e.g., <div>9631</div><a>contact@domain.com</a> becomes "9631 contact@domain.com"
+    // instead of "9631contact@domain.com"
+    let text = doc.root_element().text().collect::<Vec<_>>().join(" ");
     regex
         .captures_iter(&text)
         .filter_map(|cap| cap.get(0))

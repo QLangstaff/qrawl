@@ -243,10 +243,13 @@ pub(super) fn clean_email(email: &str) -> String {
         }
     }
 
-    // URL decode (handle %40 and other encoded characters)
+    // URL decode (handle %40 and other encoded characters like %20 for space)
     result = urlencoding::decode(&result)
         .unwrap_or(std::borrow::Cow::Borrowed(&result))
         .to_string();
+
+    // Trim again after URL decoding (in case %20 or other encoded whitespace was decoded)
+    result = result.trim().to_string();
 
     // Lowercase (treat emails as case-insensitive)
     result = result.to_ascii_lowercase();
@@ -268,8 +271,8 @@ pub(super) fn clean_email(email: &str) -> String {
 
         // Get TLD (last segment after final dot)
         if let Some(tld) = domain.split('.').next_back() {
-            // TLD must be 2-24 letters only (no numbers, no file extensions)
-            if tld.len() < 2 || tld.len() > 24 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+            // TLD must be 2-10 letters only (real TLDs are typically short)
+            if tld.len() < 2 || tld.len() > 10 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
                 return String::new();
             }
 
