@@ -8,7 +8,7 @@ repository = "https://github.com/QLangstaff/qrawl"
 homepage = "https://github.com/QLangstaff/qrawl"
 documentation = "https://docs.rs/qrawl"
 readme = "README.md"
-keywords = ["web-crawler", "web-scraper", "web-scraping", "async", "html"]
+keywords = ["crawl", "scrape", "agent", "rag", "tools"]
 categories = ["command-line-utilities", "web-programming::http-client", "parsing"]
 rust-version = "1.74"
 
