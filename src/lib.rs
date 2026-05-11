@@ -12,4 +12,4 @@ pub mod types;
 mod tests;
 
 // Re-export commonly used items
-pub use types::{Context, Options};
+pub use types::Context;

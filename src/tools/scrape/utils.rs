@@ -18,7 +18,10 @@ pub(super) fn scrape_body_content(html: &str) -> String {
 
 pub(super) fn scrape_jsonld_scripts(html: &str) -> Jsonld {
     let document = Html::parse_document(html);
+    scrape_jsonld_from_doc(&document)
+}
 
+pub(super) fn scrape_jsonld_from_doc(document: &Html) -> Jsonld {
     document
         .select(&JSONLD_SELECTOR)
         .filter_map(|el| {
@@ -44,6 +47,10 @@ fn flatten_jsonld(value: Value) -> Vec<Value> {
 
 pub(super) fn scrape_metadata_tags(html: &str) -> Metadata {
     let document = Html::parse_document(html);
+    scrape_metadata_from_doc(&document)
+}
+
+pub(super) fn scrape_metadata_from_doc(document: &Html) -> Metadata {
     let mut tags = Vec::new();
 
     if let Some(el) = document.select(&TITLE_SELECTOR).next() {

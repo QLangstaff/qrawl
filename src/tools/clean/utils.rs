@@ -59,6 +59,32 @@ static JUNK_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 static NEWLINE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\n").expect("valid regex"));
 
+/// Tracking / analytics query parameters stripped by `canonicalize_url` so the
+/// same page reached via different campaigns/referrers canonicalizes identically.
+///
+/// Coverage is the top ~10 sources that dominate real-world noise; not exhaustive.
+/// In addition to this exact-match list, any param whose name starts with `utm_`
+/// is stripped (covers the full Urchin Tracking Module family).
+const TRACKING_PARAM_PREFIXES: &[&str] = &["utm_"];
+const TRACKING_PARAM_NAMES: &[&str] = &[
+    "fbclid",  // Facebook click ID
+    "gclid",   // Google Ads click ID
+    "mc_eid",  // Mailchimp email ID
+    "mc_cid",  // Mailchimp campaign ID
+    "_ga",     // Google Analytics
+    "igshid",  // Instagram share ID
+    "ref",     // generic referrer
+    "ref_src", // Twitter/X referrer source
+    "ref_url", // generic referrer URL
+];
+
+fn is_tracking_param(key: &str) -> bool {
+    TRACKING_PARAM_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        || TRACKING_PARAM_NAMES.contains(&key)
+}
+
 /// Decode HTML entities (named and numeric).
 ///
 /// Examples:
@@ -154,15 +180,17 @@ pub fn canonicalize_domain(host: &str) -> String {
 /// 2. Normalize protocol to https
 /// 3. Canonicalize domain (lowercase, IDNA, strip www)
 /// 4. Normalize path (strip all trailing slashes)
-/// 5. Sort query parameters
-/// 6. Remove fragment
+/// 5. Strip tracking / analytics query params (utm_*, fbclid, gclid, ...)
+/// 6. Sort remaining query parameters
+/// 7. Remove fragment
 ///
 /// Examples:
 /// - `example.com` → `https://example.com`
 /// - `HTTP://Example.com/path/` → `https://example.com/path`
 /// - `https://www.example.com?b=2&a=1` → `https://example.com?a=1&b=2`
 /// - `https://example.com/page#section` → `https://example.com/page`
-pub(super) fn canonicalize_url(url: &str) -> String {
+/// - `https://example.com?utm_source=x&id=7` → `https://example.com?id=7`
+pub fn canonicalize_url(url: &str) -> String {
     // Prepend https:// if protocol is missing (case-insensitive check)
     // Only prepend if it looks like a domain (contains a dot)
     let url_lower = url.to_ascii_lowercase();
@@ -199,9 +227,12 @@ pub(super) fn canonicalize_url(url: &str) -> String {
     };
     parsed.set_path(new_path);
 
-    // 4. Sort query parameters
+    // 4. Strip tracking params, then sort remaining query parameters
     if parsed.query().is_some() {
-        let params: BTreeMap<_, _> = parsed.query_pairs().collect();
+        let params: BTreeMap<_, _> = parsed
+            .query_pairs()
+            .filter(|(k, _)| !is_tracking_param(k.as_ref()))
+            .collect();
         if !params.is_empty() {
             let sorted_query = params
                 .iter()

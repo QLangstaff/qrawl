@@ -2,17 +2,22 @@
 
 use clap::{Parser, Subcommand};
 use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::runtime;
-use crate::tools::fetch::fetch_auto;
+use crate::{runtime, templates, tools, types};
+
+static FAST_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(
     name = "qrawl",
     version,
-    about = "Composable web crawling tools for Rust"
+    about = "Rust toolkit to crawl web data for AI agents"
 )]
 struct Cli {
+    #[arg(long, global = true)]
+    fast: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -101,7 +106,12 @@ pub fn read_input(input: &str) -> String {
 }
 
 pub fn fetch_url(url: &str) -> String {
-    runtime::block_on(fetch_auto(url)).unwrap_or_else(|e| {
+    let result = if FAST_MODE.load(Ordering::Relaxed) {
+        runtime::block_on(tools::fetch::fetch_fast(url))
+    } else {
+        runtime::block_on(tools::fetch::fetch_auto(url))
+    };
+    result.unwrap_or_else(|e| {
         eprintln!("Failed to fetch {}: {}", url, e);
         std::process::exit(1);
     })
@@ -115,10 +125,13 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 pub fn run() {
-    use crate::templates;
-    use crate::tools;
-
     let cli = Cli::parse();
+    FAST_MODE.store(cli.fast, Ordering::Relaxed);
+    let ctx = if cli.fast {
+        types::Context::fast()
+    } else {
+        types::Context::auto()
+    };
 
     match cli.command {
         Commands::Fetch { url } => {
@@ -146,7 +159,7 @@ pub fn run() {
         Commands::Children { url } => {
             let result = runtime::block_on(templates::qrawl_children(
                 vec![url.to_string()],
-                crate::types::Context::default(),
+                ctx,
             ));
 
             // Extract only URLs from the (URL, HTML) tuples
@@ -193,11 +206,11 @@ pub fn run() {
         ),
 
         Commands::Emails { url } => {
-            run!(@template url, templates::qrawl_emails)
+            run!(@template url, templates::qrawl_emails, ctx)
         }
 
         Commands::Phones { url } => run!(
-            @async_chain url,
+            @async url,
             [tools::extract::extract_phones, tools::clean::clean_phones]
         ),
     }

@@ -9,7 +9,7 @@ macro_rules! chain {
     // Helper: List dedupe functions (&[String] -> Vec<String>, operates on whole list)
     (@process_list_dedupe $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
         let data: Vec<String> = $items.iter().map(|(_, d)| d.clone()).collect();
-        let cleaned = $fn(&data).await;
+        let cleaned = $fn(&data);
         let items: Vec<(String, String)> = cleaned.into_iter().map(|d| (d.clone(), d)).collect();
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
@@ -18,7 +18,7 @@ macro_rules! chain {
     (@process_per_url_list $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
         let mut cleaned_items = Vec::new();
         for (url, list) in $items {
-            let cleaned = $fn(&list).await;
+            let cleaned = $fn(&list);
             cleaned_items.push((url, cleaned));
         }
         let items: Vec<(String, Vec<String>)> = cleaned_items;
@@ -32,7 +32,7 @@ macro_rules! chain {
         let data: Vec<String> = $items.into_iter()
             .flat_map(|(_, list): (String, Vec<String>)| list)
             .collect();
-        let cleaned = $fn(&data).await;
+        let cleaned = $fn(&data);
         let items: Vec<(String, String)> = cleaned.into_iter().map(|d| (d.clone(), d)).collect();
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
@@ -156,9 +156,12 @@ macro_rules! chain {
             use std::sync::Arc;
             let ctx = Arc::new($ctx);
             let items: Vec<(String, String)> = $urls.into_iter().map(|u| (u.clone(), u)).collect();
+            let fetch_cache = $crate::types::fetch_cache_new();
 
             $crate::types::CTX.scope(ctx.clone(), async move {
-                $crate::chain!(@process items, ctx, $first $(, $rest)*)
+                $crate::types::FETCH_CACHE.scope(fetch_cache, async move {
+                    $crate::chain!(@process items, ctx, $first $(, $rest)*)
+                }).await
             }).await
         }
     }};
@@ -188,22 +191,13 @@ macro_rules! run {
         $crate::cli::print_json(&result);
     }};
     // For template functions that take Vec<String> and Context
-    (@template $input:expr, $processor:expr $(,)?) => {{
+    (@template $input:expr, $processor:expr, $ctx:expr $(,)?) => {{
         let url = $input;
-        let result = $crate::runtime::block_on($processor(
-            vec![url.to_string()],
-            $crate::types::Context::default()
-        ));
+        let result = $crate::runtime::block_on($processor(vec![url.to_string()], $ctx));
         $crate::cli::print_json(&result);
     }};
-    // For String input with two-step async -> async processor chain
-    (@async_chain $input:expr, [$first:expr, $second:expr] $(,)?) => {{
-        let data = $crate::cli::read_input(&$input);
-        let result = $crate::runtime::block_on(async move {
-            let intermediate = $first(&data).await;
-            $second(&intermediate).await  // Both async
-        });
-        $crate::cli::print_json(&result);
+    (@template $input:expr, $processor:expr $(,)?) => {{
+        $crate::run!(@template $input, $processor, $crate::types::Context::auto())
     }};
     // For String input with two-step async -> sync processor chain
     (@async $input:expr, [$first:expr, $second:expr] $(,)?) => {{

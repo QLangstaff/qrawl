@@ -1,4 +1,5 @@
 use crate::selectors::{JSONLD_SELECTOR, LINK_SELECTOR};
+use crate::tools::clean::utils::canonicalize_domain;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use url::Url;
@@ -65,18 +66,32 @@ impl SiblingGroup {
 ///
 /// Detects sibling patterns in HTML structure and extracts the first URL from each sibling.
 /// Domain filtering happens during detection to affect group selection.
+#[cfg(test)]
 pub(super) fn map_siblings(html: &str, url: &str) -> Vec<String> {
     let siblings = map_body_siblings(html);
+    map_sibling_link(&siblings, url)
+}
+
+/// Map child URLs from HTML siblings using a pre-parsed document.
+pub(super) fn map_siblings_from_doc(doc: &Html, url: &str) -> Vec<String> {
+    let siblings = map_body_siblings_from_doc(doc);
     map_sibling_link(&siblings, url)
 }
 
 /// Map child URLs from JSON-LD ItemList.
 ///
 /// Extracts ItemList from JSON-LD and resolves URLs (including anchor references).
+#[cfg(test)]
 pub(super) fn map_itemlist(html: &str, url: &str) -> Vec<String> {
     let doc = Html::parse_document(html);
     let itemlist = map_jsonld_itemlist_from_doc(&doc);
     map_itemlist_link(&itemlist, &doc, url)
+}
+
+/// Map child URLs from JSON-LD ItemList using a pre-parsed document.
+pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
+    let itemlist = map_jsonld_itemlist_from_doc(doc);
+    map_itemlist_link(&itemlist, doc, url)
 }
 
 /// Map body content to sibling HTML fragments.
@@ -104,8 +119,14 @@ pub(super) fn map_itemlist(html: &str, url: &str) -> Vec<String> {
 /// Domain filtering happens during detection to affect group selection.
 /// Groups with only blocked domains are excluded before scoring.
 ///
+#[cfg(test)]
 pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
     let doc = Html::parse_document(html);
+    map_body_siblings_from_doc(&doc)
+}
+
+/// Same as `map_body_siblings` but reuses an already-parsed document.
+pub(super) fn map_body_siblings_from_doc(doc: &Html) -> Vec<String> {
     let root = doc.root_element();
 
     // Scan entire tree and find ALL sibling groups at ALL levels
@@ -446,7 +467,6 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                                     // Compare hosts with canonicalization (strips www., lowercases, etc.)
                                     let hosts_match = match (url.host_str(), base.host_str()) {
                                         (Some(url_host), Some(base_host)) => {
-                                            use crate::tools::clean::utils::canonicalize_domain;
                                             canonicalize_domain(url_host)
                                                 == canonicalize_domain(base_host)
                                         }

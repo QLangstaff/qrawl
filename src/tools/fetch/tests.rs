@@ -2,7 +2,7 @@
 mod tests {
     use crate::tools::fetch::headers::headers_for_profile;
     use crate::tools::fetch::profile::FetchProfile;
-    use crate::tools::fetch::utils::{jitter_ms, validate_response};
+    use crate::tools::fetch::utils::validate_response;
     use reqwest::StatusCode;
 
     fn padded_html(marker: &str) -> String {
@@ -63,19 +63,6 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("\"Android\"")
         );
-    }
-
-    #[test]
-    fn jitter_returns_within_range() {
-        for _ in 0..100 {
-            let result = jitter_ms(100);
-            assert!(result < 100, "jitter_ms returned {}", result);
-        }
-    }
-
-    #[test]
-    fn jitter_zero_range_returns_zero() {
-        assert_eq!(jitter_ms(0), 0);
     }
 
     #[test]

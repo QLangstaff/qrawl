@@ -1,23 +1,68 @@
 //! Shared Types
 
+use dashmap::DashMap;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Fetch strategy for pipeline `fetch_*` steps.
+///
+/// - `Auto` (default): Minimal → Windows → iOS fetch strategy cascade.
+/// - `Fast`: Minimal fetch strategy only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchStrategy {
+    Auto,
+    Fast,
+}
+
+/// Default fetch timeout.
+pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default concurrency.
+pub const DEFAULT_CONCURRENCY: usize = 1000;
 
 /// Context to chain tools
 #[derive(Debug, Clone)]
 pub struct Context {
+    pub fetch_strategy: FetchStrategy,
+    pub fetch_timeout: Duration,
+    pub concurrency: usize,
     pub allow_domains: Option<Vec<String>>,
     pub block_domains: Option<Vec<String>>,
-    pub concurrency: usize,
 }
 
 impl Context {
-    pub fn new() -> Self {
+    /// Context with the Minimal→Windows→iOS fetch strategy cascade.
+    pub fn auto() -> Self {
         Self {
+            fetch_strategy: FetchStrategy::Auto,
+            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+            concurrency: DEFAULT_CONCURRENCY,
             allow_domains: None,
             block_domains: None,
-            concurrency: 200,
         }
+    }
+
+    /// Context with the Minimal fetch strategy only.
+    pub fn fast() -> Self {
+        Self {
+            fetch_strategy: FetchStrategy::Fast,
+            ..Self::auto()
+        }
+    }
+
+    /// Override the per-request fetch timeout. Applied to each profile attempt
+    /// via reqwest's `RequestBuilder::timeout`. Bulk workloads typically set
+    /// this aggressively (e.g., 5s) to cap tail latency; single-URL workflows
+    /// leave it at the default to give slow sites a chance.
+    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = timeout;
+        self
+    }
+
+    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
+        self
     }
 
     pub fn with_allow_domains(mut self, domains: &[&str]) -> Self {
@@ -29,69 +74,42 @@ impl Context {
         self.block_domains = Some(domains.iter().map(|s| s.to_string()).collect());
         self
     }
-
-    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency;
-        self
-    }
-
-    /// Convert context to Options for tools that need it.
-    pub fn as_options(&self) -> Option<Options> {
-        if self.allow_domains.is_some() || self.block_domains.is_some() {
-            Some(Options {
-                allow_domains: self.allow_domains.clone(),
-                block_domains: self.block_domains.clone(),
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl Default for Context {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 tokio::task_local! {
     pub static CTX: Arc<Context>;
+    /// Per-pipeline fetch cache (canonical URL -> HTML). Populated by fetch functions
+    /// on success and consulted on subsequent calls within the same `chain!` invocation.
+    pub static FETCH_CACHE: Arc<DashMap<String, String>>;
 }
 
-pub fn get_options() -> Options {
-    CTX.try_with(|ctx| ctx.as_options())
+pub fn fetch_cache_new() -> Arc<DashMap<String, String>> {
+    Arc::new(DashMap::new())
+}
+
+pub fn fetch_cache_get(url: &str) -> Option<String> {
+    FETCH_CACHE
+        .try_with(|cache| cache.get(url).map(|v| v.clone()))
         .ok()
         .flatten()
-        .unwrap_or_default()
 }
 
-pub fn get_concurrency() -> usize {
-    CTX.try_with(|ctx| ctx.concurrency).ok().unwrap_or(200)
+pub fn fetch_cache_put(url: &str, html: &str) {
+    let _ = FETCH_CACHE.try_with(|cache| {
+        cache.insert(url.to_string(), html.to_string());
+    });
 }
 
-/// Options to customize tool behavior
-#[derive(Debug, Clone, Default)]
-pub struct Options {
-    /// Domains to allow (whitelist mode)
-    pub allow_domains: Option<Vec<String>>,
-    /// Domains to block (blacklist mode)
-    pub block_domains: Option<Vec<String>>,
+pub fn get_fetch_strategy() -> FetchStrategy {
+    CTX.try_with(|ctx| ctx.fetch_strategy)
+        .ok()
+        .unwrap_or(FetchStrategy::Auto)
 }
 
-impl Options {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn allow_domains(mut self, domains: &[&str]) -> Self {
-        self.allow_domains = Some(domains.iter().map(|s| s.to_string()).collect());
-        self
-    }
-
-    pub fn block_domains(mut self, domains: &[&str]) -> Self {
-        self.block_domains = Some(domains.iter().map(|s| s.to_string()).collect());
-        self
-    }
+pub fn get_fetch_timeout() -> Duration {
+    CTX.try_with(|ctx| ctx.fetch_timeout)
+        .ok()
+        .unwrap_or(DEFAULT_FETCH_TIMEOUT)
 }
 
 /// JSON-LD array of schema.org objects.

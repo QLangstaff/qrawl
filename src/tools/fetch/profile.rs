@@ -25,22 +25,3 @@ pub enum FetchProfile {
     /// Chrome on Android
     Android,
 }
-
-impl Default for FetchProfile {
-    fn default() -> Self {
-        Self::Windows // Most common platform
-    }
-}
-
-impl FetchProfile {
-    /// Fetch Profile Name
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Minimal => "Minimal",
-            Self::Windows => "Windows (Chrome)",
-            Self::MacOS => "macOS (Safari)",
-            Self::IOS => "iOS (Safari)",
-            Self::Android => "Android (Chrome)",
-        }
-    }
-}

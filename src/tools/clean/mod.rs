@@ -3,6 +3,73 @@
 mod tests;
 pub mod utils;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
+pub use utils::canonicalize_url;
+
+/// A URL that is guaranteed to have been run through `canonicalize_url`.
+///
+/// Construct via `CanonicalUrl::new` (or `From<&str>` / `From<String>`); the
+/// inner field is private so the invariant cannot be bypassed.
+///
+/// Serialization is transparent (a bare string). Deserialization is **strict**:
+/// it re-runs `canonicalize_url` on incoming values so non-canonical strings
+/// from databases / API payloads / hand-written JSON cannot sneak past the
+/// invariant. (Re-canonicalizing canonical input is a no-op — `canonicalize_url`
+/// is idempotent.)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct CanonicalUrl(String);
+
+impl CanonicalUrl {
+    /// Canonicalize and wrap. Idempotent if the input is already canonical.
+    pub fn new(raw: &str) -> Self {
+        Self(canonicalize_url(raw))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for CanonicalUrl {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CanonicalUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for CanonicalUrl {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for CanonicalUrl {
+    fn from(s: String) -> Self {
+        Self::new(&s)
+    }
+}
+
+impl<'de> Deserialize<'de> for CanonicalUrl {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::new(&raw))
+    }
+}
+
 /// Clean text
 ///
 /// - Decode HTML entities
@@ -10,19 +77,13 @@ pub mod utils;
 /// - Remove zero-width characters
 /// - Remove control characters
 /// - Normalize whitespace
-pub async fn clean_text(text: &str) -> String {
-    let text = text.to_string();
-    tokio::task::spawn_blocking(move || {
-        let mut result = text;
-        result = utils::decode_html_entities(&result);
-        result = utils::normalize_unicode(&result);
-        result = utils::remove_zero_width_chars(&result);
-        result = utils::remove_control_chars(&result);
-        result = utils::normalize_whitespace(&result);
-        result
-    })
-    .await
-    .expect("clean_text: spawn_blocking failed")
+pub fn clean_text(text: &str) -> String {
+    let mut result = utils::decode_html_entities(text);
+    result = utils::normalize_unicode(&result);
+    result = utils::remove_zero_width_chars(&result);
+    result = utils::remove_control_chars(&result);
+    result = utils::normalize_whitespace(&result);
+    result
 }
 
 /// Clean HTML
@@ -52,7 +113,7 @@ pub async fn clean_html(html: &str) -> String {
 /// - Sort query parameters
 /// - Remove fragment
 /// - Deduplicate
-pub async fn clean_urls(urls: &[String]) -> Vec<String> {
+pub fn clean_urls(urls: &[String]) -> Vec<String> {
     crate::dedupe!(urls, utils::canonicalize_url)
 }
 
@@ -64,7 +125,7 @@ pub async fn clean_urls(urls: &[String]) -> Vec<String> {
 /// - URL decode
 /// - Lowercase
 /// - Deduplicate
-pub async fn clean_emails(emails: &[String]) -> Vec<String> {
+pub fn clean_emails(emails: &[String]) -> Vec<String> {
     crate::dedupe!(emails, utils::clean_email)
 }
 
@@ -75,6 +136,6 @@ pub async fn clean_emails(emails: &[String]) -> Vec<String> {
 /// - Keep leading `+` for international numbers
 /// - Remove non-digit characters
 /// - Deduplicate
-pub async fn clean_phones(phones: &[String]) -> Vec<String> {
+pub fn clean_phones(phones: &[String]) -> Vec<String> {
     crate::dedupe!(phones, utils::clean_phone)
 }

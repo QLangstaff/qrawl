@@ -9,29 +9,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_html_entities_named() {
-        assert_eq!(clean_text("&amp;").await, "&");
-        assert_eq!(clean_text("&lt;").await, "<");
-        assert_eq!(clean_text("&gt;").await, ">");
-        assert_eq!(clean_text("&quot;").await, "\"");
-        assert_eq!(clean_text("&apos;").await, "'");
+        assert_eq!(clean_text("&amp;"), "&");
+        assert_eq!(clean_text("&lt;"), "<");
+        assert_eq!(clean_text("&gt;"), ">");
+        assert_eq!(clean_text("&quot;"), "\"");
+        assert_eq!(clean_text("&apos;"), "'");
         // nbsp is decoded but then normalized by whitespace normalization
-        assert_eq!(clean_text("&nbsp;").await, "");
+        assert_eq!(clean_text("&nbsp;"), "");
     }
 
     #[tokio::test]
     async fn test_html_entities_numeric() {
-        assert_eq!(clean_text("&#39;").await, "'");
-        assert_eq!(clean_text("&#x27;").await, "'");
-        assert_eq!(clean_text("&#34;").await, "\"");
-        assert_eq!(clean_text("&#x22;").await, "\"");
+        assert_eq!(clean_text("&#39;"), "'");
+        assert_eq!(clean_text("&#x27;"), "'");
+        assert_eq!(clean_text("&#34;"), "\"");
+        assert_eq!(clean_text("&#x22;"), "\"");
     }
 
     #[tokio::test]
     async fn test_html_entities_combined() {
-        assert_eq!(clean_text("&lt;div&gt;").await, "<div>");
-        assert_eq!(clean_text("Tom &amp; Jerry").await, "Tom & Jerry");
+        assert_eq!(clean_text("&lt;div&gt;"), "<div>");
+        assert_eq!(clean_text("Tom &amp; Jerry"), "Tom & Jerry");
         assert_eq!(
-            clean_text("It&#39;s &quot;great&quot;").await,
+            clean_text("It&#39;s &quot;great&quot;"),
             "It's \"great\""
         );
     }
@@ -43,43 +43,43 @@ mod tests {
         let decomposed = "e\u{0301}"; // e + combining acute accent
 
         // After cleaning, both should be the same
-        assert_eq!(clean_text(precomposed).await, clean_text(decomposed).await);
-        assert_eq!(clean_text(precomposed).await, "é");
+        assert_eq!(clean_text(precomposed), clean_text(decomposed));
+        assert_eq!(clean_text(precomposed), "é");
     }
 
     #[tokio::test]
     async fn test_zero_width_characters() {
-        assert_eq!(clean_text("hello\u{200B}world").await, "helloworld");
-        assert_eq!(clean_text("test\u{200C}ing").await, "testing");
-        assert_eq!(clean_text("word\u{200D}join").await, "wordjoin");
-        assert_eq!(clean_text("\u{FEFF}text").await, "text");
+        assert_eq!(clean_text("hello\u{200B}world"), "helloworld");
+        assert_eq!(clean_text("test\u{200C}ing"), "testing");
+        assert_eq!(clean_text("word\u{200D}join"), "wordjoin");
+        assert_eq!(clean_text("\u{FEFF}text"), "text");
     }
 
     #[tokio::test]
     async fn test_control_characters() {
         // Should remove most control characters
-        assert_eq!(clean_text("hello\x00world").await, "helloworld");
-        assert_eq!(clean_text("test\x01ing").await, "testing");
+        assert_eq!(clean_text("hello\x00world"), "helloworld");
+        assert_eq!(clean_text("test\x01ing"), "testing");
 
         // But keep newlines and tabs (then normalized to space)
-        assert_eq!(clean_text("line1\nline2").await, "line1 line2"); // Normalized to space
-        assert_eq!(clean_text("tab\there").await, "tab here"); // Normalized to space
+        assert_eq!(clean_text("line1\nline2"), "line1 line2"); // Normalized to space
+        assert_eq!(clean_text("tab\there"), "tab here"); // Normalized to space
     }
 
     #[tokio::test]
     async fn test_clean_text_handles_crlf_mixture() {
         let mixed = "First\r\nSecond\rThird\tFourth";
-        assert_eq!(clean_text(mixed).await, "First Second Third Fourth");
+        assert_eq!(clean_text(mixed), "First Second Third Fourth");
     }
 
     #[tokio::test]
     async fn test_whitespace_normalization() {
-        assert_eq!(clean_text("hello   world").await, "hello world");
-        assert_eq!(clean_text("  trim  me  ").await, "trim me");
-        assert_eq!(clean_text("multiple\n\n\nlines").await, "multiple lines");
-        assert_eq!(clean_text("lots\t\t\tof\t\ttabs").await, "lots of tabs");
+        assert_eq!(clean_text("hello   world"), "hello world");
+        assert_eq!(clean_text("  trim  me  "), "trim me");
+        assert_eq!(clean_text("multiple\n\n\nlines"), "multiple lines");
+        assert_eq!(clean_text("lots\t\t\tof\t\ttabs"), "lots of tabs");
         assert_eq!(
-            clean_text("  leading and trailing  ").await,
+            clean_text("  leading and trailing  "),
             "leading and trailing"
         );
     }
@@ -87,59 +87,59 @@ mod tests {
     #[tokio::test]
     async fn test_combined_cleaning() {
         let dirty = "Hello &amp; &#39;world&#39;   with   \u{200B}spaces\x00";
-        assert_eq!(clean_text(dirty).await, "Hello & 'world' with spaces");
+        assert_eq!(clean_text(dirty), "Hello & 'world' with spaces");
     }
 
     #[tokio::test]
     async fn test_real_world_examples() {
         // Recipe title with entities
         assert_eq!(
-            clean_text("Ben &amp; Jerry&#39;s Ice Cream").await,
+            clean_text("Ben &amp; Jerry&#39;s Ice Cream"),
             "Ben & Jerry's Ice Cream"
         );
 
         // Description with extra whitespace
         assert_eq!(
-            clean_text("there   are   too   many   spaces!").await,
+            clean_text("there   are   too   many   spaces!"),
             "there are too many spaces!"
         );
 
         // Mixed issues
         assert_eq!(
-            clean_text("  &lt;b&gt;Bold&lt;/b&gt;   text  ").await,
+            clean_text("  &lt;b&gt;Bold&lt;/b&gt;   text  "),
             "<b>Bold</b> text"
         );
     }
 
     #[tokio::test]
     async fn test_empty_and_whitespace() {
-        assert_eq!(clean_text("").await, "");
-        assert_eq!(clean_text("   ").await, "");
-        assert_eq!(clean_text("\n\n\n").await, "");
-        assert_eq!(clean_text("\t\t\t").await, "");
+        assert_eq!(clean_text(""), "");
+        assert_eq!(clean_text("   "), "");
+        assert_eq!(clean_text("\n\n\n"), "");
+        assert_eq!(clean_text("\t\t\t"), "");
     }
 
     #[tokio::test]
     async fn test_no_changes_needed() {
-        assert_eq!(clean_text("perfect text").await, "perfect text");
-        assert_eq!(clean_text("no entities here").await, "no entities here");
+        assert_eq!(clean_text("perfect text"), "perfect text");
+        assert_eq!(clean_text("no entities here"), "no entities here");
     }
 
     #[tokio::test]
     async fn test_preserves_intentional_characters() {
         // Should not remove these
-        assert_eq!(clean_text("hello-world").await, "hello-world");
-        assert_eq!(clean_text("under_score").await, "under_score");
-        assert_eq!(clean_text("with.period").await, "with.period");
-        assert_eq!(clean_text("a/b/c").await, "a/b/c");
+        assert_eq!(clean_text("hello-world"), "hello-world");
+        assert_eq!(clean_text("under_score"), "under_score");
+        assert_eq!(clean_text("with.period"), "with.period");
+        assert_eq!(clean_text("a/b/c"), "a/b/c");
     }
 
     #[tokio::test]
     async fn test_unicode_characters() {
         // Emoji and other unicode should be preserved
-        assert_eq!(clean_text("Hello 👋 World 🌍").await, "Hello 👋 World 🌍");
-        assert_eq!(clean_text("Café").await, "Café");
-        assert_eq!(clean_text("日本語").await, "日本語");
+        assert_eq!(clean_text("Hello 👋 World 🌍"), "Hello 👋 World 🌍");
+        assert_eq!(clean_text("Café"), "Café");
+        assert_eq!(clean_text("日本語"), "日本語");
     }
 
     // Tests for clean_html()
@@ -279,7 +279,7 @@ mod tests {
             "https://example.com".to_string(),
             "https://example.com".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], "https://example.com");
     }
@@ -290,7 +290,7 @@ mod tests {
             "http://example.com".to_string(),
             "https://example.com".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1); // Both normalize to https
     }
 
@@ -301,7 +301,7 @@ mod tests {
             "https://EXAMPLE.COM".to_string(),
             "https://example.com".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
     }
 
@@ -311,7 +311,7 @@ mod tests {
             "https://www.example.com".to_string(),
             "https://example.com".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
     }
 
@@ -321,7 +321,7 @@ mod tests {
             "https://example.com/path".to_string(),
             "https://example.com/path/".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
     }
 
@@ -331,7 +331,7 @@ mod tests {
             "https://example.com?b=2&a=1".to_string(),
             "https://example.com?a=1&b=2".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
     }
 
@@ -342,7 +342,7 @@ mod tests {
             "https://example.com/page#section2".to_string(),
             "https://example.com/page".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1);
     }
 
@@ -354,7 +354,7 @@ mod tests {
             "https://EXAMPLE.COM/path".to_string(),
             "http://example.com/path#frag".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 1); // All canonicalize to same URL
     }
 
@@ -365,7 +365,7 @@ mod tests {
             "https://example.com/second".to_string(),
             "https://example.com/first".to_string(), // Duplicate
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 2);
         assert_eq!(cleaned[0], "https://example.com/first");
         assert_eq!(cleaned[1], "https://example.com/second");
@@ -375,14 +375,14 @@ mod tests {
     async fn test_clean_urls_returns_canonical() {
         // Returns canonical URL
         let urls = vec!["HTTP://Example.com/Path".to_string()];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned[0], "https://example.com/Path");
     }
 
     #[tokio::test]
     async fn test_clean_urls_canonicalizes_idna_domains() {
         let urls = vec!["https://münich.com/path".to_string()];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned[0], "https://xn--mnich-kva.com/path");
     }
 
@@ -393,14 +393,14 @@ mod tests {
             "https://example.com".to_string(),
             "also-not-url".to_string(),
         ];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 3); // Malformed URLs kept as-is, all different
     }
 
     #[tokio::test]
     async fn test_clean_urls_empty_list() {
         let urls: Vec<String> = vec![];
-        let cleaned = clean_urls(&urls).await;
+        let cleaned = clean_urls(&urls);
         assert_eq!(cleaned.len(), 0);
     }
 
@@ -413,7 +413,7 @@ mod tests {
             "John@Example.COM".to_string(),
             "\"John Doe\" <john@example.com>".to_string(),
         ];
-        let cleaned = clean_emails(&emails).await;
+        let cleaned = clean_emails(&emails);
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], "john@example.com");
     }
@@ -425,7 +425,7 @@ mod tests {
             "john@example.com,".to_string(),
             "john@example.com".to_string(),
         ];
-        let cleaned = clean_emails(&emails).await;
+        let cleaned = clean_emails(&emails);
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], "john@example.com");
     }
@@ -438,7 +438,7 @@ mod tests {
             "jane@example.com".to_string(),
             "   ".to_string(),
         ];
-        let cleaned = clean_emails(&emails).await;
+        let cleaned = clean_emails(&emails);
         assert_eq!(cleaned.len(), 2);
     }
 
@@ -449,7 +449,7 @@ mod tests {
             "second@example.com".to_string(),
             "first@example.com".to_string(), // Duplicate
         ];
-        let cleaned = clean_emails(&emails).await;
+        let cleaned = clean_emails(&emails);
         assert_eq!(cleaned.len(), 2);
         assert_eq!(cleaned[0], "first@example.com");
         assert_eq!(cleaned[1], "second@example.com");
@@ -458,7 +458,7 @@ mod tests {
     #[tokio::test]
     async fn test_clean_emails_empty_list() {
         let emails: Vec<String> = vec![];
-        let cleaned = clean_emails(&emails).await;
+        let cleaned = clean_emails(&emails);
         assert_eq!(cleaned.len(), 0);
     }
 
@@ -471,7 +471,7 @@ mod tests {
             "555-123-4567".to_string(),
             "555.123.4567".to_string(),
         ];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], "5551234567");
     }
@@ -484,7 +484,7 @@ mod tests {
             "555-987-6543".to_string(),
             "   ".to_string(),
         ];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 2);
     }
 
@@ -495,7 +495,7 @@ mod tests {
             "555-987-6543".to_string(),
             "(555) 123-4567".to_string(), // Duplicate
         ];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 2);
         assert_eq!(cleaned[0], "5551234567");
         assert_eq!(cleaned[1], "5559876543");
@@ -507,7 +507,7 @@ mod tests {
             "555-123-4567 ext. 123".to_string(),
             "555-123-4567 x456".to_string(),
         ];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 1); // Same after stripping extensions
         assert_eq!(cleaned[0], "5551234567");
     }
@@ -516,7 +516,7 @@ mod tests {
     async fn test_clean_phones_international_vs_local() {
         // International and local versions should be treated as different
         let phones = vec!["+1-555-123-4567".to_string(), "555-123-4567".to_string()];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 2);
         assert_eq!(cleaned[0], "+15551234567");
         assert_eq!(cleaned[1], "5551234567");
@@ -525,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn test_clean_phones_empty_list() {
         let phones: Vec<String> = vec![];
-        let cleaned = clean_phones(&phones).await;
+        let cleaned = clean_phones(&phones);
         assert_eq!(cleaned.len(), 0);
     }
 
@@ -613,6 +613,82 @@ mod tests {
 
         // Malformed URLs kept as-is
         assert_eq!(canonicalize_url("not-a-url"), "not-a-url");
+    }
+
+    #[test]
+    fn test_canonical_url_new_canonicalizes() {
+        let url = CanonicalUrl::new("HTTP://www.Example.COM/path/?utm_source=x&id=7");
+        assert_eq!(url.as_str(), "https://example.com/path?id=7");
+    }
+
+    #[test]
+    fn test_canonical_url_idempotent() {
+        let once = CanonicalUrl::new("https://Example.com/");
+        let twice = CanonicalUrl::new(once.as_str());
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn test_canonical_url_serialize_transparent() {
+        let url = CanonicalUrl::new("https://example.com");
+        let json = serde_json::to_string(&url).unwrap();
+        // Bare string, not a wrapper object.
+        assert_eq!(json, "\"https://example.com\"");
+    }
+
+    #[test]
+    fn test_canonical_url_deserialize_strict() {
+        // Non-canonical input gets canonicalized on deserialize.
+        let url: CanonicalUrl =
+            serde_json::from_str("\"HTTP://www.Example.COM/path/?utm_source=x\"").unwrap();
+        assert_eq!(url.as_str(), "https://example.com/path");
+    }
+
+    #[test]
+    fn test_canonical_url_from_str_and_string() {
+        let a: CanonicalUrl = "https://Example.com/".into();
+        let b: CanonicalUrl = String::from("https://Example.com/").into();
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "https://example.com");
+    }
+
+    #[test]
+    fn test_canonicalize_url_strips_tracking_params() {
+        // utm_* family stripped entirely
+        assert_eq!(
+            canonicalize_url("https://example.com?utm_source=x&utm_medium=y"),
+            "https://example.com"
+        );
+        // tracking mixed with real params — real params preserved and sorted
+        assert_eq!(
+            canonicalize_url("https://example.com?utm_source=x&id=7"),
+            "https://example.com/?id=7"
+        );
+        // each exact-match tracking param
+        for param in &[
+            "fbclid", "gclid", "mc_eid", "mc_cid", "_ga", "igshid", "ref", "ref_src", "ref_url",
+        ] {
+            assert_eq!(
+                canonicalize_url(&format!("https://example.com?{}=abc&foo=1", param)),
+                "https://example.com/?foo=1",
+                "tracking param {} should be stripped",
+                param
+            );
+        }
+        // look-alikes NOT stripped
+        assert_eq!(
+            canonicalize_url("https://example.com?referral=abc"),
+            "https://example.com/?referral=abc"
+        );
+        assert_eq!(
+            canonicalize_url("https://example.com?utmx=abc"),
+            "https://example.com/?utmx=abc"
+        );
+        // two "same" URLs differing only by trackers canonicalize identically
+        assert_eq!(
+            canonicalize_url("https://example.com/recipe?fbclid=abc"),
+            canonicalize_url("https://example.com/recipe?utm_source=fb"),
+        );
     }
 
     #[test]

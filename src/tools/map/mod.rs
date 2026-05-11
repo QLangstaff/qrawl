@@ -55,8 +55,9 @@ pub async fn map_children(html: &str, url: &str) -> Vec<String> {
     let html = html.to_string();
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {
-        let siblings = utils::map_siblings(&html, &url);
-        let itemlist = utils::map_itemlist(&html, &url);
+        let doc = scraper::Html::parse_document(&html);
+        let siblings = utils::map_siblings_from_doc(&doc, &url);
+        let itemlist = utils::map_itemlist_from_doc(&doc, &url);
         let mut result = crate::merge!(siblings, itemlist);
         if result.is_empty() {
             result = vec![url];

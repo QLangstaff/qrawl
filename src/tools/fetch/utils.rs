@@ -1,5 +1,3 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 const MIN_BODY_LEN: usize = 500;
 
 const UNAUTHORIZED_PATTERNS: [&str; 4] = [
@@ -23,22 +21,6 @@ const SUSPICIOUS_PATTERNS: [&str; 12] = [
     "bot detection",
     "perimeterx",
 ];
-
-/// Random-ish jitter in milliseconds within [0, range).
-///
-/// Uses high-resolution timing to generate pseudo-random jitter for
-/// introducing variability in retry delays and request timing.
-pub(super) fn jitter_ms(range: u64) -> u64 {
-    if range == 0 {
-        return 0;
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::from_nanos(0));
-    let nanos = now.subsec_nanos() as u64;
-    let micros = (now.as_micros() & 0xFFFF) as u64;
-    (nanos ^ (micros << 5)) % range
-}
 
 fn ensure_lower<'a>(body: &'a str, cache: &'a mut Option<String>) -> &'a str {
     if let Some(ref lower) = cache {
