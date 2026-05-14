@@ -15,7 +15,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 static CLIENT_CACHE: Lazy<Arc<DashMap<FetchProfile, Client>>> =
     Lazy::new(|| Arc::new(DashMap::new()));
 
-/// Last-successful fetch profile per host.
+/// Last-successful fetch profile per host. Public for instrumentation only —
+/// mutating it from outside this module is unsupported and may break the
+/// adaptive cascade.
+#[doc(hidden)]
 pub static HOST_PROFILE_CACHE: Lazy<Arc<DashMap<String, FetchProfile>>> =
     Lazy::new(|| Arc::new(DashMap::new()));
 
@@ -31,7 +34,9 @@ static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy::new(DashMa
 pub const PER_HOST_CONCURRENCY: usize = 8;
 
 /// Counts outgoing HTTP attempts. Used by perf tests to verify the per-pipeline
-/// fetch cache prevents duplicate network calls.
+/// fetch cache prevents duplicate network calls. Not part of the supported API
+/// — concurrent readers may see interleaved counts from unrelated work.
+#[doc(hidden)]
 pub static HTTP_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
 const ADAPTIVE_PROFILES: [FetchProfile; 3] = [

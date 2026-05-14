@@ -2,11 +2,9 @@
 
 use clap::{Parser, Subcommand};
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::{runtime, templates, tools, types};
-
-static FAST_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(
@@ -85,7 +83,7 @@ enum Commands {
     },
 }
 
-pub fn read_input(input: &str) -> String {
+pub fn read_input(input: &str, ctx: Arc<types::Context>) -> String {
     if input == "-" {
         // Read from stdin
         let mut buffer = String::new();
@@ -95,7 +93,7 @@ pub fn read_input(input: &str) -> String {
         buffer
     } else if input.starts_with("http://") || input.starts_with("https://") {
         // Fetch from URL
-        fetch_url(input)
+        fetch_url(input, ctx)
     } else {
         // Read from file
         std::fs::read_to_string(input).unwrap_or_else(|e| {
@@ -105,12 +103,12 @@ pub fn read_input(input: &str) -> String {
     }
 }
 
-pub fn fetch_url(url: &str) -> String {
-    let result = if FAST_MODE.load(Ordering::Relaxed) {
-        runtime::block_on(tools::fetch::fetch_fast(url))
-    } else {
-        runtime::block_on(tools::fetch::fetch_auto(url))
-    };
+pub fn fetch_url(url: &str, ctx: Arc<types::Context>) -> String {
+    let result = runtime::block_on(async move {
+        types::CTX
+            .scope(ctx, async { tools::fetch::fetch_strategy(url).await })
+            .await
+    });
     result.unwrap_or_else(|e| {
         eprintln!("Failed to fetch {}: {}", url, e);
         std::process::exit(1);
@@ -126,12 +124,11 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 
 pub fn run() {
     let cli = Cli::parse();
-    FAST_MODE.store(cli.fast, Ordering::Relaxed);
-    let ctx = if cli.fast {
+    let ctx_arc = Arc::new(if cli.fast {
         types::Context::fast()
     } else {
         types::Context::auto()
-    };
+    });
 
     match cli.command {
         Commands::Fetch { url } => {
@@ -159,7 +156,7 @@ pub fn run() {
         Commands::Children { url } => {
             let result = runtime::block_on(templates::qrawl_children(
                 vec![url.to_string()],
-                ctx,
+                (*ctx_arc).clone(),
             ));
 
             // Extract only URLs from the (URL, HTML) tuples
@@ -174,23 +171,23 @@ pub fn run() {
         }
 
         Commands::Page { url } => {
-            run!(@async url.clone(), tools::map::map_page, &url)
+            run!(@async ctx_arc.clone(), url.clone(), tools::map::map_page, &url)
         }
 
         Commands::Body { url } => {
-            run!(@async url, tools::scrape::scrape_body)
+            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_body)
         }
 
         Commands::Jsonld { url } => {
-            run!(@async url, tools::scrape::scrape_jsonld)
+            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_jsonld)
         }
 
         Commands::Metadata { url } => {
-            run!(@async url, tools::scrape::scrape_metadata)
+            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_metadata)
         }
 
         Commands::Preview { url } => run!(
-            @async url,
+            @async ctx_arc.clone(), url,
             [
                 tools::scrape::scrape_metadata,
                 tools::extract::extract_og_preview
@@ -198,7 +195,7 @@ pub fn run() {
         ),
 
         Commands::Schemas { url } => run!(
-            @async url,
+            @async ctx_arc.clone(), url,
             [
                 tools::scrape::scrape_jsonld,
                 tools::extract::extract_schema_types
@@ -206,11 +203,11 @@ pub fn run() {
         ),
 
         Commands::Emails { url } => {
-            run!(@template url, templates::qrawl_emails, ctx)
+            run!(@template url, templates::qrawl_emails, (*ctx_arc).clone())
         }
 
         Commands::Phones { url } => run!(
-            @async url,
+            @async ctx_arc.clone(), url,
             [tools::extract::extract_phones, tools::clean::clean_phones]
         ),
     }

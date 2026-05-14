@@ -17,6 +17,13 @@ pub use utils::canonicalize_url;
 /// from databases / API payloads / hand-written JSON cannot sneak past the
 /// invariant. (Re-canonicalizing canonical input is a no-op — `canonicalize_url`
 /// is idempotent.)
+///
+/// **Note:** qrawl's own pipeline (`chain!`, `FETCH_CACHE`, `fetch_*`) currently
+/// uses raw `String` and canonicalizes at the cache boundary instead — threading
+/// this type through the generic chain macro would force conversions wherever
+/// new URLs are produced (e.g. `map_children` parses fresh URLs out of HTML).
+/// This type is exposed for downstream callers that want the invariant enforced
+/// by the type system at their own boundaries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct CanonicalUrl(String);

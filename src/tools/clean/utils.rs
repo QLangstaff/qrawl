@@ -73,7 +73,6 @@ const TRACKING_PARAM_NAMES: &[&str] = &[
     "mc_cid",  // Mailchimp campaign ID
     "_ga",     // Google Analytics
     "igshid",  // Instagram share ID
-    "ref",     // generic referrer
     "ref_src", // Twitter/X referrer source
     "ref_url", // generic referrer URL
 ];

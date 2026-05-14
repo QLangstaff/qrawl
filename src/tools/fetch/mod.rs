@@ -53,7 +53,11 @@ fn check_domain_filter(url: &str) -> Result<(), String> {
         Some(h) if !is_host_allowed(&h, allow.as_deref(), block.as_deref()) => {
             Err(format!("blocked by domain filter: {}", h))
         }
-        _ => Ok(()),
+        Some(_) => Ok(()),
+        None if allow.is_some() => {
+            Err(format!("blocked by domain filter: unparseable host in {}", url))
+        }
+        None => Ok(()),
     }
 }
 

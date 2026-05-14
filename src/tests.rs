@@ -148,6 +148,23 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_fetch_allow_domains_rejects_unparseable_url() {
+        // With an allowlist set, an unparseable URL must fail closed — we can't
+        // confirm the host matches the allowlist, so we reject.
+        let ctx = Context::auto().with_allow_domains(&["example.com"]);
+        let ctx = Arc::new(ctx);
+        let err = CTX
+            .scope(ctx, async { fetch_auto("not-a-url").await })
+            .await
+            .expect_err("unparseable URL must be rejected when allowlist is set");
+        assert!(
+            err.contains("blocked by domain filter"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
     #[test]
     fn test_context_domain_filters() {
         let ctx = Context::auto()

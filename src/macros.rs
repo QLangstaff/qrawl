@@ -200,8 +200,8 @@ macro_rules! run {
         $crate::run!(@template $input, $processor, $crate::types::Context::auto())
     }};
     // For String input with two-step async -> sync processor chain
-    (@async $input:expr, [$first:expr, $second:expr] $(,)?) => {{
-        let data = $crate::cli::read_input(&$input);
+    (@async $ctx:expr, $input:expr, [$first:expr, $second:expr] $(,)?) => {{
+        let data = $crate::cli::read_input(&$input, $ctx);
         let result = $crate::runtime::block_on(async move {
             let intermediate = $first(&data).await;
             $second(&intermediate)  // Second is sync
@@ -209,22 +209,9 @@ macro_rules! run {
         $crate::cli::print_json(&result);
     }};
     // For String input with async processor
-    (@async $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
-        let data = $crate::cli::read_input(&$input);
+    (@async $ctx:expr, $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
+        let data = $crate::cli::read_input(&$input, $ctx);
         let result = $crate::runtime::block_on($processor(&data $(, $arg)*));
-        $crate::cli::print_json(&result);
-    }};
-    // For String input with two-step sync processor chain
-    ($input:expr, [$first:expr, $second:expr] $(,)?) => {{
-        let data = $crate::cli::read_input(&$input);
-        let intermediate = $first(&data);
-        let result = $second(&intermediate);
-        $crate::cli::print_json(&result);
-    }};
-    // For String input with sync processor
-    ($input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
-        let data = $crate::cli::read_input(&$input);
-        let result = $processor(&data $(, $arg)*);
         $crate::cli::print_json(&result);
     }};
 }

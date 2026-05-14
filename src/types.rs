@@ -87,16 +87,22 @@ pub fn fetch_cache_new() -> Arc<DashMap<String, String>> {
     Arc::new(DashMap::new())
 }
 
+// Keys are canonicalized so callers that happen to fetch the same logical URL
+// via two different surface forms (e.g. `https://Example.com/` vs
+// `https://example.com`) hit the same cache entry. `canonicalize_url` is
+// idempotent, so this is a no-op for callers that already canonicalize.
 pub fn fetch_cache_get(url: &str) -> Option<String> {
+    let key = crate::tools::clean::canonicalize_url(url);
     FETCH_CACHE
-        .try_with(|cache| cache.get(url).map(|v| v.clone()))
+        .try_with(|cache| cache.get(&key).map(|v| v.clone()))
         .ok()
         .flatten()
 }
 
 pub fn fetch_cache_put(url: &str, html: &str) {
+    let key = crate::tools::clean::canonicalize_url(url);
     let _ = FETCH_CACHE.try_with(|cache| {
-        cache.insert(url.to_string(), html.to_string());
+        cache.insert(key, html.to_string());
     });
 }
 
