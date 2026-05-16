@@ -1,15 +1,15 @@
 [package]
 name = "qrawl"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
-description = "Composable web crawling tools for Rust"
+description = "Rust toolkit to crawl web data for AI agents"
 repository = "https://github.com/QLangstaff/qrawl"
 homepage = "https://github.com/QLangstaff/qrawl"
 documentation = "https://docs.rs/qrawl"
 readme = "README.md"
-keywords = ["crawl", "scrape", "agent", "rag", "tools"]
-categories = ["command-line-utilities", "web-programming::http-client", "parsing"]
+keywords = ["crawler", "web-crawling", "scraper", "web-scraping", "rag"]
+categories = ["web-programming::http-client", "parsing", "asynchronous", "command-line-utilities"]
 rust-version = "1.74"
 
 include = ["Cargo.toml", "README.md", "LICENSE*", "src/**"]
@@ -20,7 +20,7 @@ serde_json = "1.0"
 url = "2"
 clap = { version = "4.5", features = ["derive"] }
 reqwest = { version = "0.11", features = ["blocking", "cookies", "brotli", "gzip", "deflate", "json", "native-tls", "stream"] }
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 scraper = "0.19"
 idna = "0.5"
