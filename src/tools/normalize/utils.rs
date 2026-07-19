@@ -1,14 +1,16 @@
 use once_cell::sync::Lazy;
-/// Helper functions for text cleaning
+/// Helper functions for text normalization
 use regex::Regex;
 use std::collections::BTreeMap;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
+use crate::types::SocialPlatform;
+
 // Lazy static regex for whitespace normalization
 static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("valid regex"));
 
-// HTML cleaning regexes
+// HTML normalization regexes
 static JSONLD_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>.*?</script>"#)
         .expect("valid regex")
@@ -59,7 +61,7 @@ static JUNK_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 static NEWLINE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\n").expect("valid regex"));
 
-/// Tracking / analytics query parameters stripped by `canonicalize_url` so the
+/// Tracking / analytics query parameters stripped by `normalize_url` so the
 /// same page reached via different campaigns/referrers canonicalizes identically.
 ///
 /// Coverage is the top ~10 sources that dominate real-world noise; not exhaustive.
@@ -160,7 +162,7 @@ pub(super) fn normalize_escaped_newlines(text: &str) -> String {
 /// - `Example.com` → `example.com`
 /// - `WWW.Example.COM` → `example.com`
 /// - `www.GitHub.com` → `github.com`
-pub fn canonicalize_domain(host: &str) -> String {
+pub fn normalize_domain(host: &str) -> String {
     let lower = host.to_ascii_lowercase();
     let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
 
@@ -189,7 +191,7 @@ pub fn canonicalize_domain(host: &str) -> String {
 /// - `https://www.example.com?b=2&a=1` → `https://example.com?a=1&b=2`
 /// - `https://example.com/page#section` → `https://example.com/page`
 /// - `https://example.com?utm_source=x&id=7` → `https://example.com?id=7`
-pub fn canonicalize_url(url: &str) -> String {
+pub fn normalize_url(url: &str) -> String {
     // Prepend https:// if protocol is missing (case-insensitive check)
     // Only prepend if it looks like a domain (contains a dot)
     let url_lower = url.to_ascii_lowercase();
@@ -212,7 +214,7 @@ pub fn canonicalize_url(url: &str) -> String {
 
     // 2. Canonicalize domain
     if let Some(host) = parsed.host_str() {
-        let canonical_host = canonicalize_domain(host);
+        let canonical_host = normalize_domain(host);
         let _ = parsed.set_host(Some(&canonical_host));
     }
 
@@ -251,7 +253,80 @@ pub fn canonicalize_url(url: &str) -> String {
     parsed.to_string().trim_end_matches('/').to_string()
 }
 
-/// Clean a single email address.
+/// Canonicalize a URL with social-platform awareness — the form the
+/// classify/extract tools and the fetch cache key on.
+///
+/// Runs [`normalize_url`] for the general canonicalization, then for a
+/// *recognized* social platform ([`SocialPlatform::from_host`]) additionally
+/// strips a mobile host prefix (`m.`/`mobile.`) and the social share / referrer
+/// tokens (`si`, `s`, `feature`, …) that would otherwise split one piece of
+/// content across many look-alike URLs. A non-social host gets only the general
+/// pass, so it's safe on any URL (a plain web page keeps a functional `?s=`).
+pub fn normalize_social(url: &str) -> String {
+    let normalized = normalize_url(url);
+    let Ok(mut parsed) = Url::parse(&normalized) else {
+        return normalized;
+    };
+    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return normalized;
+    };
+    // Social rules apply only to recognized platforms (so a plain web page keeps
+    // a functional `?s=` / `?ref=` and its `m.` host).
+    if SocialPlatform::from_host(&host).is_none() {
+        return normalized;
+    }
+
+    // Strip a mobile host prefix (the `vm.`/`vt.` shorteners are kept on purpose).
+    if let Some(stripped) = host
+        .strip_prefix("m.")
+        .or_else(|| host.strip_prefix("mobile."))
+    {
+        let _ = parsed.set_host(Some(stripped));
+    }
+
+    // Strip social share tokens from the (already sorted, general-stripped) query.
+    if parsed.query().is_some() {
+        let kept: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(k, _)| !is_social_tracker(k))
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        if kept.is_empty() {
+            parsed.set_query(None);
+        } else {
+            let query = kept
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            parsed.set_query(Some(&query));
+        }
+    }
+
+    parsed.to_string().trim_end_matches('/').to_string()
+}
+
+/// Social share / referrer tokens stripped by [`normalize_social`] on top of
+/// `normalize_url`'s general trackers, for recognized platforms only.
+fn is_social_tracker(key: &str) -> bool {
+    matches!(
+        key,
+        "si" | "igsh"
+            | "s"
+            | "_t"
+            | "_r"
+            | "ref"
+            | "share_id"
+            | "share_app_id"
+            | "is_from_webapp"
+            | "sender_device"
+            | "feature"
+            | "rdt"
+            | "spm"
+    )
+}
+
+/// Normalize a single email address.
 ///
 /// Performs:
 /// 1. Trim whitespace
@@ -260,7 +335,7 @@ pub fn canonicalize_url(url: &str) -> String {
 /// 4. URL decode (%40 → @)
 /// 5. Lowercase
 /// 6. Validate format (returns empty string if invalid)
-pub(super) fn clean_email(email: &str) -> String {
+pub(super) fn normalize_email(email: &str) -> String {
     let mut result = email.trim().to_string();
 
     // Strip trailing punctuation (common in comma-separated lists)
@@ -301,8 +376,10 @@ pub(super) fn clean_email(email: &str) -> String {
 
         // Get TLD (last segment after final dot)
         if let Some(tld) = domain.split('.').next_back() {
-            // TLD must be 2-10 letters only (real TLDs are typically short)
-            if tld.len() < 2 || tld.len() > 10 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+            // TLD must be 2-24 letters — the same bound as `extract`'s email
+            // regex, so a long gTLD (`.photography`, `.international`) survives
+            // both find and normalize instead of being extracted then dropped.
+            if tld.len() < 2 || tld.len() > 24 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
                 return String::new();
             }
 
@@ -323,14 +400,14 @@ pub(super) fn clean_email(email: &str) -> String {
     result
 }
 
-/// Clean a single phone number.
+/// Normalize a single phone number.
 ///
 /// Performs:
 /// 1. Trim whitespace
 /// 2. Strip extension patterns (ext., x, extension)
 /// 3. Keep international prefix (+) if present
 /// 4. Strip all other non-digit characters except leading +
-pub(super) fn clean_phone(phone: &str) -> String {
+pub(super) fn normalize_phone(phone: &str) -> String {
     let mut result = phone.trim().to_string();
 
     // Strip extension patterns
@@ -356,7 +433,7 @@ pub(super) fn clean_phone(phone: &str) -> String {
 
 /// Strip junk from HTML (scripts, styles, comments, junk attributes).
 ///
-/// Implementation for clean_html. Contains all the messy regex logic.
+/// Implementation for normalize_html. Contains all the messy regex logic.
 pub(super) fn strip_junk(html: &str) -> String {
     // Extract and protect JSON-LD scripts before removing all scripts
     let jsonld_scripts: Vec<String> = JSONLD_REGEX
@@ -365,19 +442,21 @@ pub(super) fn strip_junk(html: &str) -> String {
         .collect();
 
     // Remove non-content elements (including all scripts)
-    let mut cleaned = SCRIPT_REGEX.replace_all(html, "").to_string();
+    let mut normalized_html = SCRIPT_REGEX.replace_all(html, "").to_string();
 
     // Restore JSON-LD scripts after removing JavaScript
     for jsonld in jsonld_scripts {
-        cleaned = format!("{}{}", cleaned, jsonld);
+        normalized_html = format!("{}{}", normalized_html, jsonld);
     }
 
-    cleaned = STYLE_REGEX.replace_all(&cleaned, "").to_string();
-    cleaned = NOSCRIPT_REGEX.replace_all(&cleaned, "").to_string();
-    cleaned = IFRAME_REGEX.replace_all(&cleaned, "").to_string();
-    cleaned = SVG_REGEX.replace_all(&cleaned, "").to_string();
-    cleaned = COMMENT_REGEX.replace_all(&cleaned, "").to_string();
-    cleaned = JUNK_ATTR_REGEX.replace_all(&cleaned, "").to_string();
+    normalized_html = STYLE_REGEX.replace_all(&normalized_html, "").to_string();
+    normalized_html = NOSCRIPT_REGEX.replace_all(&normalized_html, "").to_string();
+    normalized_html = IFRAME_REGEX.replace_all(&normalized_html, "").to_string();
+    normalized_html = SVG_REGEX.replace_all(&normalized_html, "").to_string();
+    normalized_html = COMMENT_REGEX.replace_all(&normalized_html, "").to_string();
+    normalized_html = JUNK_ATTR_REGEX
+        .replace_all(&normalized_html, "")
+        .to_string();
 
-    cleaned
+    normalized_html
 }
