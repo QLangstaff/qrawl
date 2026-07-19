@@ -2,6 +2,7 @@
 pub mod macros;
 
 pub mod cli;
+pub mod errors;
 pub mod runtime;
 pub mod selectors;
 pub mod templates;
@@ -10,6 +11,3 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
-
-// Re-export commonly used items
-pub use types::Context;
