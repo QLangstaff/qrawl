@@ -3,6 +3,7 @@ use super::headers::headers_for_profile;
 use super::profile::FetchProfile;
 use super::types::*;
 use super::utils::*;
+use crate::errors::QrawlError;
 use crate::types::get_fetch_timeout;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -25,7 +26,7 @@ pub static HOST_PROFILE_CACHE: Lazy<Arc<DashMap<String, FetchProfile>>> =
 /// Per-host concurrency gate. Limits how many in-flight fetches may target a
 /// single host simultaneously. One permit is acquired per URL and held through
 /// the full profile cascade, so retries don't consume extra slots.
-static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy::new(DashMap::new);
+pub(super) static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy::new(DashMap::new);
 
 /// Max simultaneous in-flight fetches per host. Set low enough that a
 /// popular-domain burst from a search batch doesn't trip the host's rate
@@ -53,19 +54,17 @@ fn host_from_url(url: &str) -> Option<String> {
 
 /// Acquire a permit for this host. Returns `None` when the URL has no host
 /// (opaque, file://, etc.) — in that case we skip the cap entirely.
-async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemaphorePermit> {
+pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemaphorePermit> {
     let host = host?;
     let sema = HOST_SEMAPHORES
         .entry(host.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
         .clone();
-    sema.acquire_owned()
-        .await
-        .ok()
+    sema.acquire_owned().await.ok()
 }
 
 /// Fast: Minimal
-pub(super) async fn fetch_fast_with_client(url: &str) -> Result<FetchResult, String> {
+pub(super) async fn fetch_fast_with_client(url: &str) -> Result<FetchResult, QrawlError> {
     let host = host_from_url(url);
     let _permit = acquire_host_permit(host.as_deref()).await;
 
@@ -85,7 +84,7 @@ pub(super) async fn fetch_fast_with_client(url: &str) -> Result<FetchResult, Str
 }
 
 /// Auto: Minimal → Windows → IOS
-pub(super) async fn fetch_auto_with_client(url: &str) -> Result<FetchResult, String> {
+pub(super) async fn fetch_auto_with_client(url: &str) -> Result<FetchResult, QrawlError> {
     let start = Instant::now();
     let mut all_errors = Vec::new();
 
@@ -118,11 +117,11 @@ pub(super) async fn fetch_auto_with_client(url: &str) -> Result<FetchResult, Str
         }
     }
 
-    Err(format!(
+    Err(QrawlError::new(format!(
         "All {} profiles failed: [{}]",
         ADAPTIVE_PROFILES.len() - starting_idx,
         all_errors.join("; ")
-    ))
+    )))
 }
 
 /// Fetch with client (no referer).
@@ -130,7 +129,7 @@ async fn fetch_with_client(
     client: &Client,
     url: &str,
     profile: FetchProfile,
-) -> Result<String, String> {
+) -> Result<String, QrawlError> {
     fetch_with_client_and_referer(client, url, profile, None).await
 }
 
@@ -140,7 +139,7 @@ async fn fetch_with_client_and_referer(
     url: &str,
     profile: FetchProfile,
     referer: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, QrawlError> {
     // Build headers for this profile
     let mut headers = headers_for_profile(profile);
 
@@ -161,13 +160,13 @@ async fn fetch_with_client_and_referer(
         .timeout(get_fetch_timeout())
         .send()
         .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
 
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| QrawlError::new(format!("Failed to read response: {}", e)))?;
 
     // Validate response
     validate_response(status, &body)?;
@@ -185,7 +184,7 @@ async fn fetch_bytes_with_client_and_referer(
     url: &str,
     profile: FetchProfile,
     referer: Option<&str>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, QrawlError> {
     let mut headers = headers_for_profile(profile);
 
     if let Some(ref_url) = referer {
@@ -202,17 +201,17 @@ async fn fetch_bytes_with_client_and_referer(
         .timeout(get_fetch_timeout())
         .send()
         .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("status {}", status.as_u16()));
+        return Err(QrawlError::new(format!("HTTP status {}", status.as_u16())));
     }
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+        .map_err(|e| QrawlError::new(format!("Failed to read response bytes: {}", e)))?;
 
     Ok(bytes.to_vec())
 }
@@ -221,7 +220,7 @@ async fn fetch_bytes_with_client_and_referer(
 pub(super) async fn fetch_bytes_fast_with_client(
     url: &str,
     referer: Option<&str>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, QrawlError> {
     let host = host_from_url(url);
     let _permit = acquire_host_permit(host.as_deref()).await;
 
@@ -235,7 +234,7 @@ pub(super) async fn fetch_bytes_fast_with_client(
 pub(super) async fn fetch_bytes_auto_with_client(
     url: &str,
     referer: Option<&str>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, QrawlError> {
     let mut all_errors = Vec::new();
 
     let host = host_from_url(url);
@@ -260,18 +259,18 @@ pub(super) async fn fetch_bytes_auto_with_client(
         }
     }
 
-    Err(format!(
+    Err(QrawlError::new(format!(
         "All {} profiles failed: [{}]",
         ADAPTIVE_PROFILES.len() - starting_idx,
         all_errors.join("; ")
-    ))
+    )))
 }
 
 /// Get or build client for profile (uses cache if available).
 fn get_or_build_client(
     profile: FetchProfile,
     cache: Option<&Arc<DashMap<FetchProfile, Client>>>,
-) -> Result<Client, String> {
+) -> Result<Client, QrawlError> {
     if let Some(cache) = cache {
         if let Some(client_ref) = cache.get(&profile) {
             return Ok(client_ref.clone());
@@ -284,53 +283,5 @@ fn get_or_build_client(
     } else {
         // No cache, just build
         build_client_for_profile(profile)
-    }
-}
-
-#[cfg(test)]
-mod host_cap_tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn host_cap_serializes_excess_callers() {
-        // Reset the semaphore for this host to avoid pollution from other tests.
-        HOST_SEMAPHORES.remove("cap-test.invalid");
-
-        // Hold-time chosen so that an unbounded run would finish well under
-        // `PER_HOST_CONCURRENCY * hold`, while a capped run cannot.
-        let hold = Duration::from_millis(40);
-        let total = PER_HOST_CONCURRENCY + 4;
-
-        let start = Instant::now();
-        let mut handles = Vec::with_capacity(total);
-        for _ in 0..total {
-            handles.push(tokio::spawn(async move {
-                let permit = acquire_host_permit(Some("cap-test.invalid"))
-                    .await
-                    .expect("permit must issue");
-                tokio::time::sleep(hold).await;
-                drop(permit);
-            }));
-        }
-        for h in handles {
-            h.await.unwrap();
-        }
-        let elapsed = start.elapsed();
-
-        // With a cap of N, (N + 4) tasks each holding for `hold` must take at
-        // least 2 * hold (two "rounds"). Without the cap it'd be ~1 * hold.
-        assert!(
-            elapsed >= hold * 2,
-            "per-host cap didn't serialize: elapsed={:?}, expected >= {:?}",
-            elapsed,
-            hold * 2
-        );
-    }
-
-    #[tokio::test]
-    async fn host_cap_skipped_when_url_has_no_host() {
-        let permit = acquire_host_permit(None).await;
-        assert!(permit.is_none(), "no-host URLs should bypass the cap");
     }
 }
