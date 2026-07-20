@@ -1,57 +1,58 @@
-use scraper::{ElementRef, Html};
-use serde_json::Value;
-
 use crate::selectors::{
-    BODY_SELECTOR, CLASS_SELECTOR, HTML_LANG_SELECTOR, JSONLD_SELECTOR, META_SELECTOR,
-    MICRODATA_SELECTOR, RDFA_SELECTOR, TITLE_SELECTOR,
+    BODY_SELECTOR, CLASS_SELECTOR, HTML_LANG_SELECTOR, JSONLD_SELECTOR, LI_SELECTOR, META_SELECTOR,
+    MICRODATA_SELECTOR, P_SELECTOR, RDFA_SELECTOR, TITLE_SELECTOR,
 };
 use crate::types::{Jsonld, Metadata, Microformats};
 
-pub(super) fn scrape_body_content(html: &str) -> String {
-    let document = Html::parse_document(html);
-
-    if let Some(body) = document.select(&BODY_SELECTOR).next() {
-        return body.html();
-    }
-
-    html.to_string()
-}
-
-pub(super) fn scrape_jsonld_scripts(html: &str) -> Jsonld {
-    let document = Html::parse_document(html);
-    scrape_jsonld_from_doc(&document)
-}
-
-pub(super) fn scrape_jsonld_from_doc(document: &Html) -> Jsonld {
+pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> String {
     document
-        .select(&JSONLD_SELECTOR)
-        .filter_map(|el| {
-            let raw = el.text().collect::<String>();
-            serde_json::from_str(&raw).ok()
-        })
-        .flat_map(flatten_jsonld)
-        .collect()
+        .select(&BODY_SELECTOR)
+        .next()
+        .map(|body| body.html())
+        .unwrap_or_else(|| document.html())
 }
 
-fn flatten_jsonld(value: Value) -> Vec<Value> {
+/// The unified schema.org view from a parsed doc: JSON-LD `<script>` tags +
+/// Microdata + RDFa + Microformats2, with cross-encoding entities merged (same
+/// `@type` + `name`).
+pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
+    let mut items: Jsonld = document
+        .select(&JSONLD_SELECTOR)
+        .filter_map(|el| serde_json::from_str(&el.text().collect::<String>()).ok())
+        .flat_map(flatten_jsonld)
+        .collect();
+    merge_schema_entities(&mut items, scrape_microdata_from_doc(document));
+    merge_schema_entities(&mut items, scrape_rdfa_from_doc(document));
+    merge_schema_entities(
+        &mut items,
+        microformats_to_schema(&scrape_microformats_from_doc(document)),
+    );
+    items
+}
+
+/// Everything from one parse: body HTML, metadata, and the unified schema view.
+pub(super) fn scrape_from_doc(document: &scraper::Html) -> (String, Metadata, Jsonld) {
+    (
+        scrape_body_from_doc(document),
+        scrape_metadata_from_doc(document),
+        scrape_jsonld_from_doc(document),
+    )
+}
+
+fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
-        Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
-        Value::Object(mut obj) => {
-            if let Some(Value::Array(arr)) = obj.remove("@graph") {
+        serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
+        serde_json::Value::Object(mut obj) => {
+            if let Some(serde_json::Value::Array(arr)) = obj.remove("@graph") {
                 return arr.into_iter().flat_map(flatten_jsonld).collect();
             }
-            vec![Value::Object(obj)]
+            vec![serde_json::Value::Object(obj)]
         }
         _ => Vec::new(),
     }
 }
 
-pub(super) fn scrape_metadata_tags(html: &str) -> Metadata {
-    let document = Html::parse_document(html);
-    scrape_metadata_from_doc(&document)
-}
-
-pub(super) fn scrape_metadata_from_doc(document: &Html) -> Metadata {
+pub(super) fn scrape_metadata_from_doc(document: &scraper::Html) -> Metadata {
     let mut tags = Vec::new();
 
     if let Some(el) = document.select(&TITLE_SELECTOR).next() {
@@ -88,19 +89,14 @@ pub(super) fn scrape_metadata_from_doc(document: &Html) -> Metadata {
 // Microdata
 //
 // Parses HTML Microdata (`itemscope`/`itemtype`/`itemprop`) into the same
-// flattened, JSON-LD-shaped `Value`s that `scrape_jsonld` emits, so the output
+// flattened, JSON-LD-shaped `serde_json::Value`s that `scrape_jsonld` emits, so the output
 // flows through `extract_schema_types` and other consumers unchanged. `@type`
 // is the short name from `itemtype` (e.g. `https://schema.org/Recipe` →
 // `"Recipe"`). `itemref` is not supported. URLs are kept raw (no base-URL
 // resolution — `scrape_*` don't receive the page URL).
 // ---------------------------------------------------------------------------
 
-pub(super) fn scrape_microdata_items(html: &str) -> Jsonld {
-    let document = Html::parse_document(html);
-    scrape_microdata_from_doc(&document)
-}
-
-pub(super) fn scrape_microdata_from_doc(document: &Html) -> Jsonld {
+pub(super) fn scrape_microdata_from_doc(document: &scraper::Html) -> Jsonld {
     document
         .select(&MICRODATA_SELECTOR)
         // Top-level items only: an `itemscope` element that also has `itemprop`
@@ -112,16 +108,16 @@ pub(super) fn scrape_microdata_from_doc(document: &Html) -> Jsonld {
 }
 
 /// Build a flattened, JSON-LD-shaped object from an `itemscope` element.
-fn microdata_item_to_value(item: &ElementRef) -> Value {
+fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
 
     // `@type` from `itemtype` (short names). Anonymous items (no `itemtype`)
     // simply get no `@type`, which `extract_schema_types` skips.
     if let Some(itemtype) = item.value().attr("itemtype") {
-        let types: Vec<Value> = itemtype
+        let types: Vec<serde_json::Value> = itemtype
             .split_whitespace()
             .filter_map(short_type)
-            .map(Value::String)
+            .map(serde_json::Value::String)
             .collect();
         match types.len() {
             0 => {}
@@ -129,7 +125,7 @@ fn microdata_item_to_value(item: &ElementRef) -> Value {
                 obj.insert("@type".to_string(), types.into_iter().next().unwrap());
             }
             _ => {
-                obj.insert("@type".to_string(), Value::Array(types));
+                obj.insert("@type".to_string(), serde_json::Value::Array(types));
             }
         }
     }
@@ -137,7 +133,10 @@ fn microdata_item_to_value(item: &ElementRef) -> Value {
     if let Some(itemid) = item.value().attr("itemid") {
         let itemid = itemid.trim();
         if !itemid.is_empty() {
-            obj.insert("@id".to_string(), Value::String(itemid.to_string()));
+            obj.insert(
+                "@id".to_string(),
+                serde_json::Value::String(itemid.to_string()),
+            );
         }
     }
 
@@ -156,7 +155,7 @@ fn microdata_item_to_value(item: &ElementRef) -> Value {
         }
     }
 
-    Value::Object(obj)
+    serde_json::Value::Object(obj)
 }
 
 /// Collect `(element, property-name)` pairs belonging to `item`, walking
@@ -164,12 +163,12 @@ fn microdata_item_to_value(item: &ElementRef) -> Value {
 /// boundary), whose properties belong to that nested item, not this one. Shared
 /// by the Microdata (`itemscope`/`itemprop`) and RDFa (`typeof`/`property`) walks.
 fn collect_properties<'a>(
-    item: &ElementRef<'a>,
+    item: &scraper::ElementRef<'a>,
     scope_attr: &str,
     prop_attr: &str,
-    out: &mut Vec<(ElementRef<'a>, String)>,
+    out: &mut Vec<(scraper::ElementRef<'a>, String)>,
 ) {
-    for child in item.children().filter_map(ElementRef::wrap) {
+    for child in item.children().filter_map(scraper::ElementRef::wrap) {
         let has_scope = child.value().attr(scope_attr).is_some();
         let prop = child.value().attr(prop_attr).map(str::to_string);
 
@@ -190,12 +189,16 @@ fn collect_properties<'a>(
 }
 
 /// Insert a property, promoting to an array when the same name repeats.
-fn insert_prop(obj: &mut serde_json::Map<String, Value>, name: &str, value: Value) {
+fn insert_prop(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    value: serde_json::Value,
+) {
     match obj.get_mut(name) {
-        Some(Value::Array(arr)) => arr.push(value),
+        Some(serde_json::Value::Array(arr)) => arr.push(value),
         Some(existing) => {
             let prev = existing.take();
-            *existing = Value::Array(vec![prev, value]);
+            *existing = serde_json::Value::Array(vec![prev, value]);
         }
         None => {
             obj.insert(name.to_string(), value);
@@ -204,7 +207,7 @@ fn insert_prop(obj: &mut serde_json::Map<String, Value>, name: &str, value: Valu
 }
 
 /// The value of a non-`itemscope` `itemprop` element, per the WHATWG rules.
-fn microdata_prop_value(el: &ElementRef) -> Value {
+fn microdata_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
     let element = el.value();
     let attr = |name: &str| element.attr(name).unwrap_or("").trim().to_string();
     let text = || el.text().collect::<String>().trim().to_string();
@@ -225,7 +228,7 @@ fn microdata_prop_value(el: &ElementRef) -> Value {
         }
         _ => text(),
     };
-    Value::String(value)
+    serde_json::Value::String(value)
 }
 
 /// Short type name — last non-empty segment of an `itemtype`/`typeof` value,
@@ -242,7 +245,7 @@ fn short_type(itemtype: &str) -> Option<String> {
 // RDFa (RDFa Lite)
 //
 // Parses `typeof`/`property`/`resource` into the same flattened, JSON-LD-shaped
-// `Value`s as Microdata, mirroring it structurally: `typeof` is the item and
+// `serde_json::Value`s as Microdata, mirroring it structurally: `typeof` is the item and
 // `@type` source, `property` is a property, `resource`/`about` is `@id`, and the
 // nested-item boundary is `typeof`. Property values follow RDFa precedence:
 // `@content` first (the `<meta property … content>` / Open Graph pattern), then
@@ -260,12 +263,7 @@ fn short_type(itemtype: &str) -> Option<String> {
 //   - Full `vocab`/`prefix` CURIE resolution — local names are surfaced as-is.
 // ---------------------------------------------------------------------------
 
-pub(super) fn scrape_rdfa_items(html: &str) -> Jsonld {
-    let document = Html::parse_document(html);
-    scrape_rdfa_from_doc(&document)
-}
-
-pub(super) fn scrape_rdfa_from_doc(document: &Html) -> Jsonld {
+pub(super) fn scrape_rdfa_from_doc(document: &scraper::Html) -> Jsonld {
     document
         .select(&RDFA_SELECTOR)
         // Top-level typed resources: a `typeof` that also has `property` is a
@@ -277,14 +275,14 @@ pub(super) fn scrape_rdfa_from_doc(document: &Html) -> Jsonld {
 }
 
 /// Build a flattened, JSON-LD-shaped object from a `typeof` element.
-fn rdfa_item_to_value(item: &ElementRef) -> Value {
+fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
 
     if let Some(types_attr) = item.value().attr("typeof") {
-        let types: Vec<Value> = types_attr
+        let types: Vec<serde_json::Value> = types_attr
             .split_whitespace()
             .filter_map(short_type)
-            .map(Value::String)
+            .map(serde_json::Value::String)
             .collect();
         match types.len() {
             0 => {}
@@ -292,7 +290,7 @@ fn rdfa_item_to_value(item: &ElementRef) -> Value {
                 obj.insert("@type".to_string(), types.into_iter().next().unwrap());
             }
             _ => {
-                obj.insert("@type".to_string(), Value::Array(types));
+                obj.insert("@type".to_string(), serde_json::Value::Array(types));
             }
         }
     }
@@ -305,7 +303,7 @@ fn rdfa_item_to_value(item: &ElementRef) -> Value {
     {
         let id = id.trim();
         if !id.is_empty() {
-            obj.insert("@id".to_string(), Value::String(id.to_string()));
+            obj.insert("@id".to_string(), serde_json::Value::String(id.to_string()));
         }
     }
 
@@ -322,17 +320,17 @@ fn rdfa_item_to_value(item: &ElementRef) -> Value {
         }
     }
 
-    Value::Object(obj)
+    serde_json::Value::Object(obj)
 }
 
 /// The value of a non-`typeof` `property` element, per RDFa precedence.
-fn rdfa_prop_value(el: &ElementRef) -> Value {
+fn rdfa_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
     let element = el.value();
 
     // `@content` is an explicit literal and overrides text/href (the Open Graph
     // / `<meta property … content>` pattern).
     if let Some(content) = element.attr("content") {
-        return Value::String(content.trim().to_string());
+        return serde_json::Value::String(content.trim().to_string());
     }
 
     let attr = |name: &str| element.attr(name).unwrap_or("").trim().to_string();
@@ -352,7 +350,7 @@ fn rdfa_prop_value(el: &ElementRef) -> Value {
         }
         _ => text(),
     };
-    Value::String(value)
+    serde_json::Value::String(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +359,8 @@ fn rdfa_prop_value(el: &ElementRef) -> Value {
 // Parses mf2 (class-based: `h-*` roots, `p-*`/`u-*`/`dt-*`/`e-*` properties)
 // into canonical mf2 JSON: `{"type": ["h-card"], "properties": {"name": [...]},
 // "children": [...]}`. mf2 is a DISTINCT vocabulary from schema.org, so this
-// returns `Microformats` (not `Jsonld`) and is not part of `scrape_structured`.
+// returns `Microformats` (not `Jsonld`); `microformats_to_schema` normalizes it,
+// and `scrape_jsonld` folds the result into the unified schema.org view.
 //
 // Robustness against CSS utility classes that share these prefixes:
 //   - roots are whitelisted to known mf2 vocabularies, so Tailwind/Bootstrap
@@ -406,12 +405,7 @@ enum PropKind {
     E,
 }
 
-pub(super) fn scrape_microformats_items(html: &str) -> Microformats {
-    let document = Html::parse_document(html);
-    scrape_microformats_from_doc(&document)
-}
-
-pub(super) fn scrape_microformats_from_doc(document: &Html) -> Microformats {
+pub(super) fn scrape_microformats_from_doc(document: &scraper::Html) -> Microformats {
     document
         .select(&CLASS_SELECTOR)
         // Top-level roots only: a root nested inside another root is reached by
@@ -424,14 +418,14 @@ pub(super) fn scrape_microformats_from_doc(document: &Html) -> Microformats {
         .collect()
 }
 
-fn class_tokens(el: &ElementRef) -> Vec<String> {
+fn class_tokens(el: &scraper::ElementRef) -> Vec<String> {
     el.value()
         .attr("class")
         .map(|c| c.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
 }
 
-fn is_mf_root(el: &ElementRef) -> bool {
+fn is_mf_root(el: &scraper::ElementRef) -> bool {
     el.value().attr("class").is_some_and(|c| {
         c.split_whitespace()
             .any(|t| MF_ROOTS.contains(&t) || mf1_root(t).is_some())
@@ -441,7 +435,7 @@ fn is_mf_root(el: &ElementRef) -> bool {
 /// A root's mf2 type list and, for an mf1 (backcompat) root, its vocabulary.
 /// Prefers mf2: if the element carries an `h-*` class, that wins and `vocab` is
 /// `None`, so mf2-prefixed properties aren't dropped on transitional markup.
-fn root_types_and_vocab(el: &ElementRef) -> (Vec<String>, Option<Mf1Vocab>) {
+fn root_types_and_vocab(el: &scraper::ElementRef) -> (Vec<String>, Option<Mf1Vocab>) {
     let tokens = class_tokens(el);
     let mf2: Vec<String> = tokens
         .iter()
@@ -459,10 +453,10 @@ fn root_types_and_vocab(el: &ElementRef) -> (Vec<String>, Option<Mf1Vocab>) {
     (Vec::new(), None)
 }
 
-fn has_mf_root_ancestor(el: &ElementRef) -> bool {
+fn has_mf_root_ancestor(el: &scraper::ElementRef) -> bool {
     let mut node = el.parent();
     while let Some(n) = node {
-        if let Some(elem) = ElementRef::wrap(n) {
+        if let Some(elem) = scraper::ElementRef::wrap(n) {
             if is_mf_root(&elem) {
                 return true;
             }
@@ -474,7 +468,7 @@ fn has_mf_root_ancestor(el: &ElementRef) -> bool {
 
 /// Property `(kind, name)` pairs on an element. The no-letter guard drops CSS
 /// utility classes like `p-4`/`p-2` that share a property prefix.
-fn mf_property_classes(el: &ElementRef) -> Vec<(PropKind, String)> {
+fn mf_property_classes(el: &scraper::ElementRef) -> Vec<(PropKind, String)> {
     class_tokens(el)
         .iter()
         .filter_map(|token| {
@@ -498,7 +492,7 @@ fn mf_property_classes(el: &ElementRef) -> Vec<(PropKind, String)> {
         .collect()
 }
 
-fn parse_mf_item(root: &ElementRef) -> Value {
+fn parse_mf_item(root: &scraper::ElementRef) -> serde_json::Value {
     let (types, vocab) = root_types_and_vocab(root);
     let mut properties = serde_json::Map::new();
     let mut children = Vec::new();
@@ -507,25 +501,28 @@ fn parse_mf_item(root: &ElementRef) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert(
         "type".to_string(),
-        Value::Array(types.into_iter().map(Value::String).collect()),
+        serde_json::Value::Array(types.into_iter().map(serde_json::Value::String).collect()),
     );
-    obj.insert("properties".to_string(), Value::Object(properties));
+    obj.insert(
+        "properties".to_string(),
+        serde_json::Value::Object(properties),
+    );
     if !children.is_empty() {
-        obj.insert("children".to_string(), Value::Array(children));
+        obj.insert("children".to_string(), serde_json::Value::Array(children));
     }
-    Value::Object(obj)
+    serde_json::Value::Object(obj)
 }
 
 /// Walk descendants of a root, populating its `properties` and `children`.
 /// Never descends into a nested root (its properties belong to it). `vocab` is
 /// `Some` inside an mf1 root (use the per-vocab map) and `None` inside mf2.
 fn collect_mf(
-    el: &ElementRef,
+    el: &scraper::ElementRef,
     vocab: Option<Mf1Vocab>,
-    properties: &mut serde_json::Map<String, Value>,
-    children: &mut Vec<Value>,
+    properties: &mut serde_json::Map<String, serde_json::Value>,
+    children: &mut Vec<serde_json::Value>,
 ) {
-    for child in el.children().filter_map(ElementRef::wrap) {
+    for child in el.children().filter_map(scraper::ElementRef::wrap) {
         let prop_classes = match vocab {
             Some(v) => mf1_property_classes(&child, v),
             None => mf_property_classes(&child),
@@ -555,45 +552,49 @@ fn collect_mf(
     }
 }
 
-fn push_mf_prop(properties: &mut serde_json::Map<String, Value>, name: &str, value: Value) {
+fn push_mf_prop(
+    properties: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    value: serde_json::Value,
+) {
     match properties.get_mut(name) {
-        Some(Value::Array(arr)) => arr.push(value),
+        Some(serde_json::Value::Array(arr)) => arr.push(value),
         _ => {
-            properties.insert(name.to_string(), Value::Array(vec![value]));
+            properties.insert(name.to_string(), serde_json::Value::Array(vec![value]));
         }
     }
 }
 
-fn with_value(mut item: Value, value: String) -> Value {
-    if let Value::Object(ref mut map) = item {
-        map.insert("value".to_string(), Value::String(value));
+fn with_value(mut item: serde_json::Value, value: String) -> serde_json::Value {
+    if let serde_json::Value::Object(ref mut map) = item {
+        map.insert("value".to_string(), serde_json::Value::String(value));
     }
     item
 }
 
 /// Implied `value` for a nested root used as a property: its first `name`, else
 /// the element's normalized text.
-fn mf_nested_value(el: &ElementRef, nested: &Value) -> String {
+fn mf_nested_value(el: &scraper::ElementRef, nested: &serde_json::Value) -> String {
     nested
         .get("properties")
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_array())
         .and_then(|a| a.first())
-        .and_then(Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| mf_text(el))
 }
 
-fn mf_property_value(el: &ElementRef, kind: PropKind) -> Value {
+fn mf_property_value(el: &scraper::ElementRef, kind: PropKind) -> serde_json::Value {
     match kind {
-        PropKind::P => Value::String(mf_p_value(el)),
-        PropKind::U => Value::String(mf_u_value(el)),
-        PropKind::Dt => Value::String(mf_dt_value(el)),
+        PropKind::P => serde_json::Value::String(mf_p_value(el)),
+        PropKind::U => serde_json::Value::String(mf_u_value(el)),
+        PropKind::Dt => serde_json::Value::String(mf_dt_value(el)),
         PropKind::E => mf_e_value(el),
     }
 }
 
-fn mf_text(el: &ElementRef) -> String {
+fn mf_text(el: &scraper::ElementRef) -> String {
     el.text()
         .collect::<String>()
         .split_whitespace()
@@ -601,7 +602,7 @@ fn mf_text(el: &ElementRef) -> String {
         .join(" ")
 }
 
-fn mf_p_value(el: &ElementRef) -> String {
+fn mf_p_value(el: &scraper::ElementRef) -> String {
     let element = el.value();
     let attr = |n: &str| element.attr(n).map(|s| s.trim().to_string());
     match element.name() {
@@ -612,7 +613,7 @@ fn mf_p_value(el: &ElementRef) -> String {
     }
 }
 
-fn mf_u_value(el: &ElementRef) -> String {
+fn mf_u_value(el: &scraper::ElementRef) -> String {
     let element = el.value();
     let attr = |n: &str| element.attr(n).map(|s| s.trim().to_string());
     match element.name() {
@@ -624,7 +625,7 @@ fn mf_u_value(el: &ElementRef) -> String {
     .unwrap_or_else(|| mf_text(el))
 }
 
-fn mf_dt_value(el: &ElementRef) -> String {
+fn mf_dt_value(el: &scraper::ElementRef) -> String {
     let element = el.value();
     let attr = |n: &str| element.attr(n).map(|s| s.trim().to_string());
     match element.name() {
@@ -636,14 +637,14 @@ fn mf_dt_value(el: &ElementRef) -> String {
     .unwrap_or_else(|| mf_text(el))
 }
 
-fn mf_e_value(el: &ElementRef) -> Value {
+fn mf_e_value(el: &scraper::ElementRef) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert(
         "html".to_string(),
-        Value::String(el.inner_html().trim().to_string()),
+        serde_json::Value::String(el.inner_html().trim().to_string()),
     );
-    map.insert("value".to_string(), Value::String(mf_text(el)));
-    Value::Object(map)
+    map.insert("value".to_string(), serde_json::Value::String(mf_text(el)));
+    serde_json::Value::Object(map)
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +688,7 @@ fn mf1_root(class: &str) -> Option<(Mf1Vocab, &'static str)> {
     }
 }
 
-fn mf1_property_classes(el: &ElementRef, vocab: Mf1Vocab) -> Vec<(PropKind, String)> {
+fn mf1_property_classes(el: &scraper::ElementRef, vocab: Mf1Vocab) -> Vec<(PropKind, String)> {
     class_tokens(el)
         .iter()
         .filter_map(|token| mf1_property(vocab, token).map(|(k, n)| (k, n.to_string())))
@@ -764,17 +765,302 @@ fn mf1_property(vocab: Mf1Vocab, class: &str) -> Option<(PropKind, &'static str)
 /// always a CSS `class="geo"`/`"adr"` collision rather than a real microformat
 /// (those bare words double as common class names; the other mf1 roots are
 /// microformat coinages that essentially never appear as CSS classes).
-fn is_empty_geo_or_adr(item: &Value) -> bool {
+fn is_empty_geo_or_adr(item: &serde_json::Value) -> bool {
     let ty = item
         .get("type")
-        .and_then(Value::as_array)
+        .and_then(serde_json::Value::as_array)
         .and_then(|a| a.first())
-        .and_then(Value::as_str);
+        .and_then(serde_json::Value::as_str);
     matches!(ty, Some("h-geo") | Some("h-adr"))
         && item
             .get("properties")
-            .and_then(Value::as_object)
+            .and_then(serde_json::Value::as_object)
             .map(serde_json::Map::is_empty)
             .unwrap_or(true)
         && item.get("children").is_none()
+}
+
+// ---------------------------------------------------------------------------
+// Cross-encoding unify
+// ---------------------------------------------------------------------------
+
+/// Fold `extra` schema.org entities into `base`: an entity merges into an
+/// existing one of the same `@type` + `name` (filling only missing/empty
+/// properties), else is appended. Dedups the common case where a page carries
+/// the same entity in two encodings — e.g. Microdata (name + ingredients, no
+/// steps) and an h-recipe microformat (with steps) — into one complete entity
+/// rather than a partial duplicate.
+pub(super) fn merge_schema_entities(base: &mut Jsonld, extra: Jsonld) {
+    for entity in extra {
+        match base.iter_mut().find(|e| same_schema_entity(e, &entity)) {
+            Some(existing) => fill_missing_props(existing, entity),
+            None => base.push(entity),
+        }
+    }
+}
+
+/// Two entities are "the same" when they share a `@type` (short name) and a
+/// non-empty `name`. Without a name there's no safe identity — don't merge.
+fn same_schema_entity(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (schema_name(a), schema_name(b)) {
+        (Some(na), Some(nb)) if na.eq_ignore_ascii_case(&nb) => {
+            schema_type_short(a) == schema_type_short(b)
+        }
+        _ => false,
+    }
+}
+
+fn schema_name(v: &serde_json::Value) -> Option<String> {
+    match v.get("name")? {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        serde_json::Value::Array(arr) => arr
+            .first()
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        _ => None,
+    }
+}
+
+/// Short `@type` name (last segment of an IRI/CURIE; first of an array).
+fn schema_type_short(v: &serde_json::Value) -> Option<String> {
+    let raw = match v.get("@type")? {
+        serde_json::Value::String(s) => s.as_str(),
+        serde_json::Value::Array(arr) => arr.first()?.as_str()?,
+        _ => return None,
+    };
+    Some(
+        raw.rsplit(['/', '#', ':'])
+            .next()
+            .unwrap_or(raw)
+            .to_string(),
+    )
+}
+
+/// Fill only missing/empty properties of `existing` from `incoming` — a richer
+/// existing value is never overwritten.
+fn fill_missing_props(existing: &mut serde_json::Value, incoming: serde_json::Value) {
+    let (Some(ex), serde_json::Value::Object(inc)) = (existing.as_object_mut(), incoming) else {
+        return;
+    };
+    for (key, value) in inc {
+        match ex.get(&key) {
+            Some(current) if !schema_prop_is_empty(current) => {}
+            _ => {
+                ex.insert(key, value);
+            }
+        }
+    }
+}
+
+fn schema_prop_is_empty(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Microformats2 → schema.org normalization
+//
+// `scrape_microformats_from_doc` yields canonical mf2 items
+// (`{type:["h-recipe"], properties:{name:[...], ingredient:[...]}, …}`) — a
+// DISTINCT vocabulary from schema.org. This maps the common `h-*` types and
+// their prefix-stripped properties into the same schema.org-shaped `Jsonld` that
+// JSON-LD / Microdata / RDFa produce, so a microformat-only page flows through
+// the same `@type`-keyed consumers. Generic: a vocabulary table, no per-site or
+// per-entity heuristics.
+// ---------------------------------------------------------------------------
+
+pub(super) fn microformats_to_schema(items: &Microformats) -> Jsonld {
+    items.iter().filter_map(mf_item_to_schema).collect()
+}
+
+/// Convert one mf2 item to a schema.org-shaped object, or `None` if its type is
+/// unrecognized or nothing mapped beyond `@type`.
+fn mf_item_to_schema(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let h_type = item
+        .get("type")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|t| t.starts_with("h-"))?;
+    let schema_type = mf_type_to_schema(h_type)?;
+    let props = item.get("properties")?.as_object()?;
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("@type".to_string(), serde_json::Value::String(schema_type.to_string()));
+    for (mf_key, values) in props {
+        let Some(schema_key) = mf_prop_to_schema(h_type, mf_key) else {
+            continue;
+        };
+        let Some(arr) = values.as_array() else {
+            continue;
+        };
+        let value = convert_mf_values(arr, is_steplist_prop(schema_key));
+        if !mf_value_is_empty(&value) {
+            // First mapping wins (two mf props can map to one schema key, e.g.
+            // `photo`/`featured` → `image`).
+            obj.entry(schema_key).or_insert(value);
+        }
+    }
+
+    // An entity that mapped nothing beyond `@type` carries no usable data.
+    if obj.len() <= 1 {
+        return None;
+    }
+    Some(serde_json::Value::Object(obj))
+}
+
+/// Common `h-*` microformat types → schema.org `@type`. Unrecognized types are
+/// dropped (return `None`) rather than emitted as opaque entities.
+fn mf_type_to_schema(h_type: &str) -> Option<&'static str> {
+    Some(match h_type {
+        "h-recipe" => "Recipe",
+        "h-entry" => "Article",
+        "h-card" => "Person",
+        "h-event" => "Event",
+        "h-product" => "Product",
+        "h-review" => "Review",
+        "h-adr" => "PostalAddress",
+        "h-geo" => "GeoCoordinates",
+        _ => return None,
+    })
+}
+
+/// Map an mf2 property (prefix already stripped: `name`, `ingredient`, …) to its
+/// schema.org name for the owning `h-*` type. Per-type rules first, then the
+/// cross-type common set; unmapped properties are dropped.
+fn mf_prop_to_schema(h_type: &str, prop: &str) -> Option<&'static str> {
+    let mapped = match (h_type, prop) {
+        ("h-recipe", "ingredient") => "recipeIngredient",
+        ("h-recipe", "instructions") => "recipeInstructions",
+        ("h-recipe", "yield") => "recipeYield",
+        ("h-recipe", "duration") => "totalTime",
+        ("h-recipe", "category") => "recipeCategory",
+        ("h-recipe", "cuisine") => "recipeCuisine",
+        ("h-recipe", "nutrition") => "nutrition",
+        ("h-event", "start") => "startDate",
+        ("h-event", "end") => "endDate",
+        ("h-event", "location") => "location",
+        ("h-product", "price") => "price",
+        ("h-product", "brand") => "brand",
+        ("h-product", "identifier") => "productID",
+        ("h-product", "review") => "review",
+        ("h-review", "rating") => "reviewRating",
+        ("h-review", "item") => "itemReviewed",
+        ("h-card", "org") => "worksFor",
+        ("h-card", "tel") => "telephone",
+        ("h-card", "email") => "email",
+        ("h-card", "adr") => "address",
+        ("h-card", "job-title") => "jobTitle",
+        ("h-entry", "content") => "articleBody",
+        ("h-entry", "category") => "keywords",
+        _ => return mf_common_prop(prop),
+    };
+    Some(mapped)
+}
+
+fn mf_common_prop(prop: &str) -> Option<&'static str> {
+    Some(match prop {
+        "name" => "name",
+        "summary" => "description",
+        "photo" | "featured" => "image",
+        "url" => "url",
+        "author" => "author",
+        "published" => "datePublished",
+        "updated" => "dateModified",
+        _ => return None,
+    })
+}
+
+/// schema.org properties whose value type is a list (`ItemList`) — where an
+/// `e-*` block with multiple children should expand to an array of texts (e.g.
+/// recipe steps). Everything else is `Text` per schema.org and keeps the flat
+/// string; notably `articleBody` is `Text`, not a list, so it is NOT split.
+fn is_steplist_prop(schema_key: &str) -> bool {
+    matches!(schema_key, "recipeInstructions")
+}
+
+/// Flatten mf2 property values (always an array) into a schema.org value: a lone
+/// value collapses to a scalar, multiple to an array. For a `split_blocks`
+/// property — one schema.org models as a list, see [`is_steplist_prop`] — an
+/// `e-*` block whose markup has multiple `<li>`/`<p>` children expands to an
+/// array of those texts (recipe steps). Otherwise the block stays a single flat
+/// string, matching schema.org's `Text` typing (`articleBody`, `description`).
+fn convert_mf_values(values: &[serde_json::Value], split_blocks: bool) -> serde_json::Value {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for v in values {
+        match v {
+            serde_json::Value::String(s) => push_nonempty(&mut out, s),
+            serde_json::Value::Object(o) => {
+                if let Some(html) = o.get("html").and_then(serde_json::Value::as_str) {
+                    // `e-*` parsed-element property.
+                    let blocks = if split_blocks {
+                        split_e_blocks(html)
+                    } else {
+                        Vec::new()
+                    };
+                    if blocks.len() > 1 {
+                        out.extend(blocks.into_iter().map(serde_json::Value::String));
+                    } else if let Some(value) = o.get("value").and_then(serde_json::Value::as_str) {
+                        push_nonempty(&mut out, value);
+                    } else if let Some(block) = blocks.into_iter().next() {
+                        out.push(serde_json::Value::String(block));
+                    }
+                } else if let Some(value) = o.get("value").and_then(serde_json::Value::as_str) {
+                    // Nested-root property (e.g. an h-card used as `author`): use
+                    // its implied `value`.
+                    push_nonempty(&mut out, value);
+                }
+            }
+            _ => {}
+        }
+    }
+    match out.len() {
+        1 => out.into_iter().next().unwrap(),
+        _ => serde_json::Value::Array(out),
+    }
+}
+
+fn push_nonempty(out: &mut Vec<serde_json::Value>, s: &str) {
+    let trimmed = s.trim();
+    if !trimmed.is_empty() {
+        out.push(serde_json::Value::String(trimmed.to_string()));
+    }
+}
+
+/// Split an `e-*` HTML fragment into step texts: prefer `<li>`, else `<p>`.
+/// Empty when there are no block children (the caller falls back to the flat
+/// `value`).
+fn split_e_blocks(html: &str) -> Vec<String> {
+    let frag = scraper::Html::parse_fragment(html);
+    for selector in [&*LI_SELECTOR, &*P_SELECTOR] {
+        let steps: Vec<String> = frag
+            .select(selector)
+            .map(|e| {
+                e.text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !steps.is_empty() {
+            return steps;
+        }
+    }
+    Vec::new()
+}
+
+fn mf_value_is_empty(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Null => true,
+        _ => false,
+    }
 }

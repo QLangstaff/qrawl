@@ -2,6 +2,13 @@
 use crate::tools::extract::extract_schema_types;
 use crate::tools::scrape::*;
 
+/// Parse raw mf2 items directly (the parser `scrape_jsonld` folds in via
+/// `microformats_to_schema`). No public tool exposes raw mf2, so tests reach the
+/// internal parser to assert its un-normalized vocabulary shape.
+fn raw_mf2(html: &str) -> crate::types::Microformats {
+    super::utils::scrape_microformats_from_doc(&scraper::Html::parse_document(html))
+}
+
 // The boundary trap: a nested item must NOT leak its props to the parent,
 // and a plain wrapper must NOT block the parent's props.
 #[tokio::test]
@@ -18,7 +25,7 @@ async fn microdata_nested_item_and_plain_wrapper() {
               </div>
             </div>
         "#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
 
     // Only the Recipe is top-level; the Person is nested (has itemprop).
     assert_eq!(items.len(), 1);
@@ -50,7 +57,7 @@ async fn microdata_value_by_element_type() {
               <span itemprop="name">Widget</span>
             </div>
         "#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     let p = &items[0];
     assert_eq!(p["sku"], "ABC123"); // <meta content>
     assert_eq!(p["url"], "https://ex.com/p"); // <a href>
@@ -69,7 +76,7 @@ async fn microdata_repeated_prop_becomes_array() {
               <span itemprop="recipeIngredient">lime</span>
             </div>
         "#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(
         items[0]["recipeIngredient"],
         serde_json::json!(["cucumber", "avocado", "lime"])
@@ -83,7 +90,7 @@ async fn microdata_multiple_itemtype_tokens() {
               <span itemprop="name">X</span>
             </div>
         "#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(
         items[0]["@type"],
         serde_json::json!(["Product", "IndividualProduct"])
@@ -93,7 +100,7 @@ async fn microdata_multiple_itemtype_tokens() {
 #[tokio::test]
 async fn microdata_anonymous_item_has_no_type() {
     let html = r#"<div itemscope><span itemprop="name">Anon</span></div>"#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items.len(), 1);
     assert!(items[0].get("@type").is_none());
     assert_eq!(items[0]["name"], "Anon");
@@ -105,14 +112,14 @@ async fn microdata_anonymous_item_has_no_type() {
 #[tokio::test]
 async fn microdata_short_type_handles_trailing_slash() {
     let html = r#"<div itemscope itemtype="https://schema.org/Recipe/"><span itemprop="name">R</span></div>"#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items[0]["@type"], "Recipe");
 }
 
 #[tokio::test]
 async fn microdata_id_from_itemid() {
     let html = r#"<div itemscope itemtype="https://schema.org/Article" itemid="https://ex.com/a#1"><span itemprop="headline">H</span></div>"#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items[0]["@id"], "https://ex.com/a#1");
 }
 
@@ -122,7 +129,7 @@ async fn microdata_feeds_extract_schema_types() {
             <div itemscope itemtype="https://schema.org/Recipe"><span itemprop="name">R</span></div>
             <div itemscope itemtype="https://schema.org/Product"><span itemprop="name">P</span></div>
         "#;
-    let items = scrape_microdata(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     let mut types = extract_schema_types(&items);
     types.sort();
     assert_eq!(types, vec!["Product", "Recipe"]);
@@ -145,7 +152,7 @@ async fn rdfa_nested_item_and_plain_wrapper() {
               </div>
             </div>
         "#;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items.len(), 1);
     let recipe = &items[0];
     assert_eq!(recipe["@type"], "Recipe");
@@ -165,7 +172,7 @@ async fn rdfa_content_attr_precedence() {
               <meta property="datePublished" content="2024-01-01">
             </div>
         "#;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     // @content overrides element text (and is the only value for <meta>).
     assert_eq!(items[0]["headline"], "Real Headline");
     assert_eq!(items[0]["datePublished"], "2024-01-01");
@@ -180,7 +187,7 @@ async fn rdfa_link_and_media_values() {
               <span property="name">Widget</span>
             </div>
         "#;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items[0]["url"], "https://ex.com/p");
     assert_eq!(items[0]["image"], "https://ex.com/i.jpg");
     assert_eq!(items[0]["name"], "Widget");
@@ -194,7 +201,7 @@ async fn rdfa_repeated_property_array_and_multiple_typeof() {
               <span property="keywords">b</span>
             </div>
         "#;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(
         items[0]["@type"],
         serde_json::json!(["Product", "IndividualProduct"])
@@ -204,11 +211,12 @@ async fn rdfa_repeated_property_array_and_multiple_typeof() {
 
 #[tokio::test]
 async fn rdfa_short_type_handles_curie_and_iri() {
-    let curie =
-        scrape_rdfa(&r#"<div typeof="schema:Recipe"><span property="name">R</span></div>"#.into())
-            .await;
+    let curie = scrape_jsonld(
+        &r#"<div typeof="schema:Recipe"><span property="name">R</span></div>"#.into(),
+    )
+    .await;
     assert_eq!(curie[0]["@type"], "Recipe");
-    let iri = scrape_rdfa(
+    let iri = scrape_jsonld(
         &r#"<div typeof="https://schema.org/Recipe"><span property="name">R</span></div>"#.into(),
     )
     .await;
@@ -218,7 +226,7 @@ async fn rdfa_short_type_handles_curie_and_iri() {
 #[tokio::test]
 async fn rdfa_id_from_resource_and_feeds_extract_schema_types() {
     let html = r#"<div typeof="https://schema.org/Article" resource="https://ex.com/a"><span property="headline">H</span></div>"#;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items[0]["@id"], "https://ex.com/a");
     assert_eq!(extract_schema_types(&items), vec!["Article"]);
 }
@@ -236,7 +244,7 @@ async fn rdfa_chaining_without_typeof_is_a_pinned_limitation() {
               </div>
             </div>
         "##;
-    let items = scrape_rdfa(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     // The sub-resource's `name` flattens onto the Recipe (the limitation).
     assert_eq!(items[0]["name"], "Chef A");
 }
@@ -244,7 +252,7 @@ async fn rdfa_chaining_without_typeof_is_a_pinned_limitation() {
 // ===== Structured: all three encodings merged =====
 
 #[tokio::test]
-async fn structured_merges_all_three_encodings() {
+async fn jsonld_merges_all_three_native_encodings() {
     let html = r#"
             <html><head>
               <script type="application/ld+json">{"@type":"Article","headline":"H"}</script>
@@ -253,7 +261,7 @@ async fn structured_merges_all_three_encodings() {
               <div vocab="https://schema.org/" typeof="Product"><span property="name">P</span></div>
             </body></html>
         "#;
-    let items = scrape_structured(&html.into()).await;
+    let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items.len(), 3);
     // Order: JSON-LD, then Microdata, then RDFa.
     assert_eq!(items[0]["@type"], "Article");
@@ -267,8 +275,7 @@ async fn structured_merges_all_three_encodings() {
 
 #[tokio::test]
 async fn microdata_empty_when_absent() {
-    let items =
-        scrape_microdata(&"<html><body><p>no microdata here</p></body></html>".into()).await;
+    let items = scrape_jsonld(&"<html><body><p>no microdata here</p></body></html>".into()).await;
     assert!(items.is_empty());
 }
 
@@ -284,7 +291,7 @@ async fn mf2_basic_h_recipe() {
               <span class="p-yield">4 servings</span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-recipe"]));
     assert_eq!(
@@ -309,7 +316,7 @@ async fn mf2_nested_h_card_is_a_property_not_a_leak() {
               <span class="p-author h-card"><span class="p-name">Alice</span></span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items.len(), 1); // h-card is nested, not top-level
                                 // The nested h-card's name must NOT leak into the h-entry.
     assert_eq!(
@@ -332,7 +339,7 @@ async fn mf2_property_value_rules() {
               <span class="p-name">Title</span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     let props = &items[0]["properties"];
     assert_eq!(props["url"], serde_json::json!(["https://ex.com/post"])); // u- → href
     assert_eq!(props["published"], serde_json::json!(["2024-06-01"])); // dt- → datetime
@@ -351,7 +358,7 @@ async fn mf2_children_for_non_property_nested_roots() {
               <div class="h-entry"><span class="p-name">Post 2</span></div>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0]["properties"]["name"],
@@ -376,7 +383,7 @@ async fn mf2_ignores_css_utility_classes() {
               <div class="p-4"><span class="p-org">Acme</span></div>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     let props = items[0]["properties"].as_object().unwrap();
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Alice"]));
     assert_eq!(items[0]["properties"]["org"], serde_json::json!(["Acme"]));
@@ -393,7 +400,7 @@ async fn mf2_h_prefix_utility_classes_are_not_roots() {
               <div class="h-full"><p class="text-lg">Just Tailwind</p></div>
             </div>
         "#;
-    assert!(scrape_microformats(&html.into()).await.is_empty());
+    assert!(raw_mf2(html).is_empty());
 }
 
 #[tokio::test]
@@ -402,40 +409,35 @@ async fn mf2_implied_properties_are_a_pinned_limitation() {
     // deferred, so a minimal h-card yields empty properties rather than
     // implying name="Alice" / url=href. This pins that behavior.
     let html = r#"<a class="h-card" href="https://alice.example">Alice</a>"#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     assert!(items[0]["properties"].as_object().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn microformats_are_separate_from_structured() {
+async fn scrape_jsonld_folds_in_microformats() {
     let html = r#"
             <script type="application/ld+json">{"@type":"Article"}</script>
             <div class="h-card"><span class="p-name">Alice</span></div>
         "#;
-    // `scrape_structured` is the native schema.org encodings ONLY (JSON-LD /
-    // Microdata / RDFa). mf2 is a distinct vocabulary and is NOT folded in
-    // here — unifying it is `extract_schema`'s job (a composition).
-    let structured = scrape_structured(&html.into()).await;
-    let types: Vec<&str> = structured
+    // `scrape_jsonld` is the full unified view: the JSON-LD Article AND the
+    // h-card (normalized to Person) both surface.
+    let schema = scrape_jsonld(&html.into()).await;
+    let types: Vec<&str> = schema
         .iter()
         .filter_map(|v| v["@type"].as_str())
         .collect();
     assert!(types.contains(&"Article"), "JSON-LD present: {types:?}");
-    assert!(
-        !types.contains(&"Person"),
-        "mf2 must NOT leak into scrape_structured: {types:?}"
-    );
-    // The h-card is available separately as raw mf2.
-    let mf = scrape_microformats(&html.into()).await;
+    assert!(types.contains(&"Person"), "mf2 folded in: {types:?}");
+    // Raw mf2 is still parseable directly (no public tool exposes it).
+    let mf = raw_mf2(html);
     assert_eq!(mf[0]["type"], serde_json::json!(["h-card"]));
 }
 
 #[tokio::test]
 async fn mf2_empty_when_absent() {
     assert!(
-        scrape_microformats(&"<div class='just-css'>hi</div>".into())
-            .await
+        raw_mf2("<div class='just-css'>hi</div>")
             .is_empty()
     );
 }
@@ -453,7 +455,7 @@ async fn mf1_nested_author_vcard_in_hentry() {
               <span class="author vcard"><span class="fn">Alice</span></span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-entry"]));
     // entry-title → name; nested vcard's fn must NOT leak here.
@@ -473,7 +475,7 @@ async fn mf1_vcard_multi_class_properties() {
               <span class="bday">1990-12-28</span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     let props = &items[0]["properties"];
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     // One element, two classes → two properties (fn→p-name text, url→u-url href).
@@ -496,7 +498,7 @@ async fn mf1_hrecipe() {
               <span class="yield">4 servings</span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-recipe"]));
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Soup"]));
     assert_eq!(
@@ -517,7 +519,7 @@ async fn mf1_hfeed_entries_become_children() {
               <div class="hentry"><span class="entry-title">Post 2</span></div>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-feed"]));
     let children = items[0]["children"].as_array().unwrap();
@@ -542,7 +544,7 @@ async fn mf1_nested_adr_does_not_leak_into_vcard() {
               </span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Acme"]));
     let adr = &items[0]["properties"]["adr"][0];
     assert_eq!(adr["type"], serde_json::json!(["h-adr"]));
@@ -558,13 +560,12 @@ async fn mf1_nested_adr_does_not_leak_into_vcard() {
 #[tokio::test]
 async fn mf1_empty_geo_dropped_but_populated_geo_kept() {
     // A stray CSS `class="geo"` yields an empty h-geo → dropped.
-    let empty = scrape_microformats(&r#"<div class="geo"></div>"#.into()).await;
+    let empty = raw_mf2(r#"<div class="geo"></div>"#);
     assert!(empty.is_empty());
     // A real geo with coordinates survives.
-    let real = scrape_microformats(
-            &r#"<div class="geo"><span class="latitude">45.5</span><span class="longitude">-122.6</span></div>"#.into(),
-        )
-        .await;
+    let real = raw_mf2(
+        r#"<div class="geo"><span class="latitude">45.5</span><span class="longitude">-122.6</span></div>"#,
+    );
     assert_eq!(real.len(), 1);
     assert_eq!(
         real[0]["properties"]["latitude"],
@@ -576,7 +577,7 @@ async fn mf1_empty_geo_dropped_but_populated_geo_kept() {
 async fn mf1_empty_vcard_is_not_dropped() {
     // The guard is scoped to geo/adr — a minimal vcard (a microformat-only
     // coinage) survives with empty properties, like the mf2 h-card.
-    let items = scrape_microformats(&r#"<span class="vcard"></span>"#.into()).await;
+    let items = raw_mf2(r#"<span class="vcard"></span>"#);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
 }
@@ -591,7 +592,174 @@ async fn mf1_dual_root_prefers_mf2() {
               <span class="fn">B</span>
             </div>
         "#;
-    let items = scrape_microformats(&html.into()).await;
+    let items = raw_mf2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["A"]));
+}
+
+// ===== merge_schema_entities (cross-encoding unify, pure unit) =====
+
+#[test]
+fn merge_folds_microformat_into_microdata_twin() {
+    use serde_json::json;
+    // Microdata Recipe: name + ingredients + yield, NO instructions.
+    let microdata = json!({
+        "@type": "Recipe",
+        "name": "Cheesecake Bars",
+        "recipeIngredient": ["crumbs", "sugar"],
+        "recipeYield": "16 bars"
+    });
+    // A same-name Recipe from another encoding: adds the steps the first lacked.
+    let other = json!({
+        "@type": "Recipe",
+        "name": "Cheesecake Bars",
+        "recipeIngredient": ["crumbs", "sugar"],
+        "recipeInstructions": ["Heat oven", "Line pan", "Beat cheese"]
+    });
+    let mut structured = vec![microdata];
+    super::utils::merge_schema_entities(&mut structured, vec![other]);
+
+    // One merged entity, not a partial duplicate.
+    assert_eq!(structured.len(), 1);
+    let r = &structured[0];
+    assert_eq!(r["recipeYield"], "16 bars"); // kept from the first
+    assert_eq!(
+        r["recipeInstructions"],
+        json!(["Heat oven", "Line pan", "Beat cheese"]) // filled from the second
+    );
+}
+
+#[test]
+fn merge_appends_distinct_entities() {
+    use serde_json::json;
+    // Different name (and an IRI @type) → distinct identity → appended.
+    let mut structured = vec![json!({"@type": "Recipe", "name": "A", "recipeIngredient": ["x"]})];
+    super::utils::merge_schema_entities(
+        &mut structured,
+        vec![json!({"@type": "https://schema.org/Recipe", "name": "B"})],
+    );
+    assert_eq!(structured.len(), 2);
+}
+
+// ===== Microformats2 folded into scrape_jsonld (normalized to schema.org) =====
+
+// The lynchpin: a smittenkitchen/Jetpack-style h-recipe whose instructions live
+// in an `e-instructions` block as one `<p>` per step (no `itemprop`, so
+// Microdata alone misses them) must normalize to a Recipe whose
+// `recipeInstructions` is a 3-element ARRAY, not one joined blob.
+#[tokio::test]
+async fn mf2_h_recipe_normalizes_with_step_array() {
+    let html = r#"
+            <div class="hrecipe h-recipe">
+              <h3 class="p-name fn">Raspberry Swirl Cheesecake Bars</h3>
+              <ul>
+                <li class="p-ingredient ingredient">1 1/4 cups graham cracker crumbs</li>
+                <li class="p-ingredient ingredient">1/4 cup granulated sugar</li>
+                <li class="p-ingredient ingredient">2 packages cream cheese</li>
+              </ul>
+              <span class="p-yield yield">Makes 16 bars</span>
+              <div class="e-instructions instructions">
+                <p>Heat oven to 325 degrees F.</p>
+                <p>Line an 8x8-inch pan with parchment paper.</p>
+                <p>Beat cream cheese with sugar until fluffy.</p>
+              </div>
+            </div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    assert_eq!(schema.len(), 1, "one recipe entity");
+    let r = &schema[0];
+    assert_eq!(r["@type"], "Recipe");
+    assert_eq!(r["name"], "Raspberry Swirl Cheesecake Bars");
+    assert_eq!(r["recipeYield"], "Makes 16 bars");
+    assert_eq!(
+        r["recipeIngredient"],
+        serde_json::json!([
+            "1 1/4 cups graham cracker crumbs",
+            "1/4 cup granulated sugar",
+            "2 packages cream cheese"
+        ])
+    );
+    let steps = r["recipeInstructions"]
+        .as_array()
+        .expect("recipeInstructions should be an array");
+    assert_eq!(steps.len(), 3, "one step per <p> in e-instructions");
+    assert!(steps[0].as_str().unwrap().contains("325 degrees"));
+}
+
+// A non-recipe vocabulary maps too (the table is generic), and an unrecognized
+// type is dropped.
+#[tokio::test]
+async fn mf2_h_card_and_unknown_type() {
+    let html = r#"
+            <div class="h-card">
+              <span class="p-name">Ada Lovelace</span>
+              <a class="u-url" href="https://ada.example">site</a>
+            </div>
+            <div class="h-something-exotic"><span class="p-name">Ignored</span></div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    assert_eq!(schema.len(), 1, "unknown h-* type is dropped");
+    assert_eq!(schema[0]["@type"], "Person");
+    assert_eq!(schema[0]["name"], "Ada Lovelace");
+    assert_eq!(schema[0]["url"], "https://ada.example");
+}
+
+#[tokio::test]
+async fn mf2_h_entry_content_is_text_not_array() {
+    // schema.org `articleBody` is `Text`, so a multi-paragraph `e-content` must
+    // stay ONE string — unlike `recipeInstructions` (an `ItemList`).
+    let html = r#"
+            <div class="h-entry">
+              <span class="p-name">My Post</span>
+              <div class="e-content"><p>First para.</p><p>Second para.</p></div>
+            </div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    assert_eq!(schema.len(), 1);
+    assert_eq!(schema[0]["@type"], "Article");
+    let body = &schema[0]["articleBody"];
+    assert!(body.is_string(), "articleBody must be Text, got: {body}");
+    assert!(body.as_str().unwrap().contains("First para"));
+    assert!(body.as_str().unwrap().contains("Second para"));
+}
+
+// The full unify: a page double-encoding one Recipe — Microdata (name +
+// ingredient, NO steps) and an h-recipe microformat (steps in a no-itemprop
+// e-instructions block) — yields ONE complete Recipe, plus the standalone
+// h-card Person. Proves native + mf2 union and the cross-encoding merge.
+#[tokio::test]
+async fn scrape_jsonld_merges_native_and_mf2() {
+    let html = r#"
+            <div itemscope itemtype="https://schema.org/Recipe">
+              <span itemprop="name">Cheesecake Bars</span>
+              <span itemprop="recipeIngredient">cream cheese</span>
+            </div>
+            <div class="h-recipe">
+              <h3 class="p-name fn">Cheesecake Bars</h3>
+              <div class="e-instructions">
+                <p>Heat oven.</p>
+                <p>Bake until set.</p>
+              </div>
+            </div>
+            <div class="h-card"><span class="p-name">Ada</span></div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    let recipes: Vec<_> = schema.iter().filter(|v| v["@type"] == "Recipe").collect();
+    assert_eq!(recipes.len(), 1, "double-encoded Recipe merged: {schema:#?}");
+    let r = recipes[0];
+    assert_eq!(r["name"], "Cheesecake Bars");
+    assert!(
+        r.to_string().contains("cream cheese"),
+        "Microdata ingredient kept: {r:#?}"
+    );
+    let steps = r["recipeInstructions"]
+        .as_array()
+        .expect("steps filled from mf2");
+    assert_eq!(steps.len(), 2, "two e-instructions steps: {r:#?}");
+    assert!(
+        schema
+            .iter()
+            .any(|v| v["@type"] == "Person" && v["name"] == "Ada"),
+        "h-card Person unified in: {schema:#?}"
+    );
 }
