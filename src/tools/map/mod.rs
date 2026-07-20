@@ -4,9 +4,10 @@ mod tests;
 mod utils;
 
 use crate::selectors::LINK_SELECTOR;
+use crate::types::Html;
 
 /// Map URLs from HTML.
-pub async fn map_page(html: &str, url: &str) -> Vec<String> {
+pub async fn map_page(html: &Html, url: &str) -> Vec<String> {
     let html = html.to_string();
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {
@@ -51,7 +52,7 @@ pub async fn map_page(html: &str, url: &str) -> Vec<String> {
 }
 
 /// Map child URLs from HTML.
-pub async fn map_children(html: &str, url: &str) -> Vec<String> {
+pub async fn map_children(html: &Html, url: &str) -> Vec<String> {
     let html = html.to_string();
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {

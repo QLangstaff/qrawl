@@ -4,7 +4,7 @@ mod tests;
 pub mod types;
 mod utils;
 
-use crate::types::{Jsonld, Metadata};
+use crate::types::{Html, Jsonld, Metadata};
 pub use types::ExtractPreviewResult;
 
 /// Extract schema.org `@type` values from JSON-LD.
@@ -46,7 +46,7 @@ pub fn extract_og_preview(metadata: &Metadata) -> ExtractPreviewResult {
 }
 
 /// Extract email addresses from HTML.
-pub async fn extract_emails(html: &str) -> Vec<String> {
+pub async fn extract_emails(html: &Html) -> Vec<String> {
     let html = html.to_string();
     tokio::task::spawn_blocking(move || utils::extract_email_elements(&html))
         .await
@@ -54,7 +54,7 @@ pub async fn extract_emails(html: &str) -> Vec<String> {
 }
 
 /// Extract phone numbers from HTML.
-pub async fn extract_phones(html: &str) -> Vec<String> {
+pub async fn extract_phones(html: &Html) -> Vec<String> {
     let html = html.to_string();
     tokio::task::spawn_blocking(move || utils::extract_phone_elements(&html))
         .await

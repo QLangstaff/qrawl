@@ -1,5 +1,5 @@
 use crate::selectors::{JSONLD_SELECTOR, LINK_SELECTOR};
-use crate::tools::clean::utils::canonicalize_domain;
+use crate::tools::normalize::utils::normalize_domain;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use url::Url;
@@ -166,6 +166,15 @@ fn clean_href(href: &str) -> String {
 /// Check if URL scheme is acceptable (http/https).
 fn is_valid_scheme(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
+}
+
+/// Parse the page URL into the base that relative hrefs resolve against.
+/// `None` (with a warning) when it can't be parsed — the caller has no base to
+/// resolve against and yields no links.
+fn parse_base_url(url: &str) -> Option<Url> {
+    Url::parse(url)
+        .map_err(|e| log::warn!("invalid URL '{}': {}", url, e))
+        .ok()
 }
 
 /// Check if element is inside a specific HTML tag.
@@ -366,12 +375,8 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 /// - Parsing overhead is minimal compared to network I/O
 /// - Alternative (keeping ElementRefs) would require major API refactor
 pub(super) fn map_sibling_link(siblings: &[String], url: &str) -> Vec<String> {
-    let base = match Url::parse(url) {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("Warning: Invalid URL '{}': {}", url, e);
-            return Vec::new();
-        }
+    let Some(base) = parse_base_url(url) else {
+        return Vec::new();
     };
 
     siblings
@@ -433,12 +438,8 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
 /// 2. Anchor references (#id) - Find element and extract link
 /// 3. Relative URLs - Resolve to absolute
 pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Vec<String> {
-    let base = match Url::parse(url) {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("Warning: Invalid URL '{}': {}", url, e);
-            return Vec::new();
-        }
+    let Some(base) = parse_base_url(url) else {
+        return Vec::new();
     };
 
     itemlist
@@ -467,8 +468,8 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                                     // Compare hosts with canonicalization (strips www., lowercases, etc.)
                                     let hosts_match = match (url.host_str(), base.host_str()) {
                                         (Some(url_host), Some(base_host)) => {
-                                            canonicalize_domain(url_host)
-                                                == canonicalize_domain(base_host)
+                                            normalize_domain(url_host)
+                                                == normalize_domain(base_host)
                                         }
                                         _ => false,
                                     };

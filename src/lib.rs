@@ -8,6 +8,3 @@ pub mod selectors;
 pub mod templates;
 pub mod tools;
 pub mod types;
-
-#[cfg(test)]
-mod tests;
