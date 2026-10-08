@@ -109,7 +109,7 @@ pub fn fetch_url(url: &str, ctx: Arc<types::Context>) -> String {
             .scope(ctx, async { tools::fetch::fetch_strategy(url).await })
             .await
     });
-    result.unwrap_or_else(|e| {
+    result.map(types::Html::into_inner).unwrap_or_else(|e| {
         eprintln!("Failed to fetch {}: {}", url, e);
         std::process::exit(1);
     })
@@ -208,7 +208,7 @@ pub fn run() {
 
         Commands::Phones { url } => run!(
             @async ctx_arc.clone(), url,
-            [tools::extract::extract_phones, tools::clean::clean_phones]
+            [tools::extract::extract_phones, tools::normalize::normalize_phones]
         ),
     }
 }

@@ -341,3 +341,60 @@ impl<'de> Deserialize<'de> for CanonicalUrl {
         Ok(Self::new(&String::deserialize(deserializer)?))
     }
 }
+
+/// A recognized social platform — the host set that gets social-aware
+/// canonicalization ([`normalize_social`](crate::tools::normalize::normalize_social))
+/// and that [`classify_is_social_url`](crate::tools::classify::classify_is_social_url)
+/// reports on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SocialPlatform {
+    TikTok,
+    Instagram,
+    Facebook,
+    YouTube,
+    Twitter,
+    Reddit,
+    Pinterest,
+    LinkedIn,
+    Threads,
+    Snapchat,
+}
+
+impl SocialPlatform {
+    /// The platform a (lowercase) host belongs to, matching the platform's
+    /// domains and any of their subdomains (`www.`, `m.`, `vm.`, …). Pinterest
+    /// also matches its country domains (`pinterest.co.uk`, `pinterest.de`, …).
+    pub fn from_host(host: &str) -> Option<Self> {
+        let host = host.trim_end_matches('.');
+        let on = |domain: &str| {
+            host == domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        };
+        let platform = if on("tiktok.com") {
+            Self::TikTok
+        } else if on("instagram.com") {
+            Self::Instagram
+        } else if on("facebook.com") || on("fb.com") || on("fb.watch") {
+            Self::Facebook
+        } else if on("youtube.com") || on("youtu.be") {
+            Self::YouTube
+        } else if on("x.com") || on("twitter.com") {
+            Self::Twitter
+        } else if on("reddit.com") || on("redd.it") {
+            Self::Reddit
+        } else if on("pin.it") || host.split('.').any(|label| label == "pinterest") {
+            Self::Pinterest
+        } else if on("linkedin.com") {
+            Self::LinkedIn
+        } else if on("threads.net") || on("threads.com") {
+            Self::Threads
+        } else if on("snapchat.com") {
+            Self::Snapchat
+        } else {
+            return None;
+        };
+        Some(platform)
+    }
+}

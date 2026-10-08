@@ -44,7 +44,7 @@ macro_rules! chain {
             $items,
             concurrency,
             |(url, data): (String, String)| async move {
-                let result = $fn(&data).await;
+                let result = $fn(&$crate::types::Html::new(data)).await;
                 Some((url, result))
             }
         ).await
@@ -54,19 +54,19 @@ macro_rules! chain {
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
 
-    // Dispatch: clean_urls
-    (@process $items:expr, $ctx:expr, clean_urls $(, $rest:ident)*) => {{
-        $crate::chain!(@process_list_dedupe $items, $ctx, $crate::tools::clean::clean_urls $(, $rest)*)
+    // Dispatch: normalize_urls
+    (@process $items:expr, $ctx:expr, normalize_urls $(, $rest:ident)*) => {{
+        $crate::chain!(@process_list_dedupe $items, $ctx, $crate::tools::normalize::normalize_urls $(, $rest)*)
     }};
 
-    // Dispatch: clean_emails (flattens and deduplicates globally)
-    (@process $items:expr, $ctx:expr, clean_emails $(, $rest:ident)*) => {{
-        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_emails $(, $rest)*)
+    // Dispatch: normalize_emails (flattens and deduplicates globally)
+    (@process $items:expr, $ctx:expr, normalize_emails $(, $rest:ident)*) => {{
+        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::normalize::normalize_emails $(, $rest)*)
     }};
 
-    // Dispatch: clean_phones (flattens and deduplicates globally)
-    (@process $items:expr, $ctx:expr, clean_phones $(, $rest:ident)*) => {{
-        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_phones $(, $rest)*)
+    // Dispatch: normalize_phones (flattens and deduplicates globally)
+    (@process $items:expr, $ctx:expr, normalize_phones $(, $rest:ident)*) => {{
+        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::normalize::normalize_phones $(, $rest)*)
     }};
 
     // Dispatch: extract_emails
@@ -86,7 +86,7 @@ macro_rules! chain {
             $items,
             concurrency,
             |(url, html): (String, String)| async move {
-                let children = $crate::tools::map::map_children(&html, &url).await;
+                let children = $crate::tools::map::map_children(&$crate::types::Html::new(html), &url).await;
                 children.into_iter()
                     .map(|child| (child.clone(), child))
                     .collect::<Vec<(String, String)>>()
@@ -105,7 +105,7 @@ macro_rules! chain {
             $items,
             concurrency,
             |(url, html): (String, String)| async move {
-                let links = $crate::tools::map::map_page(&html, &url).await;
+                let links = $crate::tools::map::map_page(&$crate::types::Html::new(html), &url).await;
                 links.into_iter()
                     .map(|link| (link.clone(), link))
                     .collect::<Vec<(String, String)>>()
@@ -117,15 +117,15 @@ macro_rules! chain {
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
 
-    // clean_html: per-item batched, returns String (infallible)
-    (@process $items:expr, $ctx:expr, clean_html $(, $rest:ident)*) => {{
+    // normalize_html: per-item batched, returns String (infallible)
+    (@process $items:expr, $ctx:expr, normalize_html $(, $rest:ident)*) => {{
         let concurrency = $ctx.concurrency;
         let items: Vec<(String, String)> = $crate::tools::batch::batch(
             $items,
             concurrency,
             |(url, data): (String, String)| async move {
-                let result = $crate::tools::clean::clean_html(&data).await;
-                Some((url, result))
+                let result = $crate::tools::normalize::normalize_html(&$crate::types::Html::new(data)).await;
+                Some((url, result.into_inner()))
             }
         ).await
         .into_iter()
@@ -134,14 +134,15 @@ macro_rules! chain {
         $crate::chain!(@process items, $ctx $(, $rest)*)
     }};
 
-    // Default: per-item batched function returning Result (fetch_*, etc.)
+    // Default: per-item batched fetch (`fetch_*`) returning `Result<Html, _>`;
+    // the HTML is unwrapped back to a `String` for the next stage.
     (@process $items:expr, $ctx:expr, $fn:ident $(, $rest:ident)*) => {{
         let concurrency = $ctx.concurrency;
         let items: Vec<(String, String)> = $crate::tools::batch::batch(
             $items,
             concurrency,
             |(url, data): (String, String)| async move {
-                $fn(&data).await.ok().map(|result| (url, result))
+                $fn(&data).await.ok().map(|result| (url, result.into_inner()))
             }
         ).await
         .into_iter()
@@ -203,7 +204,7 @@ macro_rules! run {
     (@async $ctx:expr, $input:expr, [$first:expr, $second:expr] $(,)?) => {{
         let data = $crate::cli::read_input(&$input, $ctx);
         let result = $crate::runtime::block_on(async move {
-            let intermediate = $first(&data).await;
+            let intermediate = $first(&$crate::types::Html::new(data)).await;
             $second(&intermediate)  // Second is sync
         });
         $crate::cli::print_json(&result);
@@ -211,7 +212,7 @@ macro_rules! run {
     // For String input with async processor
     (@async $ctx:expr, $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
         let data = $crate::cli::read_input(&$input, $ctx);
-        let result = $crate::runtime::block_on($processor(&data $(, $arg)*));
+        let result = $crate::runtime::block_on($processor(&$crate::types::Html::new(data) $(, $arg)*));
         $crate::cli::print_json(&result);
     }};
 }

@@ -14,7 +14,7 @@ mod tests {
             </html>
         "#;
 
-        let emails = extract_emails(html).await;
+        let emails = extract_emails(&html.into()).await;
         assert!(emails.len() >= 2);
         assert!(emails.contains(&"john@example.com".to_string()));
         assert!(emails.contains(&"support@example.com".to_string()));
@@ -31,7 +31,7 @@ mod tests {
             </html>
         "#;
 
-        let phones = extract_phones(html).await;
+        let phones = extract_phones(&html.into()).await;
         assert!(phones.len() >= 2);
     }
 
@@ -88,7 +88,7 @@ mod tests {
             </html>
         "#;
 
-        let emails = extract_emails(html).await;
+        let emails = extract_emails(&html.into()).await;
         assert_eq!(
             emails,
             vec!["info@example.com", "info@example.com"]
@@ -109,7 +109,7 @@ mod tests {
             </html>
         "#;
 
-        let phones = extract_phones(html).await;
+        let phones = extract_phones(&html.into()).await;
         assert_eq!(phones.len(), 2); // Raw formats retained for downstream cleaning
         assert!(phones.contains(&"+1-555-123-4567".to_string()));
         assert!(phones.contains(&"+1 (555) 123-4567".to_string()));

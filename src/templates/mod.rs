@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use futures_util::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::tools::clean::{canonicalize_url, clean_urls};
 use crate::tools::fetch::fetch_strategy;
 use crate::tools::map::map_children;
-use crate::types::{fetch_cache_new, Context, CTX, FETCH_CACHE};
+use crate::tools::normalize::{normalize_social, normalize_urls};
+use crate::types::{fetch_cache_new, Context, Html, CTX, FETCH_CACHE};
 
 /// Streaming child-URL discovery.
 ///
@@ -72,7 +72,7 @@ pub fn qrawl_discover_children(
 
 /// Streaming fetch over an input URL stream.
 ///
-/// Fetches each URL with the strategy in `ctx`, yielding `(url, html)` pairs
+/// Fetches each URL with the strategy in `ctx`, yielding `(url, Html)` pairs
 /// in completion order. Per-URL fetch errors are silently dropped (matches
 /// [`qrawl_children_stream`]'s error policy).
 ///
@@ -84,12 +84,12 @@ pub fn qrawl_discover_children(
 pub fn qrawl_fetch_stream<S>(
     urls: S,
     ctx: Context,
-) -> impl Stream<Item = (String, String)> + Send + 'static
+) -> impl Stream<Item = (String, Html)> + Send + 'static
 where
     S: Stream<Item = String> + Send + 'static,
 {
     let concurrency = ctx.concurrency;
-    let (tx, rx) = mpsc::channel::<(String, String)>(concurrency);
+    let (tx, rx) = mpsc::channel::<(String, Html)>(concurrency);
     let ctx_arc = Arc::new(ctx);
     let cache = fetch_cache_new();
 
@@ -143,9 +143,9 @@ where
 pub fn qrawl_children_stream(
     urls: Vec<String>,
     ctx: Context,
-) -> impl Stream<Item = (String, String)> + Send + 'static {
+) -> impl Stream<Item = (String, Html)> + Send + 'static {
     let concurrency = ctx.concurrency;
-    let (tx, rx) = mpsc::channel::<(String, String)>(concurrency);
+    let (tx, rx) = mpsc::channel::<(String, Html)>(concurrency);
     let ctx_arc = Arc::new(ctx);
     let cache = fetch_cache_new();
 
@@ -179,7 +179,7 @@ pub fn qrawl_children_stream(
 pub async fn qrawl_children(
     urls: Vec<String>,
     ctx: Context,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, Html)>, String> {
     Ok(qrawl_children_stream(urls, ctx).collect().await)
 }
 
@@ -192,7 +192,7 @@ fn build_discover_stream(
     concurrency: usize,
 ) -> impl Stream<Item = String> + Send + 'static {
     // Stage 1: clean + dedupe input URLs (synchronous; small list).
-    let parents = clean_urls(&urls);
+    let parents = normalize_urls(&urls);
 
     // Parse concurrency is CPU-bound (scraper DOM build inside spawn_blocking);
     // exceeding core count just piles parsed `Html` trees into memory without
@@ -226,7 +226,7 @@ fn build_discover_stream(
         .flat_map(move |children| {
             let mut unique = Vec::with_capacity(children.len());
             for c in children {
-                let canonical = canonicalize_url(&c);
+                let canonical = normalize_social(&c);
                 if seen.lock().unwrap().insert(canonical.clone()) {
                     unique.push(canonical);
                 }
@@ -241,12 +241,15 @@ fn build_discover_stream(
 fn build_fetch_stream<S>(
     urls: S,
     concurrency: usize,
-) -> impl Stream<Item = (String, String)> + Send + 'static
+) -> impl Stream<Item = (String, Html)> + Send + 'static
 where
     S: Stream<Item = String> + Send + 'static,
 {
     urls.map(|child_url| async move {
-        fetch_strategy(&child_url).await.ok().map(|html| (child_url, html))
+        fetch_strategy(&child_url)
+            .await
+            .ok()
+            .map(|html| (child_url, html))
     })
     .buffer_unordered(concurrency)
     .filter_map(|opt| async move { opt })
@@ -271,16 +274,16 @@ where
 pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Result<Vec<String>, String> {
     let result = chain! {
         urls, ctx =>
-        clean_urls ->
+        normalize_urls ->
         fetch_strategy ->
         map_children ->
-        clean_urls ->
+        normalize_urls ->
         fetch_strategy ->
         map_page ->
-        clean_urls ->
+        normalize_urls ->
         fetch_strategy ->
         extract_emails ->
-        clean_emails
+        normalize_emails
     }
     .await;
 
