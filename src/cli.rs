@@ -88,15 +88,6 @@ enum Commands {
         /// JSON containing http(s) URLs, e.g. the output of `qrawl children`)
         #[arg(required = true)]
         urls: Vec<String>,
-
-        /// Treat URLs as listing pages (category / search results): extract
-        /// products from the pages they link to, plus any listed on the page
-        #[arg(long)]
-        children: bool,
-
-        /// With --children, the maximum number of child pages to read (0 = all)
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
     },
 }
 
@@ -247,31 +238,11 @@ pub fn run() {
             [tools::extract::extract_phones, tools::normalize::normalize_phones]
         ),
 
-        Commands::Products {
-            urls,
-            children,
-            limit,
-        } => {
-            let urls = read_urls(urls);
-            let ctx = (*ctx_arc).clone();
-            let pages = runtime::block_on(async move {
-                if children {
-                    // Listing pages can carry products themselves (`ItemList`).
-                    let mut pages: Vec<_> = templates::qrawl_products(urls.clone(), ctx.clone())
-                        .await
-                        .into_iter()
-                        .filter(|p| !p.products.is_empty() || p.error.is_some())
-                        .collect();
-                    pages.extend(templates::qrawl_child_products(urls, ctx, limit).await);
-                    // A listing with no detectable children falls back to itself
-                    // (in canonical form, so compare canonically).
-                    let mut seen = std::collections::HashSet::new();
-                    pages.retain(|p| seen.insert(tools::normalize::normalize_social(&p.url)));
-                    pages
-                } else {
-                    templates::qrawl_products(urls, ctx).await
-                }
-            });
+        Commands::Products { urls } => {
+            let pages = runtime::block_on(templates::qrawl_products(
+                read_urls(urls),
+                (*ctx_arc).clone(),
+            ));
             print_json(&pages);
         }
     }

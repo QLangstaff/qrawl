@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live product-extraction check against real retailers.
 # Per URL: raw curl probe, `qrawl fetch` (HTML saved + structured-data markers),
-# then `qrawl products` (product mode) or `qrawl products --children` (listing).
+# then `qrawl products` (product mode) or `qrawl children | qrawl products -` (listing).
 set -uo pipefail
 Q=${QRAWL:-target/release/qrawl}
 OUT=${OUT:-live-out}
@@ -39,7 +39,9 @@ grep -v '^#' "${SITES:-.github/live/sites.txt}" | while IFS='|' read -r label mo
     timeout 120 "$Q" children "$url" > "$OUT/$id.children.json" 2>/dev/null
     children=$(jq '.Ok | length' "$OUT/$id.children.json" 2>/dev/null || echo "?")
     echo "children ($children):"; jq -r '.Ok[:6][]' "$OUT/$id.children.json" 2>/dev/null
-    timeout 300 "$Q" products --children --limit "$LIMIT" "$url" > "$OUT/$id.products.json" 2>/dev/null
+    # The listing itself (ItemList) plus up to $LIMIT of its children.
+    { echo "$url"; jq -r ".Ok[:$LIMIT][]" "$OUT/$id.children.json" 2>/dev/null; } \
+      | timeout 300 "$Q" products - > "$OUT/$id.products.json" 2>/dev/null
   else
     timeout 120 "$Q" products "$url" > "$OUT/$id.products.json" 2>/dev/null
   fi

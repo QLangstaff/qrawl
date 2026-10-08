@@ -24,7 +24,6 @@ cargo add qrawl
 - **[qrawl_children](src/templates)**: Get children from parent URLs
 - **[qrawl_emails](src/templates)**: Get emails from given URLs
 - **[qrawl_products](src/templates)**: Get products from given URLs
-- **[qrawl_child_products](src/templates)**: Get products from the children of listing URLs
 
 ## Products
 
@@ -38,10 +37,11 @@ attributes (e.g. `"width": "60 in"`), and variants.
 # Product pages
 qrawl products https://shop.example.com/products/round-table https://shop.example.com/products/coupe
 
-# Category / search-results pages: products from the pages they link to
-qrawl products --children --limit 30 "https://shop.example.com/search?q=round+dining+table"
+# Category / search-results pages that list products (`ItemList`)
+qrawl products "https://shop.example.com/search?q=round+dining+table"
 
-# Any URLs on stdin (e.g. from `qrawl children`)
+# Products from the pages a listing links to: compose with `qrawl children`
+# (a listing with no detectable children yields itself)
 qrawl children https://shop.example.com/collections/glassware | qrawl products -
 ```
 

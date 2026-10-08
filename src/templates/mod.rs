@@ -340,30 +340,6 @@ pub async fn qrawl_products(urls: Vec<String>, ctx: Context) -> Vec<ProductPage>
     .await
 }
 
-/// Get products from the children of listing URLs (category / search-results
-/// pages): discovers child URLs with [`qrawl_children_stream`], fetches up to
-/// `limit` of them (`0` = no limit), and returns the pages that have products.
-/// Unreadable children are skipped, like `qrawl_children`.
-pub async fn qrawl_child_products(
-    urls: Vec<String>,
-    ctx: Context,
-    limit: usize,
-) -> Vec<ProductPage> {
-    let limit = if limit == 0 { usize::MAX } else { limit };
-    qrawl_children_stream(urls, ctx)
-        .take(limit)
-        .then(|(url, html)| async move {
-            ProductPage {
-                products: page_products(&url, &html).await,
-                url,
-                error: None,
-            }
-        })
-        .filter(|page| std::future::ready(!page.products.is_empty()))
-        .collect()
-        .await
-}
-
 async fn page_products(url: &str, html: &Html) -> Vec<ExtractProductResult> {
     let (_body, metadata, jsonld) = scrape_all(html).await;
     extract_products(&jsonld, &metadata, url)
