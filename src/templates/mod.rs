@@ -6,9 +6,13 @@ use std::sync::{Arc, Mutex};
 use futures_util::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
+use serde::Serialize;
+
+use crate::tools::extract::{extract_products, ExtractProductResult};
 use crate::tools::fetch::fetch_strategy;
 use crate::tools::map::map_children;
 use crate::tools::normalize::{normalize_social, normalize_urls};
+use crate::tools::scrape::scrape_all;
 use crate::types::{fetch_cache_new, Context, Html, CTX, FETCH_CACHE};
 
 /// Streaming child-URL discovery.
@@ -288,4 +292,79 @@ pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Result<Vec<String>
     .await;
 
     Ok(result.into_iter().map(|(_, email)| email).collect())
+}
+
+/// Products found on one page — or why the page couldn't be read.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct ProductPage {
+    pub url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<ExtractProductResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Get products from URLs.
+///
+/// Fetches each URL (deduped, input order preserved) and extracts its products
+/// with [`extract_products`]. Every URL gets a [`ProductPage`]: fetch failures
+/// (blocked, timed out, …) carry an `error`, and a page with no product data
+/// has empty `products` — so a caller can tell "no match" from "couldn't read".
+pub async fn qrawl_products(urls: Vec<String>, ctx: Context) -> Vec<ProductPage> {
+    let concurrency = ctx.concurrency;
+    let urls: Vec<String> = crate::dedupe!(urls);
+    CTX.scope(Arc::new(ctx), async move {
+        FETCH_CACHE
+            .scope(fetch_cache_new(), async move {
+                futures_util::stream::iter(urls)
+                    .map(|url| async move {
+                        match fetch_strategy(&url).await {
+                            Ok(html) => ProductPage {
+                                products: page_products(&url, &html).await,
+                                url,
+                                error: None,
+                            },
+                            Err(e) => ProductPage {
+                                url,
+                                products: Vec::new(),
+                                error: Some(e.to_string()),
+                            },
+                        }
+                    })
+                    .buffered(concurrency)
+                    .collect()
+                    .await
+            })
+            .await
+    })
+    .await
+}
+
+/// Get products from the children of listing URLs (category / search-results
+/// pages): discovers child URLs with [`qrawl_children_stream`], fetches up to
+/// `limit` of them (`0` = no limit), and returns the pages that have products.
+/// Unreadable children are skipped, like `qrawl_children`.
+pub async fn qrawl_child_products(
+    urls: Vec<String>,
+    ctx: Context,
+    limit: usize,
+) -> Vec<ProductPage> {
+    let limit = if limit == 0 { usize::MAX } else { limit };
+    qrawl_children_stream(urls, ctx)
+        .take(limit)
+        .then(|(url, html)| async move {
+            ProductPage {
+                products: page_products(&url, &html).await,
+                url,
+                error: None,
+            }
+        })
+        .filter(|page| std::future::ready(!page.products.is_empty()))
+        .collect()
+        .await
+}
+
+async fn page_products(url: &str, html: &Html) -> Vec<ExtractProductResult> {
+    let (_body, metadata, jsonld) = scrape_all(html).await;
+    extract_products(&jsonld, &metadata, url)
 }

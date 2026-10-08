@@ -36,7 +36,7 @@ pub(super) fn has_schema_type(jsonld: &Jsonld, schema_type: &str) -> bool {
 }
 
 /// Short `@type` names of one entity (handles string, array, and full IRIs).
-fn entity_types(value: &Value) -> Vec<String> {
+pub(crate) fn entity_types(value: &Value) -> Vec<String> {
     match value.get("@type") {
         Some(Value::String(s)) => short_type(s).into_iter().collect(),
         Some(Value::Array(arr)) => arr

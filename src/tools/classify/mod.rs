@@ -3,6 +3,8 @@
 mod tests;
 mod utils;
 
+pub(crate) use utils::entity_types;
+
 use crate::types::Jsonld;
 
 /// Classify whether a URL's host is a recognized social platform (TikTok, Reddit, …).
