@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch Auto
+    /// Fetch Auto (HTML to stdout, status to stderr)
     Fetch {
         /// URL
         url: String,
@@ -178,6 +178,9 @@ pub fn run() {
                         "✓ Success\n  Profile: {:?}\n  Attempts: {}\n  Duration: {}ms",
                         result.profile_used, result.attempts, result.duration_ms
                     );
+                    // The HTML goes to stdout so it can be saved or piped
+                    // (`qrawl fetch URL | qrawl jsonld -`).
+                    println!("{}", result.html);
                 }
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -260,9 +263,10 @@ pub fn run() {
                         .filter(|p| !p.products.is_empty() || p.error.is_some())
                         .collect();
                     pages.extend(templates::qrawl_child_products(urls, ctx, limit).await);
-                    // A listing with no detectable children falls back to itself.
+                    // A listing with no detectable children falls back to itself
+                    // (in canonical form, so compare canonically).
                     let mut seen = std::collections::HashSet::new();
-                    pages.retain(|p| seen.insert(p.url.clone()));
+                    pages.retain(|p| seen.insert(tools::normalize::normalize_social(&p.url)));
                     pages
                 } else {
                     templates::qrawl_products(urls, ctx).await

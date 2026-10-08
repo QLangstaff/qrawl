@@ -1,9 +1,22 @@
-# label | listing URL (search or category page)
-cb2           | https://www.cb2.com/search?query=round%20dining%20table
-crateandbarrel| https://www.crateandbarrel.com/search?query=round%20dining%20table
-potterybarn   | https://www.potterybarn.com/search/results.html?words=round%20dining%20table
-rh            | https://rh.com/search/results.jsp?query=round%20dining%20table
-westelm       | https://www.westelm.com/search/results.html?words=round%20dining%20table
-anthropologie | https://www.anthropologie.com/search?q=wine%20glasses
-wayfair       | https://www.wayfair.com/keyword.php?keyword=60%20inch%20round%20dining%20table
-amazon        | https://www.amazon.com/s?k=60+inch+round+dining+table
+# label | mode (listing|product) | URL
+anthropologie         | listing | https://www.anthropologie.com/search?q=wine%20glasses
+anthropologie         | product | https://www.anthropologie.com/shop/morgan-stemless-wine-glasses-set-of-4?color=100
+cb2                   | listing | https://www.cb2.com/search?query=round%20dining%20table
+cb2                   | product | https://www.cb2.com/julius-48-round-marble-dining-table/s627149
+cb2-nowww             | product | https://cb2.com/julius-48-round-marble-dining-table/s627149
+crateandbarrel        | product | https://www.crateandbarrel.com/tate-48-round-dining-table-with-glass-top-and-walnut-base/s476848
+crateandbarrel-nowww  | product | https://crateandbarrel.com/tate-48-round-dining-table-with-glass-top-and-walnut-base/s476848
+crateandbarrel        | listing | https://www.crateandbarrel.com/furniture/dining-tables/1/filters/round-99
+westelm               | product | https://www.westelm.com/products/jax-round-dining-table-h4705/
+westelm-nowww         | product | https://westelm.com/products/jax-round-dining-table-h4705/
+westelm               | listing | https://www.westelm.com/shop/furniture/all-dining-tables/
+potterybarn           | product | https://www.potterybarn.com/products/parkview-reclaimed-wood-round-dining-table-mp/
+potterybarn-nowww     | product | https://potterybarn.com/products/parkview-reclaimed-wood-round-dining-table-mp/
+potterybarn           | listing | https://www.potterybarn.com/shop/furniture/round+dining-tables/shape-m-shape-ff000d-1/
+rh                    | product | https://rh.com/us/en/catalog/product/product.jsp/prod17590058
+rh                    | listing | https://rh.com/us/en/catalog/category/products.jsp/cat27330098
+wayfair               | listing | https://www.wayfair.com/furniture/sb1/60-inches-round-dining-tables-c1863484-a149111~485129.html
+wayfair-nowww         | listing | https://wayfair.com/furniture/sb1/60-inches-round-dining-tables-c1863484-a149111~485129.html
+amazon                | product | https://www.amazon.com/LVB-60-Inch-Dining-Kitchen-Industrial/dp/B0F4DLPWQ6
+amazon-nowww          | product | https://amazon.com/LVB-60-Inch-Dining-Kitchen-Industrial/dp/B0F4DLPWQ6
+amazon-nowww          | listing | https://amazon.com/s?k=60+inch+round+dining+table

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live product-extraction check against real retailers.
-# For each listing URL: raw HTTP probe (status / size / structured-data markers),
-# qrawl fetch, child discovery, then `qrawl products --children`.
+# Per URL: raw curl probe, `qrawl fetch` (HTML saved + structured-data markers),
+# then `qrawl products` (product mode) or `qrawl products --children` (listing).
 set -uo pipefail
 Q=${QRAWL:-target/release/qrawl}
 OUT=${OUT:-live-out}
@@ -9,41 +9,47 @@ LIMIT=${LIMIT:-6}
 UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
 mkdir -p "$OUT"
 SUMMARY="$OUT/summary.md"
-echo "| site | http | bytes | ld+json | Product | qrawl fetch | children | pages w/ products | products | errors |" > "$SUMMARY"
+echo "| site | mode | curl | qrawl fetch | html bytes | ld+json | Product | children | products | errors |" > "$SUMMARY"
 echo "|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
 
-grep -v '^#' "${SITES:-.github/live/sites.txt}" | while IFS='|' read -r label url; do
-  label=$(echo "$label" | xargs); url=$(echo "$url" | xargs)
+n=0
+grep -v '^#' "${SITES:-.github/live/sites.txt}" | while IFS='|' read -r label mode url; do
+  label=$(echo "$label" | xargs); mode=$(echo "$mode" | xargs); url=$(echo "$url" | xargs)
   [ -z "$label" ] && continue
-  echo "::group::$label  $url"
+  n=$((n+1)); id="$n-$label-$mode"
+  echo "::group::$id  $url"
 
   code=$(curl -sL -A "$UA" -H 'Accept: text/html' -H 'Accept-Language: en-US,en;q=0.9' \
-    --compressed --max-time 30 -o "$OUT/$label.raw.html" -w '%{http_code}' "$url" || true)
-  bytes=$(wc -c < "$OUT/$label.raw.html" 2>/dev/null || echo 0)
-  ldjson=$(grep -o 'application/ld+json' "$OUT/$label.raw.html" 2>/dev/null | wc -l)
-  product=$(grep -oE '"@type" ?: ?"(Product|ProductGroup)"' "$OUT/$label.raw.html" 2>/dev/null | wc -l)
-  echo "curl: $code, $bytes bytes, ld+json=$ldjson, Product=$product"
-  head -c 400 "$OUT/$label.raw.html" | tr '\n' ' '; echo
+    --compressed --max-time 30 -o /dev/null -w '%{http_code}' "$url" || true)
 
-  if timeout 90 "$Q" fetch "$url" > /dev/null 2> "$OUT/$label.fetch.txt"; then
-    fetch="ok ($(grep -o 'Profile: .*' "$OUT/$label.fetch.txt" | head -1 | cut -d' ' -f2))"
+  if timeout 90 "$Q" fetch "$url" > "$OUT/$id.html" 2> "$OUT/$id.fetch.txt"; then
+    fetch="ok $(grep -o 'Profile: .*' "$OUT/$id.fetch.txt" | head -1 | cut -d' ' -f2)"
   else
-    fetch="fail"
+    fetch="fail: $(grep -oE 'HTTP status [0-9]+|invalid content[^;]*|tunnel|timed out' "$OUT/$id.fetch.txt" | sort | uniq -c | tr -s ' ' | xargs)"
   fi
-  cat "$OUT/$label.fetch.txt"
+  bytes=$(wc -c < "$OUT/$id.html")
+  ldjson=$(grep -o 'application/ld+json' "$OUT/$id.html" | wc -l)
+  product=$(grep -oE '"@type" ?: ?"(Product|ProductGroup)"' "$OUT/$id.html" | wc -l)
+  title=$(grep -oiE '<title[^>]*>[^<]{0,90}' "$OUT/$id.html" | head -1 | sed 's/<title[^>]*>//I')
+  echo "curl=$code qrawl=$fetch bytes=$bytes ld+json=$ldjson Product=$product title=$title"
+  [ -s "$OUT/$id.html" ] && echo "schema types: $("$Q" schemas - < "$OUT/$id.html" 2>/dev/null | jq -c . 2>/dev/null)"
 
-  timeout 120 "$Q" children "$url" > "$OUT/$label.children.json" 2>/dev/null
-  children=$(jq '.Ok | length' "$OUT/$label.children.json" 2>/dev/null || echo "?")
-  jq -r '.Ok[:8][]' "$OUT/$label.children.json" 2>/dev/null
+  children="-"
+  if [ "$mode" = listing ]; then
+    timeout 120 "$Q" children "$url" > "$OUT/$id.children.json" 2>/dev/null
+    children=$(jq '.Ok | length' "$OUT/$id.children.json" 2>/dev/null || echo "?")
+    echo "children ($children):"; jq -r '.Ok[:6][]' "$OUT/$id.children.json" 2>/dev/null
+    timeout 300 "$Q" products --children --limit "$LIMIT" "$url" > "$OUT/$id.products.json" 2>/dev/null
+  else
+    timeout 120 "$Q" products "$url" > "$OUT/$id.products.json" 2>/dev/null
+  fi
+  nprod=$(jq '[.[] | .products // [] | length] | add // 0' "$OUT/$id.products.json" 2>/dev/null || echo "?")
+  errs=$(jq '[.[] | select(.error)] | length' "$OUT/$id.products.json" 2>/dev/null || echo "?")
+  jq -r '.[] | if .error then "ERROR \(.url): \(.error[:160])" else (.products[] | "  \(.name) | \(.price)-\(.priceMax // "") \(.currency // "") | \(.availability // "-") | imgs=\(.images | length) | variants=\(.variants // [] | length) | attrs=\(.attributes // {} | keys | join(",")) | \(.url)") end' \
+    "$OUT/$id.products.json" 2>/dev/null | head -12
+  [ "$mode" = product ] && jq -c '.[0].products[0] // empty | .description |= (if . then .[:80] else . end) | .images |= (if . then .[:2] else . end) | .variants |= (if . then .[:2] else . end)' "$OUT/$id.products.json" 2>/dev/null
 
-  timeout 300 "$Q" products --children --limit "$LIMIT" "$url" > "$OUT/$label.products.json" 2>/dev/null
-  pages=$(jq '[.[] | select(.products)] | length' "$OUT/$label.products.json" 2>/dev/null || echo "?")
-  nprod=$(jq '[.[] | .products // [] | length] | add // 0' "$OUT/$label.products.json" 2>/dev/null || echo "?")
-  errs=$(jq '[.[] | select(.error)] | length' "$OUT/$label.products.json" 2>/dev/null || echo "?")
-  jq -r '.[] | if .error then "ERROR \(.url): \(.error[:200])" else (.products[] | "  \(.name) | \(.price) \(.currency // "") | \(.availability // "-") | imgs=\(.images | length) | \(.url)") end' \
-    "$OUT/$label.products.json" 2>/dev/null | head -20
-
-  echo "| $label | $code | $bytes | $ldjson | $product | $fetch | $children | $pages | $nprod | $errs |" >> "$SUMMARY"
+  echo "| $label | $mode | $code | $fetch | $bytes | $ldjson | $product | $children | $nprod | $errs |" >> "$SUMMARY"
   echo "::endgroup::"
 done
 
