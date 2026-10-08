@@ -1,0 +1,24 @@
+name: live-products
+
+# Manual / branch-only live check of `qrawl products` against real retailers.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/product-extraction]
+    paths: [".github/live/**", ".github/workflows/live-products.yml", "src/**"]
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: .github/live/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-out
+          path: live-out/

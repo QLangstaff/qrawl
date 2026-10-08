@@ -1,0 +1,9 @@
+# label | listing URL (search or category page)
+cb2           | https://www.cb2.com/search?query=round%20dining%20table
+crateandbarrel| https://www.crateandbarrel.com/search?query=round%20dining%20table
+potterybarn   | https://www.potterybarn.com/search/results.html?words=round%20dining%20table
+rh            | https://rh.com/search/results.jsp?query=round%20dining%20table
+westelm       | https://www.westelm.com/search/results.html?words=round%20dining%20table
+anthropologie | https://www.anthropologie.com/search?q=wine%20glasses
+wayfair       | https://www.wayfair.com/keyword.php?keyword=60%20inch%20round%20dining%20table
+amazon        | https://www.amazon.com/s?k=60+inch+round+dining+table
