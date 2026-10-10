@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
