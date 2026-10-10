@@ -78,9 +78,8 @@ pub fn extract_schema_types(jsonld: &Jsonld) -> Vec<String> {
 /// Extract a [`PageContent`] from the Open Graph / Twitter Card metadata of
 /// the page at `url` — title, body text, author, hero image, and playable
 /// video, tagged [`ContentSource::OpenGraph`]. The catch-all payload
-/// extractor: every page exposes `<meta>`, so this always returns a result
-/// (possibly all-empty — the caller filters with
-/// [`PageContent::has_content`]).
+/// extractor: every page exposes `<meta>`, so this always returns a result,
+/// possibly with no content field set.
 pub fn extract_open_graph(url: &CanonicalUrl, metadata: &Metadata) -> PageContent {
     PageContent {
         title: utils::find_metadata_value(metadata, &["title", "og:title", "twitter:title"]),

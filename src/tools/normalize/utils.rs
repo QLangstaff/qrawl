@@ -198,20 +198,26 @@ pub fn normalize_domain(host: &str) -> String {
 /// Examples:
 /// - `example.com` → `https://example.com`
 /// - `HTTP://Example.com/path/` → `https://example.com/path`
-/// - `https://www.example.com?b=2&a=1` → `https://example.com?a=1&b=2`
+/// - `https://www.example.com?b=2&a=1` → `https://example.com/?a=1&b=2`
 /// - `https://example.com/page#section` → `https://example.com/page`
-/// - `https://example.com?utm_source=x&id=7` → `https://example.com?id=7`
+/// - `https://example.com?utm_source=x&id=7` → `https://example.com/?id=7`
 pub fn normalize_url(url: &str) -> String {
-    // Prepend https:// if protocol is missing (case-insensitive check)
-    // Only prepend if it looks like a domain (contains a dot)
+    // `mailto:`, `ftp://`, and `localhost:8080` already name a scheme, and a
+    // relative path names no host, so none of them gains an `https://` prefix.
     let url_lower = url.to_ascii_lowercase();
-    let url_with_protocol = if url_lower.starts_with("http://") || url_lower.starts_with("https://")
-    {
+    let is_http = url_lower.starts_with("http://") || url_lower.starts_with("https://");
+    let has_scheme = url.split_once(':').is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+    });
+    let url_with_protocol = if is_http {
         url.to_string()
-    } else if url.contains('.') {
-        format!("https://{}", url)
+    } else if has_scheme || url.starts_with('/') || !url.contains('.') {
+        return url.to_string();
     } else {
-        url.to_string()
+        format!("https://{}", url)
     };
 
     let mut parsed = match Url::parse(&url_with_protocol) {
@@ -238,23 +244,10 @@ pub fn normalize_url(url: &str) -> String {
     };
     parsed.set_path(new_path);
 
-    // 4. Strip tracking params, then sort remaining query parameters
-    if parsed.query().is_some() {
-        let params: BTreeMap<_, _> = parsed
-            .query_pairs()
-            .filter(|(k, _)| !is_tracking_param(k.as_ref()))
-            .collect();
-        if !params.is_empty() {
-            let sorted_query = params
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("&");
-            parsed.set_query(Some(&sorted_query));
-        } else {
-            parsed.set_query(None);
-        }
-    }
+    // 4. Strip tracking params, then sort the remaining query parameters by
+    // key. The pairs stay percent-encoded, so `?q=a%26b` keeps its one value.
+    let query = kept_query(&parsed, |key| !is_tracking_param(key), true);
+    parsed.set_query(query.as_deref());
 
     // 5. Remove fragment
     parsed.set_fragment(None);
@@ -294,26 +287,26 @@ pub fn normalize_social(url: &str) -> String {
         let _ = parsed.set_host(Some(stripped));
     }
 
-    // Strip social share tokens from the (already sorted, general-stripped) query.
-    if parsed.query().is_some() {
-        let kept: Vec<(String, String)> = parsed
-            .query_pairs()
-            .filter(|(k, _)| !is_social_tracker(k))
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
-        if kept.is_empty() {
-            parsed.set_query(None);
-        } else {
-            let query = kept
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("&");
-            parsed.set_query(Some(&query));
-        }
-    }
+    let query = kept_query(&parsed, |key| !is_social_tracker(key), false);
+    parsed.set_query(query.as_deref());
 
     parsed.to_string().trim_end_matches('/').to_string()
+}
+
+/// The query of `url` with only the pairs whose key `keep` accepts, as written
+/// (still percent-encoded), sorted by key when `sort`. `None` when no pair is
+/// left.
+fn kept_query(url: &Url, keep: impl Fn(&str) -> bool, sort: bool) -> Option<String> {
+    let key_of = |pair: &str| pair.split('=').next().unwrap_or(pair).to_string();
+    let mut pairs: Vec<&str> = url
+        .query()?
+        .split('&')
+        .filter(|pair| !pair.is_empty() && keep(&key_of(pair)))
+        .collect();
+    if sort {
+        pairs.sort_by_key(|pair| key_of(pair));
+    }
+    (!pairs.is_empty()).then(|| pairs.join("&"))
 }
 
 /// Social share / referrer tokens stripped by [`normalize_social`] on top of
@@ -414,7 +407,7 @@ pub(super) fn normalize_email(email: &str) -> String {
 ///
 /// Performs:
 /// 1. Trim whitespace
-/// 2. Strip extension patterns (ext., x, extension)
+/// 2. Strip a space-separated extension (` ext. 123`, ` x123`, ` extension 123`)
 /// 3. Keep international prefix (+) if present
 /// 4. Strip all other non-digit characters except leading +
 pub(super) fn normalize_phone(phone: &str) -> String {
@@ -425,7 +418,6 @@ pub(super) fn normalize_phone(phone: &str) -> String {
         .to_lowercase()
         .find(" ext")
         .or_else(|| result.to_lowercase().find(" x"))
-        .or_else(|| result.to_lowercase().find(" extension"))
     {
         result = result[..pos].to_string();
     }

@@ -15,8 +15,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 static CLIENT_CACHE: Lazy<DashMap<FetchProfile, Client>> = Lazy::new(DashMap::new);
 
-/// The profile that last succeeded per host. A cascade starts there, so a host
-/// that needs a browser profile isn't retried with `Minimal` on every fetch.
+/// The profile that last succeeded per host.
 static HOST_PROFILE_CACHE: Lazy<DashMap<String, FetchProfile>> = Lazy::new(DashMap::new);
 
 /// Per-host concurrency gate. One permit is acquired per URL and held through
@@ -101,8 +100,22 @@ pub(super) async fn fetch_bytes(
     .await
 }
 
-/// Send `url` with each of the strategy's profiles, from the host's last
-/// successful profile on, until `read` accepts a response.
+/// The strategy's profiles with the host's last successful one moved first, so
+/// a host that needs a browser profile skips the attempts that fail, and a host
+/// that stops accepting it still gets every other profile.
+pub(super) fn attempt_order(
+    profiles: &[FetchProfile],
+    cached: Option<FetchProfile>,
+) -> Vec<FetchProfile> {
+    let mut order = profiles.to_vec();
+    if let Some(index) = cached.and_then(|cached| order.iter().position(|p| *p == cached)) {
+        order[..=index].rotate_right(1);
+    }
+    order
+}
+
+/// Send `url` with each of the strategy's profiles, in [`attempt_order`],
+/// until `read` accepts a response.
 async fn cascade<T, Read, Fut>(
     url: &str,
     strategy: FetchStrategy,
@@ -117,15 +130,13 @@ where
     let host = host_of(url);
     let _permit = acquire_host_permit(host.as_deref()).await;
 
-    let profiles = profiles(strategy);
-    let first = host
+    let cached = host
         .as_ref()
-        .and_then(|host| HOST_PROFILE_CACHE.get(host).map(|profile| *profile))
-        .and_then(|cached| profiles.iter().position(|profile| *profile == cached))
-        .unwrap_or(0);
+        .and_then(|host| HOST_PROFILE_CACHE.get(host).map(|profile| *profile));
+    let profiles = attempt_order(profiles(strategy), cached);
 
     let mut errors = Vec::new();
-    for (attempt, profile) in profiles[first..].iter().enumerate() {
+    for (attempt, profile) in profiles.iter().enumerate() {
         let result = match send(url, *profile, referer, attempt_timeout(strategy)).await {
             Ok(response) => read(response).await,
             Err(e) => Err(e),

@@ -16,15 +16,20 @@ use crate::types::{CanonicalUrl, SocialKind, SocialParts, SocialPayload, SocialP
 use super::fetch_bytes;
 
 /// Fetch a social item's structured representation through its dedicated door.
-/// Owns the routing knowledge: `.json` works on any Reddit URL; oEmbed covers
-/// individual TikTok/YouTube/Pinterest/Vimeo content (not profiles, boards,
-/// feeds, or opaque shortlinks with `kind: None`); every other platform
+/// Owns the routing knowledge: `.json` covers a Reddit post or comment, and
+/// oEmbed covers individual TikTok/YouTube/Pinterest/Vimeo content. Profiles,
+/// subreddits, boards, feeds, and opaque shortlinks with `kind: None` have no
+/// door, because a listing's payload describes one of its items; every other platform
 /// (Instagram/Facebook/X/LinkedIn) has no public door. `None` when the URL has
 /// no door or lacks the ids to address one — returned before any network — or
 /// the door fails (logged at debug); the caller falls back to fetching the page.
 pub async fn fetch_social(social: &SocialParts, url: &CanonicalUrl) -> Option<SocialPayload> {
     let (request, door): (String, fn(String) -> SocialPayload) = match social.platform {
-        SocialPlatform::Reddit => (reddit_json_url(url.as_str()), SocialPayload::RedditJson),
+        SocialPlatform::Reddit
+            if matches!(social.kind, Some(SocialKind::Post | SocialKind::Comment)) =>
+        {
+            (reddit_json_url(url.as_str()), SocialPayload::RedditJson)
+        }
         SocialPlatform::TikTok
         | SocialPlatform::YouTube
         | SocialPlatform::Pinterest
@@ -77,8 +82,8 @@ pub(super) fn oembed_request_url(social: &SocialParts) -> Option<String> {
 }
 
 /// Rebuild the provider's expected canonical URL from the classified fields,
-/// independent of how the shared URL was formatted. Required because `canonical`
-/// strips `www.` for dedup, but some oEmbed endpoints are picky about the exact
+/// independent of how the shared URL was formatted. Required because
+/// [`CanonicalUrl`] strips `www.`, but some oEmbed endpoints are picky about the exact
 /// host — notably **TikTok 400s without `www.`**.
 fn oembed_target_url(social: &SocialParts) -> Option<String> {
     let id = social.id.as_deref();

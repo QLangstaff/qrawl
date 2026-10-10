@@ -1,5 +1,6 @@
 use crate::errors::QrawlError;
 use crate::hosts::{host_matches, host_of};
+use crate::tools::normalize::utils::normalize_domain;
 use crate::types::with_context;
 
 // ---------------------------------------------------------------------------
@@ -8,7 +9,9 @@ use crate::types::with_context;
 
 /// Whether `url`'s host passes the allow/block lists. An empty list filters
 /// nothing; a blocked host loses even when it's also allowed; a URL with no
-/// host passes only when there's no allowlist.
+/// host passes only when there's no allowlist. Hosts and listed domains
+/// compare in [`normalize_domain`] form, so `WWW.Example.com` lists
+/// `example.com`.
 pub(crate) fn is_url_allowed(
     url: &str,
     allow_domains: &[String],
@@ -20,7 +23,12 @@ pub(crate) fn is_url_allowed(
     let Some(host) = host_of(url) else {
         return allow_domains.is_empty();
     };
-    let matches_any = |domains: &[String]| domains.iter().any(|domain| host_matches(&host, domain));
+    let host = normalize_domain(&host);
+    let matches_any = |domains: &[String]| {
+        domains
+            .iter()
+            .any(|domain| host_matches(&host, &normalize_domain(domain)))
+    };
     !matches_any(block_domains) && (allow_domains.is_empty() || matches_any(allow_domains))
 }
 

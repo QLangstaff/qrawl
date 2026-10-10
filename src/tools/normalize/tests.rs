@@ -858,3 +858,33 @@ fn test_normalize_social_matches_classify_forms() {
         "https://youtube.com/watch?t=30&v=dQw4w9WgXcQ"
     );
 }
+
+#[test]
+fn normalize_url_keeps_percent_encoded_query_values() {
+    let url = "https://example.com/p?q=a%26b&x=1%2B2";
+    assert_eq!(normalize_url(url), url);
+    assert_eq!(normalize_url(&normalize_url(url)), url);
+}
+
+#[test]
+fn normalize_url_keeps_repeated_query_keys_in_order() {
+    assert_eq!(
+        normalize_url("https://example.com/p?id=2&a=0&id=1"),
+        "https://example.com/p?a=0&id=2&id=1"
+    );
+}
+
+#[test]
+fn normalize_url_leaves_non_http_inputs_unchanged() {
+    for input in ["mailto:a@b.com", "/about.html", "ftp://files.example.com/a"] {
+        assert_eq!(normalize_url(input), input);
+    }
+}
+
+#[test]
+fn normalize_social_keeps_percent_encoded_query_values() {
+    assert_eq!(
+        normalize_social("https://youtube.com/results?search_query=a%26b&si=x"),
+        "https://youtube.com/results?search_query=a%26b"
+    );
+}

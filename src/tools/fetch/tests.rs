@@ -2,7 +2,9 @@
 use crate::hosts::host_matches;
 use crate::tools::fetch::headers::headers_for_profile;
 use crate::tools::fetch::social::{fetch_social, oembed_request_url, reddit_json_url};
-use crate::tools::fetch::strategies::{acquire_host_permit, HOST_SEMAPHORES, PER_HOST_CONCURRENCY};
+use crate::tools::fetch::strategies::{
+    acquire_host_permit, attempt_order, HOST_SEMAPHORES, PER_HOST_CONCURRENCY,
+};
 use crate::tools::fetch::types::FetchProfile;
 use crate::tools::fetch::utils::{is_url_allowed, validate_response};
 use crate::types::{SocialKind, SocialParts, SocialPlatform};
@@ -186,6 +188,36 @@ fn is_url_allowed_hostless_url_needs_no_allow_list() {
     assert!(!is_url_allowed("mailto:a@example.com", &allow, &[]));
 }
 
+#[test]
+fn is_url_allowed_ignores_case_and_www() {
+    let listed = vec!["WWW.Example.com".to_string()];
+    assert!(is_url_allowed("https://example.com/x", &listed, &[]));
+    assert!(!is_url_allowed("https://www.example.com/x", &[], &listed));
+    assert!(!is_url_allowed("https://other.com/x", &listed, &[]));
+}
+
+#[test]
+fn attempt_order_moves_cached_profile_first_and_keeps_the_rest() {
+    let profiles = [
+        FetchProfile::Minimal,
+        FetchProfile::Windows,
+        FetchProfile::IOS,
+    ];
+    assert_eq!(attempt_order(&profiles, None), profiles);
+    assert_eq!(
+        attempt_order(&profiles, Some(FetchProfile::IOS)),
+        [
+            FetchProfile::IOS,
+            FetchProfile::Minimal,
+            FetchProfile::Windows
+        ]
+    );
+    assert_eq!(
+        attempt_order(&[FetchProfile::Minimal], Some(FetchProfile::Windows)),
+        [FetchProfile::Minimal]
+    );
+}
+
 #[tokio::test]
 async fn host_cap_serializes_excess_callers() {
     // Reset the semaphore for this host to avoid pollution from other tests.
@@ -358,4 +390,21 @@ async fn fetch_social_no_door_for_none_kind_shortlink() {
         )
         .await
     );
+}
+
+#[tokio::test]
+async fn fetch_social_no_door_for_reddit_listings() {
+    for url in [
+        "https://reddit.com/r/rust",
+        "https://reddit.com/user/someone",
+    ] {
+        let social = crate::tools::extract::extract_social_parts(url).expect("reddit url");
+        assert!(matches!(
+            social.kind,
+            Some(SocialKind::Collection | SocialKind::Profile)
+        ));
+        assert!(fetch_social(&social, &CanonicalUrl::new(url))
+            .await
+            .is_none());
+    }
 }

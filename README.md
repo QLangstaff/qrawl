@@ -109,7 +109,7 @@ Drop-in compositions of the tools for the common jobs. They're tiny — [read th
 | `qrawl_children` | parent URLs | the fetched HTML of each child page |
 | `qrawl_children_stream`, `qrawl_discover_children`, `qrawl_fetch_stream` | parent URLs | the same crawl as streams, to filter or stop early |
 | `qrawl_schema` | site URLs and a schema.org type | the child pages that carry that type |
-| `qrawl_emails` | site URLs | every deduped email, crawled two levels deep |
+| `qrawl_emails` | site URLs | the deduped emails on the pages two links from each URL |
 
 ```rust,no_run
 use qrawl::templates::qrawl_many_urls;
@@ -129,14 +129,14 @@ Full API reference: [docs.rs/qrawl](https://docs.rs/qrawl).
 
 ## CLI reference
 
-Each command prints JSON to stdout, except `markdown` (raw Markdown) and `fetch` (a byte count on stderr). A command fails with a message on stderr and exit code 1. Add `--fast` for a single fetch attempt instead of the retry cascade. Set `RUST_LOG=qrawl=info` to log each fetch's winning profile and timing.
+Each command prints JSON to stdout, except `markdown` (raw Markdown) and `fetch` (a byte count on stderr). A command that can't read its input or fetch its URL fails with a message on stderr and exit code 1; a crawl drops the pages that fail and prints what it got. Add `--fast` for a single fetch attempt instead of the retry cascade. Set `RUST_LOG=qrawl=info` to log each fetch's winning profile and timing.
 
 Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 
 | Command | Output |
 |---------|--------|
 | `qrawl url <url>` | any link → `PageContent` |
-| `qrawl urls <url>...` | many links → a `PageContent` each; `--depth`, `--limit`, `--allow`, `--block`, `--allow-url`, `--block-url`, `--include-schema`, `--exclude-schema` |
+| `qrawl urls <url>...` | many links → a `PageContent` each; `--depth` (at most 3), `--limit`, `--allow`, `--block`, `--allow-url`, `--block-url`, `--include-schema`, `--exclude-schema` |
 | `qrawl fetch <url>` | fetch and report the page's size |
 | `qrawl preview <url>` | Open Graph content — title, text, author, image, video |
 | `qrawl metadata <input>` | all `<meta>` tags |
@@ -147,9 +147,9 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl has-schema <input> <type>` | whether the page carries a schema.org type |
 | `qrawl phones <input>` | phone numbers |
 | `qrawl page <url>` | every link on the page |
-| `qrawl children <url>` | child URLs under the page |
+| `qrawl children <url>` | child URLs under the page that fetch |
 | `qrawl schema <url> <type>` | child pages that carry a schema.org type |
-| `qrawl emails <url>` | crawl the site, return deduped emails |
+| `qrawl emails <url>` | deduped emails on the pages two links from the URL |
 | `qrawl socials <url>` | crawl the site, return deduped social links |
 
 ## License

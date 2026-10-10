@@ -3,8 +3,9 @@ use crate::tools::map::{map_children, map_page};
 use crate::tools::normalize::{normalize_emails, normalize_urls};
 use crate::types::Context;
 
-/// Get emails from URLs — crawl each seed's children and their pages, then
-/// extract and dedupe every email across the crawl.
+/// Get emails from URLs — fetch each seed's children, then every page those
+/// children link to (on any host), and extract and dedupe the emails on those
+/// last pages.
 pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Vec<String> {
     crate::chain! {
         urls, ctx =>

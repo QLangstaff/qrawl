@@ -19,7 +19,7 @@ use crate::types::{Context, Html};
 /// use qrawl::types::Context;
 ///
 /// # async fn run() {
-/// // Every Product page reachable from the storefront.
+/// // Every Product page the storefront links to as a child.
 /// let products =
 ///     qrawl_schema(vec!["https://shop.example".into()], "Product", Context::fast()).await;
 /// # }

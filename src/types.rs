@@ -122,8 +122,9 @@ impl Context {
     }
 
     /// Run `future` as one crawl: every fetch inside it reads this context and
-    /// shares one fetch cache, so a URL reached twice is fetched once. A fetch
-    /// outside any scope uses the defaults and no cache.
+    /// shares one fetch cache, so a URL fetched again after its first fetch
+    /// completed costs no request. A fetch outside any scope uses the defaults
+    /// and no cache.
     pub async fn scope<F: Future>(self, future: F) -> F::Output {
         CTX.scope(
             Arc::new(self),
@@ -291,8 +292,7 @@ pub(crate) type Microformats = Vec<Value>;
 /// inner string is private so the invariant can't be bypassed. Serialization is
 /// transparent (a bare string); **deserialization re-canonicalizes**, so a
 /// non-canonical string from a DB / API payload / hand-written JSON can't sneak
-/// past the invariant. (Re-canonicalizing canonical input is a no-op —
-/// `normalize_social` is idempotent.)
+/// past the invariant.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct CanonicalUrl(String);
@@ -399,10 +399,13 @@ impl SocialPlatform {
             .iter()
             .find(|(domain, _)| host_matches(host, domain))
             .map(|(_, platform)| *platform)
-            // Pinterest ships many ccTLDs (`pinterest.co.uk`, `uk.pinterest.com`).
+            // Pinterest ships many ccTLDs (`pinterest.co.uk`, `uk.pinterest.com`):
+            // a `pinterest` label followed only by a public suffix, which
+            // `pinterest.evil.com` isn't.
             .or_else(|| {
-                host.split('.')
-                    .any(|label| label == "pinterest")
+                let labels: Vec<&str> = host.split('.').collect();
+                let suffix = &labels[labels.iter().position(|label| *label == "pinterest")? + 1..];
+                (matches!(suffix.len(), 1 | 2) && suffix.iter().all(|label| label.len() <= 3))
                     .then_some(SocialPlatform::Pinterest)
             })
     }

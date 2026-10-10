@@ -60,3 +60,10 @@ fn has_schema_type_false_on_empty_or_typeless() {
     let jsonld = vec![serde_json::json!({"name": "no type"})];
     assert!(!classify_has_schema_type(&jsonld, "Recipe"));
 }
+
+#[test]
+fn pinterest_label_needs_a_public_suffix_after_it() {
+    assert!(classify_is_social_url("https://www.pinterest.co.uk/pin/1"));
+    assert!(classify_is_social_url("https://uk.pinterest.com/pin/1"));
+    assert!(!classify_is_social_url("https://pinterest.evil.com/pin/1"));
+}

@@ -12,7 +12,7 @@ use super::utils::{fetch_stream, spawn_crawl};
 /// The input is typically the output of
 /// [`qrawl_discover_children`](super::qrawl_discover_children) after
 /// caller-side filtering, but any URL stream works. A URL repeated in the
-/// input is yielded each time and fetched once.
+/// input is yielded each time, so dedupe the input first.
 pub fn qrawl_fetch_stream<S>(
     urls: S,
     ctx: Context,

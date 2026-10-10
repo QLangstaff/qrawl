@@ -29,7 +29,7 @@ enum Commands {
         url: String,
     },
 
-    /// Crawl Children URLs
+    /// Crawl Children URLs (the ones that fetch)
     Children {
         /// URL
         url: String,
@@ -93,7 +93,7 @@ enum Commands {
         schema_type: String,
     },
 
-    /// Crawl a Site, Extract & Normalize Email Addresses
+    /// Extract & Normalize Email Addresses Two Links from a URL
     Emails {
         /// URL
         url: String,
@@ -120,8 +120,9 @@ enum Commands {
     /// Universal Bulk Pipeline (fast, concurrent, best-effort over many URLs)
     Urls {
         /// URLs (space-separated)
+        #[arg(required = true)]
         urls: Vec<String>,
-        /// Crawl depth ceiling: 0 = just these URLs, N = follow children up to N levels
+        /// Crawl depth: 0 = just these URLs, N = follow children N levels (at most 3)
         #[arg(long, default_value_t = 0)]
         depth: usize,
         /// Stop after this many matching results (caps a wide/deep crawl)

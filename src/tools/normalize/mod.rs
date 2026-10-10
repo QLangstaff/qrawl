@@ -45,7 +45,7 @@ pub async fn normalize_html(html: &Html) -> Html {
 /// Normalize email addresses
 ///
 /// - Trim whitespace
-/// - Strip surrounding punctuation
+/// - Strip trailing punctuation
 /// - Extract email from display name (e.g. "Name <email@example.com>")
 /// - URL decode
 /// - Lowercase
@@ -57,7 +57,7 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// Normalize phone numbers
 ///
 /// - Trim whitespace
-/// - Strip extensions (e.g. "ext. 123", "x123", "#123")
+/// - Strip a space-separated extension (e.g. " ext. 123", " x123")
 /// - Keep leading `+` for international numbers
 /// - Remove non-digit characters
 /// - Deduplicate
