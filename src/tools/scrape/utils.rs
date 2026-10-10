@@ -2,7 +2,7 @@ use once_cell::sync::Lazy;
 use scraper::Selector;
 
 use crate::types::{Html, Jsonld, Metadata};
-use crate::utils::{schema_types, JSONLD_SELECTOR};
+use crate::utils::{schema_types, short_schema_type, JSONLD_SELECTOR};
 
 /// Microformats2 items, each in canonical mf2 shape:
 /// `{"type": ["h-card"], "properties": {"name": ["…"], …}, "children": [...]}`.
@@ -161,7 +161,7 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     if let Some(itemtype) = item.value().attr("itemtype") {
         let types: Vec<serde_json::Value> = itemtype
             .split_whitespace()
-            .filter_map(short_type)
+            .filter_map(short_schema_type)
             .map(serde_json::Value::String)
             .collect();
         match types.len() {
@@ -276,16 +276,6 @@ fn microdata_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
     serde_json::Value::String(value)
 }
 
-/// Short type name — last non-empty segment of an `itemtype`/`typeof` value,
-/// splitting on `/`, `#`, and `:` so full IRIs (`https://schema.org/Recipe`),
-/// CURIEs (`schema:Recipe`), and bare terms (`Recipe`) all yield `Recipe`.
-fn short_type(itemtype: &str) -> Option<String> {
-    itemtype
-        .rsplit([':', '/', '#'])
-        .find(|segment| !segment.is_empty())
-        .map(str::to_string)
-}
-
 // ---------------------------------------------------------------------------
 // RDFa (RDFa Lite)
 //
@@ -326,7 +316,7 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     if let Some(types_attr) = item.value().attr("typeof") {
         let types: Vec<serde_json::Value> = types_attr
             .split_whitespace()
-            .filter_map(short_type)
+            .filter_map(short_schema_type)
             .map(serde_json::Value::String)
             .collect();
         match types.len() {

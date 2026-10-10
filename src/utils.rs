@@ -102,22 +102,27 @@ pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
         })
 }
 
-/// The schema.org types an entity declares in `@type`, as short names: a full
-/// IRI (`https://schema.org/Recipe`), a CURIE (`schema:Recipe`), and a bare
-/// term all yield `Recipe`, whether `@type` is one string or an array.
+/// The short name of a schema.org type: a full IRI
+/// (`https://schema.org/Recipe`), a CURIE (`schema:Recipe`), and a bare term
+/// all yield `Recipe`.
+pub(crate) fn short_schema_type(declared: &str) -> Option<String> {
+    declared
+        .rsplit([':', '/', '#'])
+        .find(|segment| !segment.is_empty())
+        .map(str::to_string)
+}
+
+/// The schema.org types an entity declares in `@type`, as
+/// [`short_schema_type`] names, whether `@type` is one string or an array.
 pub(crate) fn schema_types(entity: &serde_json::Value) -> Vec<String> {
-    let short = |declared: &str| {
-        declared
-            .rsplit([':', '/', '#'])
-            .find(|segment| !segment.is_empty())
-            .map(str::to_string)
-    };
     match entity.get("@type") {
-        Some(serde_json::Value::String(declared)) => short(declared).into_iter().collect(),
+        Some(serde_json::Value::String(declared)) => {
+            short_schema_type(declared).into_iter().collect()
+        }
         Some(serde_json::Value::Array(declared)) => declared
             .iter()
             .filter_map(serde_json::Value::as_str)
-            .filter_map(short)
+            .filter_map(short_schema_type)
             .collect(),
         _ => Vec::new(),
     }
