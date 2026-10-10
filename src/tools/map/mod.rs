@@ -57,13 +57,16 @@ pub async fn map_children(html: &Html, url: &str) -> Vec<String> {
     let url = url.to_string();
     tokio::task::spawn_blocking(move || {
         let doc = scraper::Html::parse_document(&html);
-        let siblings = utils::map_siblings_from_doc(&doc, &url);
-        let itemlist = utils::map_itemlist_from_doc(&doc, &url);
-        let mut result = crate::merge!(siblings, itemlist);
-        if result.is_empty() {
-            result = vec![url];
+        let children = [
+            utils::map_siblings_from_doc(&doc, &url),
+            utils::map_itemlist_from_doc(&doc, &url),
+        ]
+        .concat();
+        if children.is_empty() {
+            vec![url]
+        } else {
+            children
         }
-        result
     })
     .await
     .expect("map_children: spawn_blocking failed")

@@ -1,10 +1,10 @@
 //! CLI
 
 use clap::{Parser, Subcommand};
-use std::io::{self, Read};
-use std::sync::Arc;
+use std::io::Read;
 
-use crate::{runtime, templates, tools, types};
+use crate::types::{CanonicalUrl, Context, Html};
+use crate::{runtime, templates, tools};
 
 #[derive(Parser)]
 #[command(
@@ -13,6 +13,7 @@ use crate::{runtime, templates, tools, types};
     about = "Rust toolkit to crawl web data for AI agents"
 )]
 struct Cli {
+    /// Fetch with a single Minimal attempt instead of the profile cascade
     #[arg(long, global = true)]
     fast: bool,
 
@@ -22,13 +23,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch Auto
+    /// Fetch a Page and Report Its Size
     Fetch {
         /// URL
         url: String,
     },
 
-    /// Map Children URLs
+    /// Crawl Children URLs
     Children {
         /// URL
         url: String,
@@ -42,26 +43,26 @@ enum Commands {
 
     /// Scrape Body
     Body {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
     /// Transform Page to Markdown
     Markdown {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
-    /// Scrape JSON-LD
+    /// Scrape schema.org Structured Data (JSON-LD, Microdata, RDFa, Microformats)
     Jsonld {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
     /// Scrape Metadata
     Metadata {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
     /// Scrape & Extract Open Graph Preview
@@ -70,16 +71,16 @@ enum Commands {
         url: String,
     },
 
-    /// Scrape & Extract JSON-LD Schema Types
+    /// Scrape & Extract schema.org Types
     Schemas {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
     /// Check if a Page Includes a schema.org Type
     HasSchema {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
         /// schema.org type to check for (e.g. Recipe, Product)
         schema_type: String,
     },
@@ -92,7 +93,7 @@ enum Commands {
         schema_type: String,
     },
 
-    /// Extract & Normalize Email Addresses
+    /// Crawl a Site, Extract & Normalize Email Addresses
     Emails {
         /// URL
         url: String,
@@ -100,17 +101,17 @@ enum Commands {
 
     /// Extract & Normalize Phone Numbers
     Phones {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
-    /// Extract & Normalize Social Links
+    /// Crawl a Site, Extract & Normalize Social Links
     Socials {
         /// URL
         url: String,
     },
 
-    /// Universal URL Pipeline (classify → side-door or fetch+scrape → one bundle)
+    /// Universal URL Pipeline (side door or fetch + scrape → one bundle)
     Url {
         /// URL
         url: String,
@@ -147,191 +148,141 @@ enum Commands {
     },
 }
 
-pub fn read_input(input: &str, ctx: Arc<types::Context>) -> String {
-    if input == "-" {
-        // Read from stdin
-        let mut buffer = String::new();
-        io::stdin()
-            .read_to_string(&mut buffer)
-            .expect("Failed to read from stdin");
-        buffer
-    } else if input.starts_with("http://") || input.starts_with("https://") {
-        // Fetch from URL
-        fetch_url(input, ctx)
-    } else {
-        // Read from file
-        std::fs::read_to_string(input).unwrap_or_else(|e| {
-            eprintln!("Error reading file '{}': {}", input, e);
-            std::process::exit(1);
-        })
-    }
+fn fail(message: impl std::fmt::Display) -> ! {
+    eprintln!("Error: {}", message);
+    std::process::exit(1);
 }
 
-pub fn fetch_url(url: &str, ctx: Arc<types::Context>) -> String {
-    let result = runtime::block_on(async move {
-        types::CTX
-            .scope(ctx, async { tools::fetch::fetch_strategy(url).await })
-            .await
-    });
-    result
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to fetch {}: {}", url, e);
-            std::process::exit(1);
-        })
-        .into_inner()
-}
-
-pub fn print_json<T: serde::Serialize>(value: &T) {
+fn print_json<T: serde::Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
         Ok(json) => println!("{}", json),
-        Err(e) => eprintln!("Error serializing to JSON: {}", e),
+        Err(e) => fail(format!("serializing to JSON: {}", e)),
     }
+}
+
+async fn fetch(url: &str, ctx: Context) -> Html {
+    ctx.scope(tools::fetch::fetch_strategy(url))
+        .await
+        .unwrap_or_else(|e| fail(format!("fetching {}: {}", url, e)))
+}
+
+/// Load HTML from stdin (`-`), a URL, or a file path.
+async fn load(input: &str, ctx: Context) -> Html {
+    if input == "-" {
+        let mut html = String::new();
+        std::io::stdin()
+            .read_to_string(&mut html)
+            .unwrap_or_else(|e| fail(format!("reading stdin: {}", e)));
+        Html::new(html)
+    } else if input.starts_with("http://") || input.starts_with("https://") {
+        fetch(input, ctx).await
+    } else {
+        Html::new(
+            std::fs::read_to_string(input)
+                .unwrap_or_else(|e| fail(format!("reading file '{}': {}", input, e))),
+        )
+    }
+}
+
+fn urls_of(pages: Vec<(String, Html)>) -> Vec<String> {
+    pages.into_iter().map(|(url, _html)| url).collect()
 }
 
 pub fn run() {
     let cli = Cli::parse();
-    let ctx_arc = Arc::new(if cli.fast {
-        types::Context::fast()
+    let ctx = if cli.fast {
+        Context::fast()
     } else {
-        types::Context::auto()
-    });
+        Context::auto()
+    };
+    runtime::block_on(run_command(cli.command, ctx));
+}
 
-    match cli.command {
+async fn run_command(command: Commands, ctx: Context) {
+    match command {
         Commands::Fetch { url } => {
-            if !url.starts_with("https://") {
-                eprintln!("Error: URL must start with https://");
-                std::process::exit(1);
-            }
-
             eprintln!(
                 "Fetching {}... (set RUST_LOG=qrawl=info for profile/timing)",
                 url
             );
-
-            match runtime::block_on(tools::fetch::fetch_auto(&url)) {
-                Ok(html) => eprintln!("✓ Fetched {} bytes", html.as_str().len()),
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            }
+            let html = fetch(&url, ctx).await;
+            eprintln!("✓ Fetched {} bytes", html.as_str().len());
         }
 
         Commands::Children { url } => {
-            let result = runtime::block_on(templates::qrawl_children(
-                vec![url.to_string()],
-                (*ctx_arc).clone(),
-            ));
-
-            // Extract only URLs from the (URL, HTML) tuples
-            let urls = result.map(|tuples| {
-                tuples
-                    .into_iter()
-                    .map(|(url, _html)| url)
-                    .collect::<Vec<String>>()
-            });
-
-            print_json(&urls);
+            print_json(&urls_of(templates::qrawl_children(vec![url], ctx).await));
         }
 
         Commands::Page { url } => {
-            run!(@async ctx_arc.clone(), url.clone(), tools::map::map_page, &url)
+            let html = fetch(&url, ctx).await;
+            print_json(&tools::map::map_page(&html, &url).await);
         }
 
-        Commands::Body { url } => {
-            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_body)
+        Commands::Body { input } => {
+            print_json(&tools::scrape::scrape_body(&load(&input, ctx).await).await);
         }
 
-        Commands::Markdown { url } => {
+        Commands::Markdown { input } => {
             // Markdown is terminal, LLM-ready text — print it raw, not JSON-quoted.
-            let html = read_input(&url, ctx_arc.clone());
-            let markdown = runtime::block_on(tools::transform::transform_markdown(
-                &types::Html::new(html),
-            ));
-            println!("{}", markdown);
+            let html = load(&input, ctx).await;
+            println!("{}", tools::transform::transform_markdown(&html).await);
         }
 
-        Commands::Jsonld { url } => {
-            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_jsonld)
+        Commands::Jsonld { input } => {
+            print_json(&tools::scrape::scrape_jsonld(&load(&input, ctx).await).await);
         }
 
-        Commands::Metadata { url } => {
-            run!(@async ctx_arc.clone(), url, tools::scrape::scrape_metadata)
+        Commands::Metadata { input } => {
+            print_json(&tools::scrape::scrape_metadata(&load(&input, ctx).await).await);
         }
 
         Commands::Preview { url } => {
-            // `extract_open_graph` needs the URL (it carries it into the result), so this
-            // composes by hand rather than via the single-input `run!` form:
-            // fetch → scrape_metadata → extract_open_graph.
-            let canonical = types::CanonicalUrl::new(&url);
-            let html = read_input(&url, ctx_arc.clone());
-            let result = runtime::block_on(async move {
-                let metadata = tools::scrape::scrape_metadata(&types::Html::new(html)).await;
-                tools::extract::extract_open_graph(&canonical, &metadata)
-            });
-            print_json(&result);
+            let metadata = tools::scrape::scrape_metadata(&fetch(&url, ctx).await).await;
+            print_json(&tools::extract::extract_open_graph(
+                &CanonicalUrl::new(&url),
+                &metadata,
+            ));
         }
 
-        Commands::Schemas { url } => run!(
-            @async ctx_arc.clone(), url,
-            [
-                tools::scrape::scrape_jsonld,
-                tools::extract::extract_schema_types
-            ]
-        ),
+        Commands::Schemas { input } => {
+            let jsonld = tools::scrape::scrape_jsonld(&load(&input, ctx).await).await;
+            print_json(&tools::extract::extract_schema_types(&jsonld));
+        }
 
-        Commands::HasSchema { url, schema_type } => {
-            // Two inputs (URL + type), so this composes by hand rather than via
-            // the single-input `run!` form: fetch → scrape_jsonld → classify.
-            let html = read_input(&url, ctx_arc.clone());
-            let result = runtime::block_on(async move {
-                let jsonld = tools::scrape::scrape_jsonld(&types::Html::new(html)).await;
-                tools::classify::classify_has_schema_type(&jsonld, &schema_type)
-            });
-            print_json(&result);
+        Commands::HasSchema { input, schema_type } => {
+            let jsonld = tools::scrape::scrape_jsonld(&load(&input, ctx).await).await;
+            print_json(&tools::classify::classify_has_schema_type(
+                &jsonld,
+                &schema_type,
+            ));
         }
 
         Commands::Schema { url, schema_type } => {
-            let result = runtime::block_on(templates::qrawl_schema(
-                vec![url.to_string()],
-                &schema_type,
-                (*ctx_arc).clone(),
+            print_json(&urls_of(
+                templates::qrawl_schema(vec![url], &schema_type, ctx).await,
             ));
-            // Print just the matching page URLs (like `children`).
-            let urls = result.map(|pages| {
-                pages
-                    .into_iter()
-                    .map(|(url, _html)| url)
-                    .collect::<Vec<String>>()
-            });
-            print_json(&urls);
         }
 
         Commands::Emails { url } => {
-            run!(@template url, templates::qrawl_emails, (*ctx_arc).clone())
+            print_json(&templates::qrawl_emails(vec![url], ctx).await);
         }
 
-        Commands::Phones { url } => run!(
-            @async ctx_arc.clone(), url,
-            [tools::extract::extract_phones, tools::normalize::normalize_phones]
-        ),
+        Commands::Phones { input } => {
+            let phones = tools::extract::extract_phones(&load(&input, ctx).await).await;
+            print_json(&tools::normalize::normalize_phones(&phones));
+        }
 
         Commands::Socials { url } => {
-            // The universal bulk pipeline fills `PageContent::socials` on every
-            // page; depth 2 mirrors the old seed → children → pages sweep.
-            let mut ctx = (*ctx_arc).clone();
-            ctx.depth = 2;
-            let pages = runtime::block_on(templates::qrawl_many_urls(vec![url], ctx));
-            let all: Vec<String> = pages.into_iter().flat_map(|p| p.socials).collect();
-            print_json(&tools::normalize::normalize_social_urls(&all));
+            // Depth 2: the seed, its children, and their children.
+            let pages = templates::qrawl_many_urls(vec![url], ctx.with_depth(2)).await;
+            let socials: Vec<String> = pages.into_iter().flat_map(|page| page.socials).collect();
+            print_json(&tools::normalize::normalize_social_urls(&socials));
         }
 
-        Commands::Url { url } => {
-            // `qrawl_any_url` takes the URL string and fetches internally, so
-            // pass it straight through — do NOT pre-fetch it to HTML.
-            let result = runtime::block_on(templates::qrawl_any_url(&url, (*ctx_arc).clone()));
-            print_json(&result);
-        }
+        Commands::Url { url } => match templates::qrawl_any_url(&url, ctx).await {
+            Ok(page) => print_json(&page),
+            Err(e) => fail(e),
+        },
 
         Commands::Urls {
             urls,
@@ -344,19 +295,16 @@ pub fn run() {
             include_schemas,
             exclude_schemas,
         } => {
-            // Bulk, concurrent, best-effort: one bundle per matching URL. `--fast`
-            // toggles strategy; depth/results/domains/schemas/urls shape the qrawl.
-            let mut ctx = (*ctx_arc).clone();
-            ctx.depth = depth;
-            ctx.limit = limit;
-            ctx.allow_domains = allow_domains;
-            ctx.block_domains = block_domains;
-            ctx.allow_urls = allow_urls;
-            ctx.block_urls = block_urls;
-            ctx.include_schemas = include_schemas;
-            ctx.exclude_schemas = exclude_schemas;
-            let result = runtime::block_on(templates::qrawl_many_urls(urls, ctx));
-            print_json(&result);
+            let ctx = ctx
+                .with_depth(depth)
+                .with_limit(limit)
+                .with_allow_domains(allow_domains)
+                .with_block_domains(block_domains)
+                .with_allow_urls(allow_urls)
+                .with_block_urls(block_urls)
+                .with_include_schemas(include_schemas)
+                .with_exclude_schemas(exclude_schemas);
+            print_json(&templates::qrawl_many_urls(urls, ctx).await);
         }
     }
 }

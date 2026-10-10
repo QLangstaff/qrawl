@@ -11,25 +11,20 @@
 //! HTML and rejects any body without `<html>`/`<!doctype>` markers (and anything
 //! under 500 bytes), which would throw away every JSON response.
 
-use crate::types::{CanonicalUrl, ContentSource, SocialKind, SocialParts, SocialPlatform};
+use crate::types::{CanonicalUrl, SocialKind, SocialParts, SocialPayload, SocialPlatform};
 
 use super::fetch_bytes;
 
-/// Fetch a social item's structured representation through its dedicated door,
-/// tagged with the [`ContentSource`] that produced it so the matching payload
-/// extractor can parse it. Owns the routing knowledge: `.json` works on any
-/// Reddit URL; oEmbed covers individual TikTok/YouTube/Pinterest/Vimeo content
-/// (not profiles, boards, feeds, or opaque shortlinks with `kind: None`); every
-/// other platform (Instagram/Facebook/X/LinkedIn) has no public door. `None`
-/// when the URL has no door or lacks the ids to address one — returned before
-/// any network — or the door fails (logged at debug); the caller falls back to
-/// fetching the page.
-pub async fn fetch_social(
-    social: &SocialParts,
-    url: &CanonicalUrl,
-) -> Option<(ContentSource, Vec<u8>)> {
-    let (source, request) = match social.platform {
-        SocialPlatform::Reddit => (ContentSource::RedditJson, reddit_json_url(url.as_str())),
+/// Fetch a social item's structured representation through its dedicated door.
+/// Owns the routing knowledge: `.json` works on any Reddit URL; oEmbed covers
+/// individual TikTok/YouTube/Pinterest/Vimeo content (not profiles, boards,
+/// feeds, or opaque shortlinks with `kind: None`); every other platform
+/// (Instagram/Facebook/X/LinkedIn) has no public door. `None` when the URL has
+/// no door or lacks the ids to address one — returned before any network — or
+/// the door fails (logged at debug); the caller falls back to fetching the page.
+pub async fn fetch_social(social: &SocialParts, url: &CanonicalUrl) -> Option<SocialPayload> {
+    let (request, door): (String, fn(String) -> SocialPayload) = match social.platform {
+        SocialPlatform::Reddit => (reddit_json_url(url.as_str()), SocialPayload::RedditJson),
         SocialPlatform::TikTok
         | SocialPlatform::YouTube
         | SocialPlatform::Pinterest
@@ -39,12 +34,12 @@ pub async fn fetch_social(
                 Some(SocialKind::Video | SocialKind::Post | SocialKind::Photo)
             ) =>
         {
-            (ContentSource::Oembed, oembed_request_url(social)?)
+            (oembed_request_url(social)?, SocialPayload::Oembed)
         }
         _ => return None,
     };
     match fetch_bytes(&request, None).await {
-        Ok(bytes) => Some((source, bytes)),
+        Ok(bytes) => Some(door(String::from_utf8_lossy(&bytes).into_owned())),
         Err(e) => {
             log::debug!("social door failed {}: {}", url.as_str(), e);
             None

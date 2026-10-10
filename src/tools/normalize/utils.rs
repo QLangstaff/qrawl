@@ -1,7 +1,6 @@
 use once_cell::sync::Lazy;
-/// Helper functions for text normalization
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
@@ -149,6 +148,17 @@ pub(super) fn normalize_whitespace(text: &str) -> String {
 /// Normalize escaped newlines (\\n) to actual newlines (\n).
 pub(super) fn normalize_escaped_newlines(text: &str) -> String {
     NEWLINE_REGEX.replace_all(text, "\n").to_string()
+}
+
+/// Normalize each item, dropping the ones that normalize to nothing and the
+/// repeats, in first-seen order.
+pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> String) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .map(|item| normalize(item))
+        .filter(|normalized| !normalized.is_empty() && seen.insert(normalized.clone()))
+        .collect()
 }
 
 /// Canonicalize a domain name for comparison.

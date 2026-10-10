@@ -5,8 +5,9 @@ use std::time::Duration;
 
 const REDIRECT_LIMIT: usize = 10;
 const POOL_IDLE_TIMEOUT_SEC: u64 = 90;
-/// Match `PER_HOST_CONCURRENCY` (from `strategies.rs`) with 2× headroom so a brief burst of completions can all be reused. Anything more is wasted — in-flight requests per host are already capped by the semaphore.
-const POOL_MAX_IDLE_PER_HOST: usize = 16;
+/// 2× headroom over the per-host cap, so a burst of completions can all be
+/// reused. More is wasted: the semaphore already caps in-flight requests.
+const POOL_MAX_IDLE_PER_HOST: usize = 2 * super::strategies::PER_HOST_CONCURRENCY;
 
 /// Build a reqwest client optimized for the given profile.
 ///

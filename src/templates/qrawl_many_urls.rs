@@ -1,38 +1,38 @@
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use crate::tools::classify::classify_has_schema_type;
-use crate::tools::extract::{extract_page_content, extract_social_content, extract_social_parts};
-use crate::tools::fetch::{fetch_social, fetch_strategy, is_url_allowed};
+use crate::tools::fetch::is_url_allowed;
 use crate::tools::map::map_children;
-use crate::tools::normalize::normalize_social;
-use crate::types::{fetch_cache_new, CanonicalUrl, Context, Jsonld, PageContent, CTX, FETCH_CACHE};
+use crate::types::{CanonicalUrl, Context, Jsonld, PageContent};
 
-/// Upper bound on `qrawl_many_urls` qrawl depth — a guardrail against a runaway
-/// expansion; `ctx.depth` is clamped to this.
+use super::utils::resolve_url;
+
+/// Upper bound on crawl depth — a guardrail against a runaway expansion;
+/// `ctx.depth` is clamped to this.
 const MAX_DEPTH: usize = 3;
 
 /// Fetch and normalize **many** URLs concurrently — fast, best-effort, and
-/// optionally qrawling `ctx.depth` levels deep.
+/// optionally crawling `ctx.depth` levels deep.
 ///
-/// Runs a bounded concurrent qrawl (up to `ctx.concurrency` fetches in flight,
+/// Runs a bounded concurrent crawl (up to `ctx.concurrency` fetches in flight,
 /// never sequential):
 /// - `ctx.depth == 0`: fetch + extract exactly the given URLs (no child discovery).
 /// - `ctx.depth >= 1`: also `map_children` each fetched page and follow those, up
 ///   to `ctx.depth` levels (clamped to `MAX_DEPTH`), deduped by canonical URL.
 ///
-/// A recognized social *item* routes through its dedicated side door (Reddit
-/// `.json` / oEmbed), same as [`qrawl_any_url`](super::qrawl_any_url); everything
-/// else takes the **lean** page path — one fetch and a single `scrape_all`
-/// parse (unified schema and Open Graph, no body text). URLs that fail to
-/// classify or fetch are dropped, so the returned `Vec` holds only successes, in
-/// completion order (not input order).
+/// Each URL resolves the way [`qrawl_any_url`](super::qrawl_any_url) resolves
+/// it — a recognized social *item* through its side door, everything else
+/// through the page — except that a crawl doesn't carry bodies
+/// (`PageContent::body` is `None`). URLs that fail to fetch are dropped, so
+/// the returned `Vec` holds only successes, in completion order (not input
+/// order).
 ///
 /// All knobs live on [`Context`]:
-/// - `allow_domains`/`block_domains` filter *throughout* — prefetch, on seeds
-///   and every child, so blocked hosts are never fetched.
+/// - `allow_domains`/`block_domains` and `allow_urls`/`block_urls` filter
+///   *before* fetch, on seeds and every child, so a blocked URL is never
+///   fetched or returned.
 /// - `include_schemas`/`exclude_schemas` filter the *results* after fetch: a page
 ///   counts (and counts toward `limit`) only if its structured data includes an
 ///   include-type (empty = any) and none of the exclude-types; non-matching
@@ -43,7 +43,7 @@ const MAX_DEPTH: usize = 3;
 ///   fetches are cancelled); `None` = no cap. Bulk callers pass `Context::fast()`,
 ///   whose per-attempt fetch timeout is inherently short to cap tail latency.
 ///
-/// ```ignore
+/// ```no_run
 /// use qrawl::templates::qrawl_many_urls;
 /// use qrawl::types::Context;
 ///
@@ -54,66 +54,50 @@ const MAX_DEPTH: usize = 3;
 /// let ctx = Context::fast()
 ///     .with_depth(1)
 ///     .with_limit(30)
-///     .with_schemas(vec!["Recipe".to_string()]);
+///     .with_include_schemas(vec!["Recipe".to_string()]);
 /// let recipes = qrawl_many_urls(seeds, ctx).await;
 /// # }
 /// ```
 pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent> {
-    let ctx_arc = Arc::new(ctx);
-    let cache = fetch_cache_new();
-    let ctx_for_qrawl = ctx_arc.clone();
-
-    // Scope CTX + FETCH_CACHE once around the whole qrawl: every concurrent
-    // fetch reads the same `ctx` and shares one fetch cache, so a URL reached
-    // via two parents isn't fetched twice. Domain filters live on `ctx`, so the
-    // fetch layer enforces them too (defense in depth vs. the prefetch check).
-    CTX.scope(ctx_arc, async move {
-        FETCH_CACHE
-            .scope(cache, async move { qrawl(urls, &ctx_for_qrawl).await })
-            .await
-    })
-    .await
+    ctx.clone().scope(crawl(urls, &ctx)).await
 }
 
-/// Bounded-concurrency, depth-bounded breadth-first qrawl. Yields one
-/// [`PageContent`] per successfully fetched matching page and stops as soon as
-/// `ctx.limit` is reached (cancelling in-flight fetches). Every URL is gated on
-/// the domain allow/block lists *and* the URL allow/block lists. Must run inside
-/// a `CTX` / `FETCH_CACHE` scope.
-async fn qrawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
-    let concurrency = ctx.concurrency.max(1);
+/// Breadth-first crawl with `ctx.concurrency` nodes in flight. Stops as soon
+/// as `ctx.limit` is reached, which drops — and so cancels — the fetches still
+/// in flight.
+async fn crawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
     let depth = ctx.depth.min(MAX_DEPTH);
-    let allow_d = (!ctx.allow_domains.is_empty()).then_some(ctx.allow_domains.as_slice());
-    let block_d = (!ctx.block_domains.is_empty()).then_some(ctx.block_domains.as_slice());
-    let allow_u: Option<HashSet<String>> = (!ctx.allow_urls.is_empty())
-        .then(|| ctx.allow_urls.iter().map(|u| normalize_social(u)).collect());
-
-    // A canonical URL passes the gate when its host clears the domain allow/block
-    // lists AND (if a URL allowlist is set) it's explicitly allowed.
-    let gate = |canonical: &str| -> bool {
-        is_url_allowed(canonical, allow_d, block_d)
-            && allow_u.as_ref().map_or(true, |set| set.contains(canonical))
-    };
-
-    // Seed the dedup set with `block_urls` (canonical): they're skipped prefetch
-    // at every level and never returned. `seen` does double duty (dedup + URL
-    // blocklist), intentionally.
-    let mut seen: HashSet<String> = ctx.block_urls.iter().map(|u| normalize_social(u)).collect();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for url in urls.iter().map(|u| normalize_social(u)) {
-        if gate(&url) && seen.insert(url.clone()) {
-            queue.push_back((url, 0));
+    let allow_urls: HashSet<CanonicalUrl> = ctx
+        .allow_urls
+        .iter()
+        .map(|url| CanonicalUrl::new(url))
+        .collect();
+    // A blocked URL starts out seen, so it's never queued.
+    let mut seen: HashSet<CanonicalUrl> = ctx
+        .block_urls
+        .iter()
+        .map(|url| CanonicalUrl::new(url))
+        .collect();
+    let mut queue: VecDeque<(CanonicalUrl, usize)> = VecDeque::new();
+    let mut enqueue = |queue: &mut VecDeque<(CanonicalUrl, usize)>, url: &str, level: usize| {
+        let url = CanonicalUrl::new(url);
+        let is_allowed = is_url_allowed(url.as_str(), &ctx.allow_domains, &ctx.block_domains)
+            && (allow_urls.is_empty() || allow_urls.contains(&url));
+        if is_allowed && seen.insert(url.clone()) {
+            queue.push_back((url, level));
         }
+    };
+    for url in &urls {
+        enqueue(&mut queue, url, 0);
     }
 
     let mut in_flight = FuturesUnordered::new();
     let mut results: Vec<PageContent> = Vec::new();
 
     loop {
-        // Saturate up to `concurrency` fetches in flight.
-        while in_flight.len() < concurrency {
+        while in_flight.len() < ctx.concurrency.get() {
             match queue.pop_front() {
-                Some((url, level)) => in_flight.push(process_node(url, level, level < depth)),
+                Some((url, level)) => in_flight.push(crawl_node(url, level, level < depth)),
                 None => break,
             }
         }
@@ -121,79 +105,55 @@ async fn qrawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
             break;
         };
         let Some((page, children, level)) = node else {
-            continue; // classify/fetch failure — drop it
+            continue;
         };
 
-        // Schema filter decides RESULTS; children are expanded regardless, so a
-        // non-matching roundup still yields its matches.
+        // The schema filter decides results only: a roundup that doesn't match
+        // still yields its matching children.
         if schema_passes(&page.structured, &ctx.include_schemas, &ctx.exclude_schemas) {
             results.push(page);
-            if ctx.limit.is_some_and(|cap| results.len() >= cap) {
-                break; // early-exit: in-flight fetches are cancelled on drop
+            if ctx.limit.is_some_and(|limit| results.len() >= limit) {
+                break;
             }
         }
-        for child in children {
-            let canonical = normalize_social(&child);
-            if gate(&canonical) && seen.insert(canonical.clone()) {
-                queue.push_back((canonical, level + 1));
-            }
+        for child in &children {
+            enqueue(&mut queue, child, level + 1);
         }
     }
 
     results
 }
 
-/// Whether a page's structured data passes the allow/block schema filters.
-/// Empty `allow` = any type; a page is dropped if it carries any `block` type.
-/// Matching is normalization-aware (short name / IRI / CURIE) via
-/// [`classify_has_schema_type`].
-pub(super) fn schema_passes(structured: &Jsonld, allow: &[String], block: &[String]) -> bool {
-    let allowed = allow.is_empty()
-        || allow
+/// Whether a page's structured data carries one of the `include` types (empty
+/// = any) and none of the `exclude` types. Matching is normalization-aware
+/// (short name / IRI / CURIE) via [`classify_has_schema_type`].
+pub(super) fn schema_passes(structured: &Jsonld, include: &[String], exclude: &[String]) -> bool {
+    let has_any = |types: &[String]| {
+        types
             .iter()
-            .any(|t| classify_has_schema_type(structured, t));
-    let blocked = block
-        .iter()
-        .any(|t| classify_has_schema_type(structured, t));
-    allowed && !blocked
+            .any(|schema_type| classify_has_schema_type(structured, schema_type))
+    };
+    (include.is_empty() || has_any(include)) && !has_any(exclude)
 }
 
-/// Fetch + lean-extract one node, plus its child URLs when `with_children`.
-/// The same tool composition as [`qrawl_any_url`](super::qrawl_any_url) — the
-/// social door, else the page path — with the crawl's own policies on top:
-/// bodies aren't carried, and the page path yields children to expand (a
-/// side-door hit is a leaf). `None` on fetch failure (the crawler drops it).
-/// `level` is echoed back so the crawler can tag discovered children `level + 1`.
-async fn process_node(
-    url: String,
+/// Resolve one node, plus its child URLs when `with_children` — a side-door
+/// hit has no page to map, so it's a leaf. `None` when nothing could be
+/// fetched. `level` is returned so the crawl can queue the children at
+/// `level + 1`.
+async fn crawl_node(
+    url: CanonicalUrl,
     level: usize,
     with_children: bool,
 ) -> Option<(PageContent, Vec<String>, usize)> {
-    let url = CanonicalUrl::new(&url);
-    let social = extract_social_parts(url.as_str());
-
-    // Trace each crawled URL (seeds at depth 0, discovered children at depth
-    // 1+) so `RUST_LOG=qrawl=info` surfaces the full set. Off by default.
-    if let Some(s) = social.as_ref() {
-        if let Some((source, bytes)) = fetch_social(s, &url).await {
-            if let Some(page) =
-                extract_social_content(&url, s, source, &String::from_utf8_lossy(&bytes))
-            {
-                log::info!("depth {} {} (side door)", level, url.as_str());
-                return Some((page, Vec::new(), level));
-            }
-        }
-    }
-
-    let html = fetch_strategy(url.as_str()).await.ok()?;
-    log::info!("depth {} {}", level, url.as_str());
-    let mut page = extract_page_content(&url, social.as_ref(), &html).await;
-    // Lean bulk policy: bodies aren't carried across a crawl.
+    let (mut page, html) = resolve_url(&url)
+        .await
+        .map_err(|e| log::debug!("depth {} {} failed: {}", level, url, e))
+        .ok()?;
+    log::info!("depth {} {} ({:?})", level, url, page.source);
     page.body = None;
-    let children = if with_children {
-        map_children(&html, url.as_str()).await
-    } else {
-        Vec::new()
+    let children = match html {
+        Some(html) if with_children => map_children(&html, url.as_str()).await,
+        _ => Vec::new(),
     };
     Some((page, children, level))
 }

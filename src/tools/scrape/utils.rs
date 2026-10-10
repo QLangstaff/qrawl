@@ -32,7 +32,7 @@ pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
 }
 
 /// Everything from one parse: body HTML, metadata, and the unified schema view.
-pub(super) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
+pub(crate) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
     (
         scrape_body_from_doc(document),
         scrape_metadata_from_doc(document),

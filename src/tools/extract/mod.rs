@@ -4,76 +4,74 @@ mod tests;
 mod utils;
 
 use crate::tools::normalize::normalize_social_urls;
-use crate::tools::scrape::scrape_all;
-use crate::types::{CanonicalUrl, ContentSource, Html, Jsonld, Metadata, PageContent, SocialParts};
+use crate::tools::scrape::scrape_from_doc;
+use crate::types::{
+    CanonicalUrl, ContentSource, Html, Jsonld, Metadata, PageContent, SocialParts, SocialPayload,
+};
 pub use utils::{extract_social_parts, find_metadata_value};
 
-/// Extract a social door's payload into its [`PageContent`] — dispatches on
-/// the [`ContentSource`] the fetch tagged the bytes with (Reddit `.json` or
-/// oEmbed JSON) to the matching internal parser. `None` when the source has
-/// no payload extractor or the payload fills no content field
-/// ([`PageContent::has_content`]), so the caller falls back to the page path. The page extras stay empty: a door hit
-/// never fetched the page itself.
+/// Extract a social door's payload into its [`PageContent`]. `None` when the
+/// payload doesn't parse or fills no content field
+/// ([`PageContent::has_content`]), so the caller falls back to the page path.
+/// The page extras stay empty: a door hit never fetched the page itself.
 pub fn extract_social_content(
     url: &CanonicalUrl,
     social: &SocialParts,
-    source: ContentSource,
-    payload: &str,
+    payload: &SocialPayload,
 ) -> Option<PageContent> {
-    let result = match source {
-        ContentSource::RedditJson => utils::extract_reddit(url, payload),
-        ContentSource::Oembed => utils::extract_oembed(url, payload),
-        _ => None,
-    };
-    result
-        .filter(PageContent::has_content)
-        .map(|page| page.with_social(Some(social)))
+    let page = match payload {
+        SocialPayload::RedditJson(body) => utils::extract_reddit(url, body),
+        SocialPayload::Oembed(body) => utils::extract_oembed(url, body),
+    }?;
+    page.has_content().then(|| page.with_social(Some(social)))
 }
 
 /// Extract a fetched page's full [`PageContent`] — the page-path sibling of
-/// [`extract_social_content`]. One parse ([`scrape_all`]) yields the body,
-/// `<meta>` tags, and the merged schema.org view; the social links on the page
-/// ride along; the content fields derive from the Open Graph metadata
-/// ([`extract_open_graph`]). `body` is `None` when the page carried none.
+/// [`extract_social_content`]. One parse yields the body, `<meta>` tags, the
+/// merged schema.org view, and the social links on the page; the content
+/// fields derive from the Open Graph metadata ([`extract_open_graph`]). `body`
+/// is `None` when the page carried none.
 pub async fn extract_page_content(
     url: &CanonicalUrl,
     social: Option<&SocialParts>,
     html: &Html,
 ) -> PageContent {
-    let (body, metadata, structured) = scrape_all(html).await;
-    let body = (!body.as_str().is_empty()).then_some(body);
-    let socials = normalize_social_urls(&extract_social_urls(html).await);
-    let core = extract_open_graph(url, &metadata).with_social(social);
+    let markup = html.to_string();
+    let ((body, metadata, structured), socials) = tokio::task::spawn_blocking(move || {
+        let doc = scraper::Html::parse_document(&markup);
+        (scrape_from_doc(&doc), utils::extract_social_links(&doc))
+    })
+    .await
+    .expect("extract_page_content: spawn_blocking failed");
+    let open_graph = extract_open_graph(url, &metadata).with_social(social);
     PageContent {
         source: ContentSource::Html,
         structured,
         metadata,
-        socials,
-        body,
-        ..core
+        socials: normalize_social_urls(&socials),
+        body: (!body.as_str().is_empty()).then_some(body),
+        ..open_graph
     }
 }
 
-/// Extract schema.org `@type` values from JSON-LD.
+/// Extract schema.org `@type` values from JSON-LD, each once, in first-seen
+/// order.
 pub fn extract_schema_types(jsonld: &Jsonld) -> Vec<String> {
-    let mut types = Vec::new();
-
+    let mut types: Vec<String> = Vec::new();
     for value in jsonld {
-        if let Some(type_value) = value.get("@type") {
-            match type_value {
-                serde_json::Value::String(s) => utils::push_unique(&mut types, s.to_string()),
-                serde_json::Value::Array(arr) => {
-                    for v in arr {
-                        if let Some(s) = v.as_str() {
-                            utils::push_unique(&mut types, s.to_string());
-                        }
-                    }
-                }
-                _ => {}
+        let declared = match value.get("@type") {
+            Some(serde_json::Value::String(ty)) => vec![ty.as_str()],
+            Some(serde_json::Value::Array(tys)) => {
+                tys.iter().filter_map(serde_json::Value::as_str).collect()
+            }
+            _ => Vec::new(),
+        };
+        for ty in declared {
+            if !types.iter().any(|seen| seen == ty) {
+                types.push(ty.to_string());
             }
         }
     }
-
     types
 }
 
@@ -129,12 +127,13 @@ pub async fn extract_phones(html: &Html) -> Vec<String> {
 /// Scans `<a href>` links, extracts the social parts of each with
 /// [`extract_social_parts`], and returns the canonical URLs that resolve to a
 /// known platform with a recognized content kind — dropping relative links,
-/// `mailto:`, share-button intents, and opaque short links. The social-link analogue of [`extract_emails`]; raw output may
-/// contain duplicates, so pass it through
-/// [`normalize_social_urls`].
+/// `mailto:`, share-button intents, and opaque short links. Raw output may
+/// contain duplicates, so pass it through [`normalize_social_urls`].
 pub async fn extract_social_urls(html: &Html) -> Vec<String> {
     let html = html.to_string();
-    tokio::task::spawn_blocking(move || utils::extract_social_links(&html))
-        .await
-        .expect("extract_social_urls: spawn_blocking failed")
+    tokio::task::spawn_blocking(move || {
+        utils::extract_social_links(&scraper::Html::parse_document(&html))
+    })
+    .await
+    .expect("extract_social_urls: spawn_blocking failed")
 }

@@ -20,11 +20,3 @@ impl QrawlError {
         &self.message
     }
 }
-
-impl serde::Serialize for QrawlError {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Serialize as the message string, so the CLI's JSON keeps the
-        // `{"Err": "…"}` shape.
-        serializer.serialize_str(&self.message)
-    }
-}

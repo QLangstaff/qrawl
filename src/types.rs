@@ -3,7 +3,11 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use crate::hosts::host_matches;
 
 /// Fetch strategy for pipeline `fetch_*` steps.
 ///
@@ -16,13 +20,18 @@ pub enum FetchStrategy {
 }
 
 /// Default concurrency.
-pub const DEFAULT_CONCURRENCY: usize = 1000;
+pub const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(1000) {
+    Some(concurrency) => concurrency,
+    None => panic!("default concurrency is nonzero"),
+};
 
 /// Context to chain tools
 #[derive(Debug, Clone)]
 pub struct Context {
     pub fetch_strategy: FetchStrategy,
-    pub concurrency: usize,
+    /// Max fetches in flight. Nonzero, because a crawl with no slots never
+    /// finishes.
+    pub concurrency: NonZeroUsize,
     pub depth: usize,
     /// Max results to return. `None` = unbounded.
     pub limit: Option<usize>,
@@ -67,7 +76,7 @@ impl Context {
         Self::with_strategy(FetchStrategy::Fast)
     }
 
-    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+    pub fn with_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.concurrency = concurrency;
         self
     }
@@ -82,78 +91,83 @@ impl Context {
         self
     }
 
-    pub fn with_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn with_allow_domains(mut self, domains: Vec<String>) -> Self {
         self.allow_domains = domains;
         self
     }
 
-    pub fn without_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn with_block_domains(mut self, domains: Vec<String>) -> Self {
         self.block_domains = domains;
         self
     }
 
-    pub fn with_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn with_allow_urls(mut self, urls: Vec<String>) -> Self {
         self.allow_urls = urls;
         self
     }
 
-    pub fn without_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn with_block_urls(mut self, urls: Vec<String>) -> Self {
         self.block_urls = urls;
         self
     }
 
-    pub fn with_schemas(mut self, schemas: Vec<String>) -> Self {
+    pub fn with_include_schemas(mut self, schemas: Vec<String>) -> Self {
         self.include_schemas = schemas;
         self
     }
 
-    pub fn without_schemas(mut self, schemas: Vec<String>) -> Self {
+    pub fn with_exclude_schemas(mut self, schemas: Vec<String>) -> Self {
         self.exclude_schemas = schemas;
         self
+    }
+
+    /// Run `future` as one crawl: every fetch inside it reads this context and
+    /// shares one fetch cache, so a URL reached twice is fetched once. A fetch
+    /// outside any scope uses the defaults and no cache.
+    pub async fn scope<F: Future>(self, future: F) -> F::Output {
+        CTX.scope(
+            Arc::new(self),
+            FETCH_CACHE.scope(Arc::new(DashMap::new()), future),
+        )
+        .await
     }
 }
 
 tokio::task_local! {
-    pub static CTX: Arc<Context>;
-    /// Per-pipeline fetch cache (canonical URL -> HTML). Populated by fetch functions
-    /// on success and consulted on subsequent calls within the same crawl scope.
-    pub static FETCH_CACHE: Arc<DashMap<String, String>>;
+    static CTX: Arc<Context>;
+    /// Fetched HTML by canonical URL, for the crawl [`Context::scope`] runs.
+    static FETCH_CACHE: Arc<DashMap<String, String>>;
 }
 
-pub fn fetch_cache_new() -> Arc<DashMap<String, String>> {
-    Arc::new(DashMap::new())
-}
-
-// Keys are the one social-aware canonical form (`normalize_social`) — the same
-// form `CanonicalUrl` uses — so a URL reached through the
-// pipeline and one fetched directly hit the same entry, and `m.` / tracking-param
-// variants of one social item don't split into separate fetches. Idempotent, so
-// it's a no-op for callers that already canonicalize.
-pub fn fetch_cache_get(url: &str) -> Option<String> {
+// Keys are `CanonicalUrl`'s form, so `m.` and tracking-param variants of one
+// URL share an entry.
+pub(crate) fn fetch_cache_get(url: &str) -> Option<String> {
     let key = crate::tools::normalize::normalize_social(url);
     FETCH_CACHE
-        .try_with(|cache| cache.get(&key).map(|v| v.clone()))
+        .try_with(|cache| cache.get(&key).map(|html| html.clone()))
         .ok()
         .flatten()
 }
 
-pub fn fetch_cache_put(url: &str, html: &str) {
+pub(crate) fn fetch_cache_put(url: &str, html: &str) {
     let key = crate::tools::normalize::normalize_social(url);
     let _ = FETCH_CACHE.try_with(|cache| {
         cache.insert(key, html.to_string());
     });
 }
 
-pub fn get_fetch_strategy() -> FetchStrategy {
-    CTX.try_with(|ctx| ctx.fetch_strategy)
-        .ok()
-        .unwrap_or(FetchStrategy::Auto)
+/// Read a field of the enclosing [`Context`], or `None` outside a
+/// [`Context::scope`].
+pub(crate) fn with_context<T>(read: impl FnOnce(&Context) -> T) -> Option<T> {
+    CTX.try_with(|ctx| read(ctx)).ok()
 }
 
-pub fn get_concurrency() -> usize {
-    CTX.try_with(|ctx| ctx.concurrency)
-        .ok()
-        .unwrap_or(DEFAULT_CONCURRENCY)
+pub fn get_fetch_strategy() -> FetchStrategy {
+    with_context(|ctx| ctx.fetch_strategy).unwrap_or(FetchStrategy::Auto)
+}
+
+pub fn get_concurrency() -> NonZeroUsize {
+    with_context(|ctx| ctx.concurrency).unwrap_or(DEFAULT_CONCURRENCY)
 }
 
 /// Raw HTML content — the substrate every page-scraping tool consumes.
@@ -269,8 +283,9 @@ pub type Metadata = Vec<(String, String)>;
 /// `scrape_jsonld`, which folds mf2 in.
 pub(crate) type Microformats = Vec<Value>;
 
-/// A URL in qrawl's one canonical form — the social-aware canonicalization that
-/// every pipeline, the classify/extract tools, and the fetch cache all key on.
+/// A URL in qrawl's canonical form — the social-aware canonicalization
+/// ([`normalize_social`](crate::tools::normalize::normalize_social)) that
+/// [`PageContent`], the URL templates, and the fetch cache key on.
 ///
 /// Construct via [`CanonicalUrl::new`] (or `From<&str>` / `From<String>`); the
 /// inner string is private so the invariant can't be bypassed. Serialization is
@@ -357,52 +372,39 @@ impl SocialPlatform {
     /// Recognize the social platform a host belongs to, or `None` for a
     /// non-social host. Subdomain-aware (`old.reddit.com`, `m.facebook.com`,
     /// `vm.tiktok.com`) and handles the alt short-domains (`youtu.be`, `fb.me`,
-    /// …). Lives on the type so `classify` and `normalize_social` share one
-    /// host→platform table without depending on each other.
+    /// …).
     pub fn from_host(host: &str) -> Option<SocialPlatform> {
-        // Alt domains that aren't subdomains of the primary (so the subdomain
-        // check below can't catch them).
-        match host {
-            "youtu.be" => return Some(Self::YouTube),
-            "instagr.am" => return Some(Self::Instagram),
-            "redd.it" => return Some(Self::Reddit),
-            "fb.me" | "fb.com" | "fb.watch" => return Some(Self::Facebook),
-            "pin.it" => return Some(Self::Pinterest),
-            "t.co" => return Some(Self::Twitter),
-            "lnkd.in" => return Some(Self::LinkedIn),
-            _ => {}
-        }
-
-        // `host == domain` or a subdomain of it (`old.reddit.com`, `m.facebook.com`).
-        let host_matches = |domain: &str| {
-            host == domain
-                || host
-                    .strip_suffix(domain)
-                    .is_some_and(|prefix| prefix.ends_with('.'))
-        };
-
-        if host_matches("reddit.com") {
-            Some(Self::Reddit)
-        } else if host_matches("tiktok.com") {
-            Some(Self::TikTok)
-        } else if host_matches("instagram.com") {
-            Some(Self::Instagram)
-        } else if host_matches("facebook.com") {
-            Some(Self::Facebook)
-        } else if host_matches("youtube.com") || host_matches("youtube-nocookie.com") {
-            Some(Self::YouTube)
-        } else if host_matches("twitter.com") || host_matches("x.com") {
-            Some(Self::Twitter)
-        } else if host_matches("linkedin.com") {
-            Some(Self::LinkedIn)
-        } else if host_matches("vimeo.com") {
-            Some(Self::Vimeo)
-        } else if host.split('.').any(|label| label == "pinterest") {
+        const DOMAINS: &[(&str, SocialPlatform)] = &[
+            ("reddit.com", SocialPlatform::Reddit),
+            ("redd.it", SocialPlatform::Reddit),
+            ("tiktok.com", SocialPlatform::TikTok),
+            ("instagram.com", SocialPlatform::Instagram),
+            ("instagr.am", SocialPlatform::Instagram),
+            ("facebook.com", SocialPlatform::Facebook),
+            ("fb.me", SocialPlatform::Facebook),
+            ("fb.com", SocialPlatform::Facebook),
+            ("fb.watch", SocialPlatform::Facebook),
+            ("youtube.com", SocialPlatform::YouTube),
+            ("youtube-nocookie.com", SocialPlatform::YouTube),
+            ("youtu.be", SocialPlatform::YouTube),
+            ("twitter.com", SocialPlatform::Twitter),
+            ("x.com", SocialPlatform::Twitter),
+            ("t.co", SocialPlatform::Twitter),
+            ("linkedin.com", SocialPlatform::LinkedIn),
+            ("lnkd.in", SocialPlatform::LinkedIn),
+            ("vimeo.com", SocialPlatform::Vimeo),
+            ("pin.it", SocialPlatform::Pinterest),
+        ];
+        DOMAINS
+            .iter()
+            .find(|(domain, _)| host_matches(host, domain))
+            .map(|(_, platform)| *platform)
             // Pinterest ships many ccTLDs (`pinterest.co.uk`, `uk.pinterest.com`).
-            Some(Self::Pinterest)
-        } else {
-            None
-        }
+            .or_else(|| {
+                host.split('.')
+                    .any(|label| label == "pinterest")
+                    .then_some(SocialPlatform::Pinterest)
+            })
     }
 }
 
@@ -448,6 +450,17 @@ pub enum SocialKind {
     /// channel feed, a web index page (schema.org `CollectionPage`,
     /// ActivityStreams `Collection`).
     Collection,
+}
+
+/// A social door's response body, tagged with the door that served it —
+/// fetched by [`fetch_social`](crate::tools::fetch::fetch_social), parsed by
+/// [`extract_social_content`](crate::tools::extract::extract_social_content).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocialPayload {
+    /// Reddit's `.json` representation of a URL.
+    RedditJson(String),
+    /// A provider's oEmbed JSON.
+    Oembed(String),
 }
 
 /// Provenance of the content fields in a [`PageContent`].
@@ -497,7 +510,7 @@ pub struct PageContent {
     pub video_url: Option<String>,
     /// schema.org entities — the merged `scrape_jsonld` view (JSON-LD +
     /// Microdata + RDFa + Microformats2, deduped). Empty on the social side-door
-    /// paths; JSON-LD-only on the lean bulk path.
+    /// paths.
     pub structured: Jsonld,
     /// Raw `<meta>` tags (Open Graph / Twitter Card / standard). Empty on the
     /// social side-door paths.

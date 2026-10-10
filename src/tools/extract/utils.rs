@@ -56,19 +56,21 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
 /// Extract all email addresses from HTML document.
 pub(super) fn extract_email_elements(html: &str) -> Vec<String> {
     let doc = Html::parse_fragment(html);
-    crate::merge!(
+    [
         extract_with_prefix(&doc, "mailto:"),
-        extract_with_regex(&doc, &EMAIL_REGEX)
-    )
+        extract_with_regex(&doc, &EMAIL_REGEX),
+    ]
+    .concat()
 }
 
 /// Extract all phone numbers from HTML document.
 pub(super) fn extract_phone_elements(html: &str) -> Vec<String> {
     let doc = Html::parse_fragment(html);
-    crate::merge!(
+    [
         extract_with_prefix(&doc, "tel:"),
-        extract_with_regex(&doc, &PHONE_REGEX)
-    )
+        extract_with_regex(&doc, &PHONE_REGEX),
+    ]
+    .concat()
 }
 
 /// Find the first non-empty value for any of the given keys in metadata pairs.
@@ -86,36 +88,20 @@ pub fn find_metadata_value(pairs: &[(String, String)], keys: &[&str]) -> Option<
     None
 }
 
-pub(super) fn push_unique(items: &mut Vec<String>, value: String) {
-    if !items.iter().any(|existing| existing == &value) {
-        items.push(value);
-    }
-}
-
 /// Scan `<a href>` links and return the canonical URLs of those that classify
 /// to a known social platform with a recognized content kind. Drops relative
 /// links, `mailto:`/opaque links (no host → classify error), non-social hosts,
 /// and share-button intents / short links (a social URL with no resolved
 /// `kind`). Raw — may contain duplicates; dedupe with
 /// [`normalize_social_urls`](crate::tools::normalize::normalize_social_urls).
-pub(super) fn extract_social_links(html: &str) -> Vec<String> {
-    let doc = Html::parse_document(html);
-    let mut out = Vec::new();
-    for link in doc.select(&LINK_SELECTOR) {
-        if let Some(href) = link.value().attr("href") {
-            let href = href.trim();
-            if href.is_empty() {
-                continue;
-            }
-            let url = normalize_social(href);
-            // Keep recognized social URLs with a resolved content kind —
-            // drops share-button intents and opaque short links.
-            if extract_social_parts(&url).is_some_and(|s| s.kind.is_some()) {
-                out.push(url);
-            }
-        }
-    }
-    out
+pub(super) fn extract_social_links(doc: &Html) -> Vec<String> {
+    doc.select(&LINK_SELECTOR)
+        .filter_map(|link| link.value().attr("href"))
+        .map(str::trim)
+        .filter(|href| !href.is_empty())
+        .map(normalize_social)
+        .filter(|url| extract_social_parts(url).is_some_and(|social| social.kind.is_some()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +249,9 @@ fn extract_social_tiktok_parts(segs: &[&str]) -> Parts {
 fn extract_social_instagram_parts(segs: &[&str]) -> Parts {
     match segs {
         ["p", id, ..] => (Some(SocialKind::Post), Some((*id).to_string()), None),
-        ["reel", id, ..] | ["reels", id, ..] => {
+        ["reel", id, ..] | ["reels", id, ..] | ["tv", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
-        ["tv", id, ..] => (Some(SocialKind::Video), Some((*id).to_string()), None),
         [user] if !is_reserved_instagram(user) => {
             (Some(SocialKind::Profile), None, Some(format!("@{}", user)))
         }
@@ -325,12 +310,7 @@ fn extract_social_youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
     match segs {
         ["watch", ..] => {
             let id = query_value(url, "v");
-            let kind = if id.is_some() {
-                Some(SocialKind::Video)
-            } else {
-                None
-            };
-            (kind, id, None)
+            (id.is_some().then_some(SocialKind::Video), id, None)
         }
         ["shorts", id, ..] | ["embed", id, ..] | ["live", id, ..] | ["v", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
@@ -454,8 +434,8 @@ fn query_value(url: &Url, key: &str) -> Option<String> {
 // Side-door payload extractors (Reddit `.json` / oEmbed)
 // ---------------------------------------------------------------------------
 
-/// Extract an [`ExtractResult`] from a Reddit `.json` body fetched from `url`.
-pub fn extract_reddit(url: &CanonicalUrl, body: &str) -> Option<PageContent> {
+/// Extract a [`PageContent`] from a Reddit `.json` body fetched for `url`.
+pub(super) fn extract_reddit(url: &CanonicalUrl, body: &str) -> Option<PageContent> {
     let value: Value = serde_json::from_str(body)
         .map_err(|e| log::debug!("reddit json extract failed: {}", e))
         .ok()?;
@@ -518,8 +498,8 @@ fn is_image_url(url: &str) -> bool {
         .any(|ext| path.ends_with(ext))
 }
 
-/// Extract an [`ExtractResult`] from an oEmbed JSON body fetched from `url`.
-pub fn extract_oembed(url: &CanonicalUrl, body: &str) -> Option<PageContent> {
+/// Extract a [`PageContent`] from an oEmbed JSON body fetched for `url`.
+pub(super) fn extract_oembed(url: &CanonicalUrl, body: &str) -> Option<PageContent> {
     let value: Value = serde_json::from_str(body)
         .map_err(|e| log::debug!("oembed extract failed: {}", e))
         .ok()?;

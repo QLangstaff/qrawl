@@ -1,11 +1,17 @@
 #![cfg(test)]
 use crate::tools::batch::batch;
+use std::num::NonZeroUsize;
 
 #[tokio::test]
 async fn test_batch_basic() {
     let items = vec![1, 2, 3, 4, 5];
 
-    let results = batch(items, 2, |n| async move { n * 2 }).await;
+    let results = batch(
+        items,
+        NonZeroUsize::new(2).unwrap(),
+        |n| async move { n * 2 },
+    )
+    .await;
 
     assert_eq!(results.len(), 5);
     // Results may be in any order due to buffer_unordered
@@ -18,7 +24,7 @@ async fn test_batch_basic() {
 async fn test_batch_with_delay() {
     let items = vec![10, 20, 30];
 
-    let results = batch(items, 2, |n| async move {
+    let results = batch(items, NonZeroUsize::new(2).unwrap(), |n| async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(n)).await;
         n
     })
@@ -33,7 +39,7 @@ async fn test_batch_with_delay() {
 #[tokio::test]
 async fn test_batch_empty() {
     let items: Vec<i32> = vec![];
-    let results = batch(items, 5, |n| async move { n }).await;
+    let results = batch(items, NonZeroUsize::new(5).unwrap(), |n| async move { n }).await;
     assert_eq!(results.len(), 0);
 }
 
@@ -50,7 +56,7 @@ async fn test_batch_concurrency_limit() {
     let max_concurrent_handle = Arc::clone(&max_concurrent);
     let current_handle = Arc::clone(&current);
 
-    let results = batch(items, 3, move |_n| {
+    let results = batch(items, NonZeroUsize::new(3).unwrap(), move |_n| {
         let max_concurrent = Arc::clone(&max_concurrent_handle);
         let current = Arc::clone(&current_handle);
 

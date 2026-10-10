@@ -1,25 +1,17 @@
-//! Share-extension pipeline.
-//!
-//! Turns a shared URL (plus optional caption) into a [`PageContent`] by running
-//! [`qrawl_any_url`](super::qrawl_any_url) on it and layering the host caption
-//! on top. A shared URL is *just a URL* — the extraction is the universal
-//! pipeline; only the caption (and the degrade-to-caption when nothing fetches)
-//! is share-specific.
-
 use crate::errors::QrawlError;
 use crate::tools::extract::extract_social_parts;
 use crate::types::{CanonicalUrl, ContentSource, Context, PageContent};
 
-use super::qrawl_any_url::qrawl_any_url;
+use super::utils::{parse_url, resolve_url};
 
 /// Turn a shared URL (plus optional caption) into a [`PageContent`].
 ///
-/// Runs the universal pipeline ([`qrawl_any_url`](super::qrawl_any_url)) on
-/// `url`, then uses the caption as the body fallback when the page carried no
-/// text of its own. Degrades to the caption alone when nothing could be
-/// fetched; only errors when the URL cannot be parsed.
+/// Resolves `url` the way [`qrawl_any_url`](super::qrawl_any_url) does, then
+/// uses the caption as the text when the page carried none. Degrades to the
+/// caption alone when nothing could be fetched; errors only when the URL
+/// cannot be parsed.
 ///
-/// ```ignore
+/// ```no_run
 /// use qrawl::templates::qrawl_share;
 /// use qrawl::types::Context;
 ///
@@ -38,24 +30,16 @@ pub async fn qrawl_share(
     caption: Option<String>,
     ctx: Context,
 ) -> Result<PageContent, QrawlError> {
-    let canonical = CanonicalUrl::new(url);
-    // Validate up front so a *fetch* miss can degrade to the caption while a
-    // *malformed* URL still errors (`qrawl_any_url` conflates the two).
-    if url::Url::parse(canonical.as_str()).is_err() {
-        return Err(QrawlError::new(format!("invalid URL: {canonical}")));
-    }
+    let url = parse_url(url)?;
+    let page = match ctx.scope(resolve_url(&url)).await {
+        Ok((page, _html)) => page,
+        Err(_) => share_payload_only(&url),
+    };
     let caption = caption
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|caption| !caption.is_empty())
         .map(str::to_string);
-
-    // The universal pipeline handles ANY url; a total miss degrades to the
-    // caption alone rather than erroring (the URL already parsed).
-    let page = match qrawl_any_url(url, ctx).await {
-        Ok(page) => page,
-        Err(_) => share_payload_only(&canonical),
-    };
     Ok(with_caption(page, caption))
 }
 

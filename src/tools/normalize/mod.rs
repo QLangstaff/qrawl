@@ -51,7 +51,7 @@ pub async fn normalize_html(html: &Html) -> Html {
 /// - Lowercase
 /// - Deduplicate
 pub fn normalize_emails(emails: &[String]) -> Vec<String> {
-    crate::dedupe!(emails, utils::normalize_email)
+    utils::normalize_each(emails, utils::normalize_email)
 }
 
 /// Normalize phone numbers
@@ -62,7 +62,7 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// - Remove non-digit characters
 /// - Deduplicate
 pub fn normalize_phones(phones: &[String]) -> Vec<String> {
-    crate::dedupe!(phones, utils::normalize_phone)
+    utils::normalize_each(phones, utils::normalize_phone)
 }
 
 /// Normalize URLs
@@ -75,16 +75,16 @@ pub fn normalize_phones(phones: &[String]) -> Vec<String> {
 /// - Remove fragment
 /// - Deduplicate
 pub fn normalize_urls(urls: &[String]) -> Vec<String> {
-    crate::dedupe!(urls, utils::normalize_url)
+    utils::normalize_each(urls, utils::normalize_url)
 }
 
 /// Normalize social URLs
 ///
+/// - Canonicalize with [`normalize_social`]
 /// - Deduplicate
 ///
-/// Unlike [`normalize_emails`], this does **not** lowercase — social URLs carry
-/// case-sensitive handles and ids (e.g. a YouTube id like `dQw4w9WgXcQ`); the
-/// host is already lowercased in the canonical form.
+/// Unlike [`normalize_emails`], this does **not** lowercase the path — social
+/// URLs carry case-sensitive handles and ids (a YouTube id like `dQw4w9WgXcQ`).
 pub fn normalize_social_urls(socials: &[String]) -> Vec<String> {
-    crate::dedupe!(socials.iter().cloned())
+    utils::normalize_each(socials, utils::normalize_social)
 }

@@ -1,17 +1,11 @@
 use serde_json::Value;
-use url::Url;
 
+use crate::hosts::host_of;
 use crate::types::{Jsonld, SocialPlatform};
 
 /// Whether `url`'s host is a recognized social platform.
 pub(super) fn is_social_url(url: &str) -> bool {
-    match Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-    {
-        Some(host) => SocialPlatform::from_host(&host).is_some(),
-        None => false,
-    }
+    host_of(url).is_some_and(|host| SocialPlatform::from_host(&host).is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -28,9 +22,8 @@ pub(super) fn is_social_url(url: &str) -> bool {
 /// normalized to short names, so IRIs / CURIEs / bare terms match
 /// interchangeably.
 pub(super) fn has_schema_type(jsonld: &Jsonld, schema_type: &str) -> bool {
-    let target = match short_type(schema_type) {
-        Some(t) => t,
-        None => return false,
+    let Some(target) = short_type(schema_type) else {
+        return false;
     };
     jsonld.iter().flat_map(entity_types).any(|ty| ty == target)
 }

@@ -62,7 +62,7 @@ fn header_pairs_for_profile(profile: FetchProfile) -> Vec<(&'static str, &'stati
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
-                ("Accept-Encoding", "gzip, deflate, br, zstd"),
+                ("Accept-Encoding", "gzip, deflate, br"),
                 ("Connection", "keep-alive"),
                 ("Upgrade-Insecure-Requests", "1"),
                 ("Sec-Fetch-Dest", "document"),
@@ -102,7 +102,7 @@ fn header_pairs_for_profile(profile: FetchProfile) -> Vec<(&'static str, &'stati
             vec![
                 ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
                 ("Accept-Language", "en-US,en;q=0.9"),
-                ("Accept-Encoding", "gzip, deflate, br, zstd"),
+                ("Accept-Encoding", "gzip, deflate, br"),
                 ("Connection", "keep-alive"),
                 ("Upgrade-Insecure-Requests", "1"),
                 ("Sec-Fetch-Dest", "document"),

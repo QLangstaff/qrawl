@@ -1,9 +1,10 @@
 #![cfg(test)]
+use crate::hosts::host_matches;
 use crate::tools::fetch::headers::headers_for_profile;
 use crate::tools::fetch::social::{fetch_social, oembed_request_url, reddit_json_url};
 use crate::tools::fetch::strategies::{acquire_host_permit, HOST_SEMAPHORES, PER_HOST_CONCURRENCY};
 use crate::tools::fetch::types::FetchProfile;
-use crate::tools::fetch::utils::{host_matches, is_host_allowed, validate_response};
+use crate::tools::fetch::utils::{is_url_allowed, validate_response};
 use crate::types::{SocialKind, SocialParts, SocialPlatform};
 use reqwest::StatusCode;
 use std::time::{Duration, Instant};
@@ -150,35 +151,39 @@ fn host_matches_equal_and_subdomain() {
 }
 
 #[test]
-fn is_host_allowed_block_list() {
+fn is_url_allowed_block_list() {
     let block = vec!["reddit.com".to_string(), "tiktok.com".to_string()];
-    assert!(!is_host_allowed("reddit.com", None, Some(&block)));
-    assert!(!is_host_allowed("old.reddit.com", None, Some(&block)));
-    assert!(is_host_allowed("example.com", None, Some(&block)));
+    assert!(!is_url_allowed("https://reddit.com/r/rust", &[], &block));
+    assert!(!is_url_allowed(
+        "https://old.reddit.com/r/rust",
+        &[],
+        &block
+    ));
+    assert!(is_url_allowed("https://example.com", &[], &block));
 }
 
 #[test]
-fn is_host_allowed_allow_list() {
+fn is_url_allowed_allow_list() {
     let allow = vec!["example.com".to_string()];
-    assert!(is_host_allowed("example.com", Some(&allow), None));
-    assert!(is_host_allowed("sub.example.com", Some(&allow), None));
-    assert!(!is_host_allowed("reddit.com", Some(&allow), None));
+    assert!(is_url_allowed("https://example.com", &allow, &[]));
+    assert!(is_url_allowed("https://sub.example.com", &allow, &[]));
+    assert!(!is_url_allowed("https://reddit.com", &allow, &[]));
 }
 
 #[test]
-fn is_host_allowed_block_beats_allow() {
+fn is_url_allowed_block_beats_allow() {
     let allow = vec!["example.com".to_string()];
     let block = vec!["bad.example.com".to_string()];
-    assert!(!is_host_allowed(
-        "bad.example.com",
-        Some(&allow),
-        Some(&block)
-    ));
-    assert!(is_host_allowed(
-        "good.example.com",
-        Some(&allow),
-        Some(&block)
-    ));
+    assert!(!is_url_allowed("https://bad.example.com", &allow, &block));
+    assert!(is_url_allowed("https://good.example.com", &allow, &block));
+}
+
+#[test]
+fn is_url_allowed_hostless_url_needs_no_allow_list() {
+    let allow = vec!["example.com".to_string()];
+    let block = vec!["reddit.com".to_string()];
+    assert!(is_url_allowed("mailto:a@example.com", &[], &block));
+    assert!(!is_url_allowed("mailto:a@example.com", &allow, &[]));
 }
 
 #[tokio::test]

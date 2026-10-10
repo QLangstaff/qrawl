@@ -1,103 +1,113 @@
-//! Shared streaming crawl building blocks for the `qrawl_*` templates.
+//! Shared building blocks for the `qrawl_*` templates.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 
 use futures_util::stream::{Stream, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::tools::fetch::fetch_strategy;
+use crate::errors::QrawlError;
+use crate::tools::extract::{extract_page_content, extract_social_content, extract_social_parts};
+use crate::tools::fetch::{fetch_social, fetch_strategy};
 use crate::tools::map::map_children;
-use crate::tools::normalize::{normalize_url, normalize_urls};
+use crate::tools::normalize::{normalize_social, normalize_social_urls};
+use crate::types::{CanonicalUrl, Context, Html, PageContent};
 
-/// Discover half of the pipeline: clean+dedupe parents, fetch them, run
-/// `map_children` (parallel, parse-bounded), canonicalize+dedupe children
-/// across the stream. Pure stream construction — no scoping, no spawning;
-/// must be run inside a `CTX` + `FETCH_CACHE` scope.
-pub(super) fn build_discover_stream(
-    urls: Vec<String>,
-    concurrency: usize,
-) -> impl Stream<Item = String> + Send + 'static {
-    // Stage 1: normalize input URLs (synchronous; small list).
-    let parents = normalize_urls(&urls);
-
-    // Parse concurrency is CPU-bound (scraper DOM build inside spawn_blocking);
-    // exceeding core count just piles parsed `Html` trees into memory without
-    // throughput gain. Capped independently of `ctx.concurrency`, which sizes
-    // fetch fan-out.
-    let parse_concurrency = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(concurrency)
-        .min(concurrency);
-
-    // Shared dedupe set for children. Only one task accesses it (the producer
-    // task), but `flat_map`'s closure must be `FnMut + Send`; an `Arc<Mutex<_>>`
-    // is the simplest way to satisfy that with no actual contention.
-    let seen: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-
-    futures_util::stream::iter(parents)
-        // Stage 2: fetch parents, drop fetch errors.
-        .map(|url| async move {
-            fetch_strategy(&url)
-                .await
-                .map_err(|e| log::debug!("parent fetch failed {}: {}", url, e))
-                .ok()
-                .map(|html| (url, html))
-        })
-        .buffer_unordered(concurrency)
-        .filter_map(|opt| async move { opt })
-        // Stage 3: per parent, discover children. `map_children` parses via
-        // `spawn_blocking`; bounded concurrency lets parents parse in parallel
-        // across cores without unbounded DOMs in memory.
-        .map(|(parent_url, parent_html)| async move {
-            map_children(&parent_html, &parent_url).await
-        })
-        .buffer_unordered(parse_concurrency)
-        // Stage 4: flatten + canonicalize + dedupe across the stream.
-        .flat_map(move |children| {
-            let mut unique = Vec::with_capacity(children.len());
-            for c in children {
-                let canonical = normalize_url(&c);
-                if seen.lock().unwrap().insert(canonical.clone()) {
-                    unique.push(canonical);
-                }
-            }
-            futures_util::stream::iter(unique)
-        })
+/// Canonicalize `url`, or fail before any network when it isn't a URL.
+pub(super) fn parse_url(url: &str) -> Result<CanonicalUrl, QrawlError> {
+    let canonical = CanonicalUrl::new(url);
+    match url::Url::parse(canonical.as_str()) {
+        Ok(_) => Ok(canonical),
+        Err(_) => Err(QrawlError::new(format!("invalid URL: {canonical}"))),
+    }
 }
 
-/// Fetch half of the pipeline: per-URL `fetch_strategy`, drop errors. Pure
-/// stream construction — no scoping, no spawning; must be run inside a `CTX`
-/// + `FETCH_CACHE` scope.
-pub(super) fn build_fetch_stream<S>(
+/// Resolve one URL into its [`PageContent`]: a recognized social item through
+/// its door ([`fetch_social`] → [`extract_social_content`]), everything else —
+/// and any door miss — through the page ([`fetch_strategy`] →
+/// [`extract_page_content`]). The page path also returns the fetched [`Html`],
+/// which a crawl maps for children.
+pub(super) async fn resolve_url(
+    url: &CanonicalUrl,
+) -> Result<(PageContent, Option<Html>), QrawlError> {
+    let social = extract_social_parts(url.as_str());
+    if let Some(social) = &social {
+        if let Some(payload) = fetch_social(social, url).await {
+            if let Some(page) = extract_social_content(url, social, &payload) {
+                return Ok((page, None));
+            }
+        }
+    }
+    let html = fetch_strategy(url.as_str()).await?;
+    let page = extract_page_content(url, social.as_ref(), &html).await;
+    Ok((page, Some(html)))
+}
+
+/// Fetch each URL as it arrives and yield the `(url, html)` pairs that succeed,
+/// in completion order.
+pub(super) fn fetch_stream<S>(
     urls: S,
     concurrency: usize,
-) -> impl Stream<Item = (String, String)> + Send + 'static
+) -> impl Stream<Item = (String, Html)> + Send + 'static
 where
     S: Stream<Item = String> + Send + 'static,
 {
-    urls.map(|child_url| async move {
-        fetch_strategy(&child_url)
+    urls.map(|url| async move {
+        fetch_strategy(&url)
             .await
-            .map_err(|e| log::debug!("child fetch failed {}: {}", child_url, e))
+            .map_err(|e| log::debug!("fetch failed {}: {}", url, e))
             .ok()
-            .map(|html| (child_url, html.into_inner()))
+            .map(|html| (url, html))
     })
     .buffer_unordered(concurrency)
-    .filter_map(|opt| async move { opt })
+    .filter_map(|fetched| async move { fetched })
 }
 
-/// Pump items from a stream into an mpsc channel until the stream ends or the
-/// receiver is dropped.
-pub(super) async fn pump<T, S>(stream: S, tx: mpsc::Sender<T>)
+/// Fetch the parents, map each one's children, and yield every child once, in
+/// [`CanonicalUrl`] form.
+pub(super) fn discover_stream(
+    urls: Vec<String>,
+    concurrency: usize,
+) -> impl Stream<Item = String> + Send + 'static {
+    // Parsing is CPU-bound, so more parses in flight than cores only holds more
+    // DOMs in memory.
+    let parse_concurrency = std::thread::available_parallelism()
+        .map_or(concurrency, |cores| cores.get().min(concurrency));
+    let mut seen = HashSet::new();
+
+    fetch_stream(
+        futures_util::stream::iter(normalize_social_urls(&urls)),
+        concurrency,
+    )
+    .map(|(parent_url, parent_html)| async move { map_children(&parent_html, &parent_url).await })
+    .buffer_unordered(parse_concurrency)
+    .flat_map(move |children| {
+        let unseen: Vec<String> = children
+            .iter()
+            .map(|child| normalize_social(child))
+            .filter(|child| seen.insert(child.clone()))
+            .collect();
+        futures_util::stream::iter(unseen)
+    })
+}
+
+/// Run `stream` as one crawl ([`Context::scope`]) on its own task, and yield
+/// its items through a channel that holds `ctx.concurrency` of them, so a slow
+/// consumer stalls the crawl and a dropped consumer ends it.
+pub(super) fn spawn_crawl<T, S>(ctx: Context, stream: S) -> impl Stream<Item = T> + Send + 'static
 where
-    S: Stream<Item = T>,
     T: Send + 'static,
+    S: Stream<Item = T> + Send + 'static,
 {
-    let mut s = Box::pin(stream);
-    while let Some(item) = s.next().await {
-        if tx.send(item).await.is_err() {
-            break;
+    let (tx, rx) = mpsc::channel(ctx.concurrency.get());
+    tokio::spawn(ctx.scope(async move {
+        let mut stream = Box::pin(stream);
+        while let Some(item) = stream.next().await {
+            if tx.send(item).await.is_err() {
+                break;
+            }
         }
-    }
+    }));
+    futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    })
 }

@@ -1,70 +1,56 @@
 use super::client::build_client_for_profile;
 use super::headers::headers_for_profile;
 use super::types::FetchProfile;
-use super::utils::*;
+use super::utils::{check_status, validate_response};
 use crate::errors::QrawlError;
-use crate::types::{get_fetch_strategy, FetchStrategy};
+use crate::hosts::host_of;
+use crate::types::FetchStrategy;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use reqwest::Client;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use reqwest::{Client, Response};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Per-attempt fetch timeout, derived from the active strategy: `Fast` fails
-/// fast (single Minimal attempt), `Auto` is patient across its profile cascade.
-const FAST_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
-const AUTO_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+static CLIENT_CACHE: Lazy<DashMap<FetchProfile, Client>> = Lazy::new(DashMap::new);
 
-fn fetch_timeout() -> Duration {
-    match get_fetch_strategy() {
-        FetchStrategy::Fast => FAST_FETCH_TIMEOUT,
-        FetchStrategy::Auto => AUTO_FETCH_TIMEOUT,
-    }
-}
+/// The profile that last succeeded per host. A cascade starts there, so a host
+/// that needs a browser profile isn't retried with `Minimal` on every fetch.
+static HOST_PROFILE_CACHE: Lazy<DashMap<String, FetchProfile>> = Lazy::new(DashMap::new);
 
-static CLIENT_CACHE: Lazy<Arc<DashMap<FetchProfile, Client>>> =
-    Lazy::new(|| Arc::new(DashMap::new()));
-
-/// Last-successful fetch profile per host. Public for instrumentation only —
-/// mutating it from outside this module is unsupported and may break the
-/// adaptive cascade.
-#[doc(hidden)]
-pub static HOST_PROFILE_CACHE: Lazy<Arc<DashMap<String, FetchProfile>>> =
-    Lazy::new(|| Arc::new(DashMap::new()));
-
-/// Per-host concurrency gate. Limits how many in-flight fetches may target a
-/// single host simultaneously. One permit is acquired per URL and held through
+/// Per-host concurrency gate. One permit is acquired per URL and held through
 /// the full profile cascade, so retries don't consume extra slots.
 pub(super) static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy::new(DashMap::new);
 
-/// Max simultaneous in-flight fetches per host. Set low enough that a
-/// popular-domain burst from a search batch doesn't trip the host's rate
-/// limiter. Global concurrency (`Context::concurrency`) caps total fan-out;
-/// this caps per-host fan-out independently.
-pub const PER_HOST_CONCURRENCY: usize = 8;
+/// Max simultaneous in-flight fetches per host, low enough that a burst at one
+/// domain doesn't trip its rate limiter. `Context::concurrency` caps total
+/// fan-out; this caps per-host fan-out independently.
+pub(super) const PER_HOST_CONCURRENCY: usize = 8;
 
-/// Counts outgoing HTTP attempts. Used by perf tests to verify the per-pipeline
-/// fetch cache prevents duplicate network calls. Not part of the supported API
-/// — concurrent readers may see interleaved counts from unrelated work.
-#[doc(hidden)]
-pub static HTTP_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-
-const ADAPTIVE_PROFILES: [FetchProfile; 3] = [
-    FetchProfile::Minimal,
-    FetchProfile::Windows,
-    FetchProfile::IOS,
-];
-
-fn host_from_url(url: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+/// The profiles a strategy tries, in order.
+fn profiles(strategy: FetchStrategy) -> &'static [FetchProfile] {
+    match strategy {
+        FetchStrategy::Fast => &[FetchProfile::Minimal],
+        FetchStrategy::Auto => &[
+            FetchProfile::Minimal,
+            FetchProfile::Windows,
+            FetchProfile::IOS,
+        ],
+    }
 }
 
-/// Acquire a permit for this host. Returns `None` when the URL has no host
-/// (opaque, file://, etc.) — in that case we skip the cap entirely.
+/// Per-attempt timeout: `Fast` fails fast on its single attempt, `Auto` is
+/// patient across its cascade.
+fn attempt_timeout(strategy: FetchStrategy) -> Duration {
+    match strategy {
+        FetchStrategy::Fast => Duration::from_secs(8),
+        FetchStrategy::Auto => Duration::from_secs(30),
+    }
+}
+
+/// Acquire a permit for this host. `None` when the URL has no host, which skips
+/// the cap.
 pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemaphorePermit> {
     let host = host?;
     let sema = HOST_SEMAPHORES
@@ -74,227 +60,118 @@ pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemap
     sema.acquire_owned().await.ok()
 }
 
-/// Fast: Minimal. Logs the profile/timing (`RUST_LOG=qrawl=info`) rather than
-/// returning them — the stats are observability, not part of the value.
-pub(super) async fn fetch_fast(url: &str) -> Result<String, QrawlError> {
-    let host = host_from_url(url);
-    let _permit = acquire_host_permit(host.as_deref()).await;
-
-    let profile = FetchProfile::Minimal;
-    let client = get_or_build_client(profile, Some(&CLIENT_CACHE))?;
-    let start = Instant::now();
-
-    let html = fetch_with_client(&client, url, profile).await?;
-    log::info!(
-        "fetched {} via {:?} in {}ms (1 attempt)",
-        url,
-        profile,
-        start.elapsed().as_millis()
-    );
-    Ok(html)
+fn client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
+    if let Some(client) = CLIENT_CACHE.get(&profile) {
+        return Ok(client.clone());
+    }
+    let client = build_client_for_profile(profile)?;
+    CLIENT_CACHE.insert(profile, client.clone());
+    Ok(client)
 }
 
-/// Auto: Minimal → Windows → IOS. Logs the winning profile/attempts/timing
-/// (`RUST_LOG=qrawl=info`) rather than returning them.
-pub(super) async fn fetch_auto(url: &str) -> Result<String, QrawlError> {
-    let start = Instant::now();
-    let mut all_errors = Vec::new();
+/// Fetch a page as text, validated as scrapable HTML.
+pub(super) async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<String, QrawlError> {
+    cascade(url, strategy, None, |response| async move {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| QrawlError::new(format!("Failed to read response: {}", e)))?;
+        validate_response(status, &body)?;
+        Ok(body)
+    })
+    .await
+}
 
-    let host = host_from_url(url);
+/// Fetch raw bytes (images, PDFs, JSON). Skips the HTML validation, and sends
+/// `referer` for hosts with hotlink protection.
+pub(super) async fn fetch_bytes(
+    url: &str,
+    strategy: FetchStrategy,
+    referer: Option<&str>,
+) -> Result<Vec<u8>, QrawlError> {
+    cascade(url, strategy, referer, |response| async move {
+        check_status(response.status())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| QrawlError::new(format!("Failed to read response bytes: {}", e)))?;
+        Ok(bytes.to_vec())
+    })
+    .await
+}
+
+/// Send `url` with each of the strategy's profiles, from the host's last
+/// successful profile on, until `read` accepts a response.
+async fn cascade<T, Read, Fut>(
+    url: &str,
+    strategy: FetchStrategy,
+    referer: Option<&str>,
+    read: Read,
+) -> Result<T, QrawlError>
+where
+    Read: Fn(Response) -> Fut,
+    Fut: Future<Output = Result<T, QrawlError>>,
+{
+    let start = Instant::now();
+    let host = host_of(url);
     let _permit = acquire_host_permit(host.as_deref()).await;
-    let starting_idx = host
+
+    let profiles = profiles(strategy);
+    let first = host
         .as_ref()
-        .and_then(|h| HOST_PROFILE_CACHE.get(h).map(|v| *v))
-        .and_then(|cached| ADAPTIVE_PROFILES.iter().position(|p| *p == cached))
+        .and_then(|host| HOST_PROFILE_CACHE.get(host).map(|profile| *profile))
+        .and_then(|cached| profiles.iter().position(|profile| *profile == cached))
         .unwrap_or(0);
 
-    for (offset, profile) in ADAPTIVE_PROFILES[starting_idx..].iter().enumerate() {
-        let client = get_or_build_client(*profile, Some(&CLIENT_CACHE))?;
-
-        match fetch_with_client(&client, url, *profile).await {
-            Ok(html) => {
-                if let Some(ref h) = host {
-                    HOST_PROFILE_CACHE.insert(h.clone(), *profile);
+    let mut errors = Vec::new();
+    for (attempt, profile) in profiles[first..].iter().enumerate() {
+        let result = match send(url, *profile, referer, attempt_timeout(strategy)).await {
+            Ok(response) => read(response).await,
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(value) => {
+                if let Some(host) = host {
+                    HOST_PROFILE_CACHE.insert(host, *profile);
                 }
                 log::info!(
                     "fetched {} via {:?} in {}ms ({} attempts)",
                     url,
                     profile,
                     start.elapsed().as_millis(),
-                    offset + 1
+                    attempt + 1
                 );
-                return Ok(html);
+                return Ok(value);
             }
-            Err(e) => {
-                all_errors.push(format!("{:?}: {}", profile, e));
-            }
+            Err(e) => errors.push(format!("{:?}: {}", profile, e)),
         }
     }
 
     Err(QrawlError::new(format!(
         "All {} profiles failed: [{}]",
-        ADAPTIVE_PROFILES.len() - starting_idx,
-        all_errors.join("; ")
+        errors.len(),
+        errors.join("; ")
     )))
 }
 
-/// Fetch with client (no referer).
-async fn fetch_with_client(
-    client: &Client,
-    url: &str,
-    profile: FetchProfile,
-) -> Result<String, QrawlError> {
-    fetch_with_client_and_referer(client, url, profile, None).await
-}
-
-/// Fetch with client and optional referer header.
-async fn fetch_with_client_and_referer(
-    client: &Client,
+async fn send(
     url: &str,
     profile: FetchProfile,
     referer: Option<&str>,
-) -> Result<String, QrawlError> {
-    // Build headers for this profile
+    timeout: Duration,
+) -> Result<Response, QrawlError> {
     let mut headers = headers_for_profile(profile);
-
-    // Add referer if provided
-    if let Some(ref_url) = referer {
-        if let Ok(ref_value) = reqwest::header::HeaderValue::from_str(ref_url) {
-            headers.insert(reqwest::header::REFERER, ref_value);
+    if let Some(referer) = referer {
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(referer) {
+            headers.insert(reqwest::header::REFERER, value);
         }
     }
-
-    HTTP_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-
-    // Per-attempt timeout derived from the active fetch strategy.
-    let response = client
+    client_for_profile(profile)?
         .get(url)
         .headers(headers)
-        .timeout(fetch_timeout())
+        .timeout(timeout)
         .send()
         .await
-        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| QrawlError::new(format!("Failed to read response: {}", e)))?;
-
-    // Validate response
-    validate_response(status, &body)?;
-
-    Ok(body)
-}
-
-/// Fetch raw bytes with client + profile + optional referer.
-///
-/// Same wire protocol as the HTML fetcher (profile headers, HTTP_ATTEMPTS counter,
-/// optional Referer for hotlink protection) but skips the HTML-specific body
-/// validation and returns `Vec<u8>` for binary content.
-async fn fetch_bytes_with_client_and_referer(
-    client: &Client,
-    url: &str,
-    profile: FetchProfile,
-    referer: Option<&str>,
-) -> Result<Vec<u8>, QrawlError> {
-    let mut headers = headers_for_profile(profile);
-
-    if let Some(ref_url) = referer {
-        if let Ok(ref_value) = reqwest::header::HeaderValue::from_str(ref_url) {
-            headers.insert(reqwest::header::REFERER, ref_value);
-        }
-    }
-
-    HTTP_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-
-    let response = client
-        .get(url)
-        .headers(headers)
-        .timeout(fetch_timeout())
-        .send()
-        .await
-        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(QrawlError::new(format!("HTTP status {}", status.as_u16())));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| QrawlError::new(format!("Failed to read response bytes: {}", e)))?;
-
-    Ok(bytes.to_vec())
-}
-
-/// Fast bytes: single Minimal-profile attempt.
-pub(super) async fn fetch_bytes_fast(
-    url: &str,
-    referer: Option<&str>,
-) -> Result<Vec<u8>, QrawlError> {
-    let host = host_from_url(url);
-    let _permit = acquire_host_permit(host.as_deref()).await;
-
-    let profile = FetchProfile::Minimal;
-    let client = get_or_build_client(profile, Some(&CLIENT_CACHE))?;
-    fetch_bytes_with_client_and_referer(&client, url, profile, referer).await
-}
-
-/// Auto bytes: same Minimal → Windows → iOS cascade as HTML fetch, with host
-/// profile cache and no inter-attempt sleep.
-pub(super) async fn fetch_bytes_auto(
-    url: &str,
-    referer: Option<&str>,
-) -> Result<Vec<u8>, QrawlError> {
-    let mut all_errors = Vec::new();
-
-    let host = host_from_url(url);
-    let _permit = acquire_host_permit(host.as_deref()).await;
-    let starting_idx = host
-        .as_ref()
-        .and_then(|h| HOST_PROFILE_CACHE.get(h).map(|v| *v))
-        .and_then(|cached| ADAPTIVE_PROFILES.iter().position(|p| *p == cached))
-        .unwrap_or(0);
-
-    for profile in ADAPTIVE_PROFILES[starting_idx..].iter() {
-        let client = get_or_build_client(*profile, Some(&CLIENT_CACHE))?;
-
-        match fetch_bytes_with_client_and_referer(&client, url, *profile, referer).await {
-            Ok(bytes) => {
-                if let Some(ref h) = host {
-                    HOST_PROFILE_CACHE.insert(h.clone(), *profile);
-                }
-                return Ok(bytes);
-            }
-            Err(e) => all_errors.push(format!("{:?}: {}", profile, e)),
-        }
-    }
-
-    Err(QrawlError::new(format!(
-        "All {} profiles failed: [{}]",
-        ADAPTIVE_PROFILES.len() - starting_idx,
-        all_errors.join("; ")
-    )))
-}
-
-/// Get or build client for profile (uses cache if available).
-fn get_or_build_client(
-    profile: FetchProfile,
-    cache: Option<&Arc<DashMap<FetchProfile, Client>>>,
-) -> Result<Client, QrawlError> {
-    if let Some(cache) = cache {
-        if let Some(client_ref) = cache.get(&profile) {
-            return Ok(client_ref.clone());
-        }
-
-        // Not in cache, build and cache it
-        let client = build_client_for_profile(profile)?;
-        cache.insert(profile, client.clone());
-        Ok(client)
-    } else {
-        // No cache, just build
-        build_client_for_profile(profile)
-    }
+        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))
 }
