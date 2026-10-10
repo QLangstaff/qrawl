@@ -65,7 +65,6 @@ impl SiblingGroup {
 /// Map child URLs from HTML siblings.
 ///
 /// Detects sibling patterns in HTML structure and extracts the first URL from each sibling.
-/// Domain filtering happens during detection to affect group selection.
 #[cfg(test)]
 pub(super) fn map_siblings(html: &str, url: &str) -> Vec<String> {
     let siblings = map_body_siblings(html);
@@ -102,9 +101,8 @@ pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
 /// # Detection Algorithm
 ///
 /// 1. **Scan**: Recursively traverse DOM to find all groups of repeating siblings
-/// 2. **Filter**: Apply domain filters to each group (removes blocked URLs)
-/// 3. **Score**: Rank groups using hierarchical criteria (see below)
-/// 4. **Select**: Return the highest-scoring group
+/// 2. **Score**: Rank groups using hierarchical criteria (see below)
+/// 3. **Select**: Return the highest-scoring group
 ///
 /// # Scoring Hierarchy (highest to lowest priority)
 ///
@@ -113,11 +111,6 @@ pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
 /// 3. **Coverage** - pattern_len × quantity (richer patterns preferred)
 /// 4. **Quantity** - More siblings preferred
 /// 5. **Pattern length** - Longer patterns preferred (richer structure)
-///
-/// # Domain Filtering
-///
-/// Domain filtering happens during detection to affect group selection.
-/// Groups with only blocked domains are excluded before scoring.
 ///
 #[cfg(test)]
 pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
@@ -161,6 +154,14 @@ fn clean_href(href: &str) -> String {
         .trim_matches('\'')
         .trim()
         .to_string()
+}
+
+/// The `http(s)` URL an `href` points to from `base`: absolute, relative, or
+/// protocol-relative (`//host/path`). `None` for any other scheme
+/// (`mailto:`, `javascript:`).
+pub(super) fn resolve_href(href: &str, base: &Url) -> Option<Url> {
+    let url = base.join(&clean_href(href)).ok()?;
+    is_valid_scheme(&url).then_some(url)
 }
 
 /// Check if URL scheme is acceptable (http/https).
@@ -366,7 +367,7 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 
 /// Map sibling HTML fragment to URL.
 ///
-/// Finds the FIRST valid HTTP(S) link in each sibling fragment that passes domain filters.
+/// Finds the first valid HTTP(S) link in each sibling fragment.
 /// Skips excluded domains to avoid returning Pinterest/TikTok/etc share buttons.
 ///
 /// # Performance Note
@@ -591,28 +592,13 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
 
     // Collect links and categorize them
     for link in element.select(&LINK_SELECTOR) {
-        let href_raw = match link.value().attr("href") {
-            Some(h) => h,
-            None => continue,
-        };
-        let href = clean_href(href_raw);
-
-        let url = if href.starts_with("//") {
-            let full_href = format!("{}:{}", base.scheme(), href);
-            match Url::parse(&full_href).ok() {
-                Some(u) => u,
-                None => continue,
-            }
-        } else {
-            match Url::parse(&href).ok().or_else(|| base.join(&href).ok()) {
-                Some(u) => u,
-                None => continue,
-            }
-        };
-
-        if !is_valid_scheme(&url) {
+        let Some(url) = link
+            .value()
+            .attr("href")
+            .and_then(|href| resolve_href(href, base))
+        else {
             continue;
-        }
+        };
 
         if fallback.is_none() {
             fallback = Some(url.to_string());

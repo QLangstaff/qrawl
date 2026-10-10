@@ -6,7 +6,7 @@
 use once_cell::sync::Lazy;
 use scraper::Selector;
 
-use crate::types::SocialPlatform;
+use crate::types::{Html, SocialPlatform};
 
 mod social;
 
@@ -121,4 +121,34 @@ pub(crate) fn schema_types(entity: &serde_json::Value) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The metadata keys an embed is scraped into (`scrape_embed`) and read back
+/// from (`extract_preview`).
+pub(crate) mod embed_keys {
+    pub(crate) const OEMBED_TITLE: &str = "oembed:title";
+    pub(crate) const OEMBED_AUTHOR_NAME: &str = "oembed:author_name";
+    pub(crate) const OEMBED_THUMBNAIL_URL: &str = "oembed:thumbnail_url";
+    pub(crate) const REDDIT_TITLE: &str = "reddit:title";
+    pub(crate) const REDDIT_TEXT: &str = "reddit:text";
+    pub(crate) const REDDIT_AUTHOR: &str = "reddit:author";
+    pub(crate) const REDDIT_IMAGE: &str = "reddit:image";
+    pub(crate) const REDDIT_VIDEO: &str = "reddit:video";
+    /// A link post's destination: the page the post is about.
+    pub(crate) const REDDIT_URL: &str = "reddit:url";
+    /// The prefixes only an embed may use, so a page's own `<meta>` tags can't
+    /// pose as one.
+    pub(crate) const PREFIXES: [&str; 2] = ["oembed:", "reddit:"];
+}
+
+/// Parse `html` and read it with `read`, off the async runtime: building a DOM
+/// is CPU-bound, and a parsed document can't cross an `await`.
+pub(crate) async fn with_document<T: Send + 'static>(
+    html: &Html,
+    read: impl FnOnce(&scraper::Html) -> T + Send + 'static,
+) -> T {
+    let html = html.to_string();
+    tokio::task::spawn_blocking(move || read(&scraper::Html::parse_document(&html)))
+        .await
+        .expect("reading a parsed document panicked")
 }

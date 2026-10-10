@@ -1,7 +1,10 @@
+use crate::errors::QrawlError;
 use crate::types::{Context, SocialKind, SocialPlatform};
 
 use super::qrawl_any_url::qrawl_any_url;
 use super::qrawl_many_urls::{qrawl_many_urls, schema_passes};
+use super::types::{CrawlOptions, MAX_DEPTH};
+use super::utils::parse_url;
 
 // ===== schema_passes (pure) =====
 
@@ -28,6 +31,38 @@ fn schema_passes_include_exclude() {
         !schema_passes(&recipe, &["Recipe".to_string()], &["Recipe".to_string()]),
         "exclude beats include"
     );
+}
+
+#[test]
+fn parse_url_keeps_the_address_and_keys_on_the_canonical_form() {
+    let given = parse_url("http://www.Example.com/a/").expect("an HTTP URL");
+    assert_eq!(given.address, "http://www.Example.com/a/");
+    assert_eq!(given.url.as_str(), "https://example.com/a");
+    let bare = parse_url("example.com/a").expect("a URL without a scheme");
+    assert_eq!(bare.address, "https://example.com/a");
+    let port = parse_url("localhost:8080/a").expect("a host with a port");
+    assert_eq!(port.address, "https://localhost:8080/a");
+}
+
+#[test]
+fn parse_url_rejects_what_is_not_an_http_url() {
+    for input in [
+        "mailto:a@b.com",
+        "ftp://example.com/file.txt",
+        "not a url",
+        "a@b.com",
+    ] {
+        assert_eq!(
+            parse_url(input).unwrap_err(),
+            QrawlError::InvalidUrl(input.to_string())
+        );
+    }
+}
+
+#[test]
+fn crawl_depth_is_capped() {
+    let options = CrawlOptions::default().with_depth(MAX_DEPTH + 5);
+    assert_eq!(options.depth, MAX_DEPTH);
 }
 
 // ===== Live smoke tests (hit the network; run with `--ignored`) =====
@@ -101,34 +136,12 @@ async fn live_many_urls_drops_the_url_that_fails() {
             "https://www.allrecipes.com/recipe/23600/worlds-best-lasagna/".to_string(),
             "https://nope-zzz-does-not-exist.example/".to_string(),
         ],
+        CrawlOptions::default(),
         Context::auto(),
     )
     .await;
     assert_eq!(pages.len(), 2);
     assert!(pages.iter().all(|page| !page.structured.is_empty()));
-}
-
-#[tokio::test]
-async fn limit_zero_returns_nothing() {
-    let pages = qrawl_many_urls(
-        vec!["https://example.invalid".to_string()],
-        Context::fast().with_limit(0),
-    )
-    .await;
-    assert!(pages.is_empty());
-}
-
-#[test]
-fn parse_url_rejects_non_http_schemes() {
-    use super::utils::parse_url;
-    let given = parse_url("http://www.Example.com/a/").expect("an HTTP URL");
-    assert_eq!(given.address, "http://www.Example.com/a/");
-    assert_eq!(given.url.as_str(), "https://example.com/a");
-    let bare = parse_url("example.com/a").expect("a URL without a scheme");
-    assert_eq!(bare.address, "https://example.com/a");
-    for input in ["mailto:a@b.com", "ftp://example.com/file.txt", "not a url"] {
-        assert!(parse_url(input).is_err(), "{input}");
-    }
 }
 
 // ===== Offline crawls against a local site =====
@@ -140,9 +153,9 @@ mod local_site {
 
     use futures_util::StreamExt;
 
-    use crate::templates::{
-        qrawl_any_url, qrawl_children, qrawl_discover_children, qrawl_fetch_stream, qrawl_many_urls,
-    };
+    use crate::errors::QrawlError;
+    use crate::templates::utils::{crawl, Target};
+    use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions, PageContent};
     use crate::test_site::{listing_page, Reply, TestSite};
     use crate::tools::fetch::fetch_strategy;
     use crate::types::Context;
@@ -151,12 +164,20 @@ mod local_site {
         Context::fast().with_concurrency(NonZeroUsize::new(concurrency).unwrap())
     }
 
-    fn paths(pages: &[crate::templates::PageContent], port: u16) -> HashSet<String> {
+    fn depth(depth: usize) -> CrawlOptions {
+        CrawlOptions::default().with_depth(depth)
+    }
+
+    fn paths(pages: &[PageContent], port: u16) -> HashSet<String> {
         let prefix = format!("https://127.0.0.1:{port}");
         pages
             .iter()
             .map(|page| page.url.as_str().trim_start_matches(&prefix).to_string())
             .collect()
+    }
+
+    fn set(paths: &[&str]) -> HashSet<String> {
+        paths.iter().map(|path| path.to_string()).collect()
     }
 
     /// `/p{n}` lists 12 children `/p{n}/c{m}`; every other path is a leaf.
@@ -177,43 +198,34 @@ mod local_site {
             .map(|parent| site.url(&format!("/p{parent}")))
             .collect();
 
-        let children =
-            tokio::time::timeout(Duration::from_secs(30), qrawl_children(parents, ctx(8)))
-                .await
-                .expect("the crawl finishes");
+        let pages = tokio::time::timeout(
+            Duration::from_secs(30),
+            qrawl_many_urls(parents, depth(1), ctx(8)),
+        )
+        .await
+        .expect("the crawl finishes");
 
-        assert_eq!(children.len(), 24 * 12);
+        assert_eq!(pages.len(), 24 + 24 * 12);
         assert_eq!(site.hits(), 24 + 24 * 12);
     }
 
     #[tokio::test]
-    async fn childless_parent_is_its_own_child_and_fetched_once() {
+    async fn reaching_the_limit_stops_the_fetches() {
         let site = TestSite::serve(parents_with_children).await;
+        let urls: Vec<String> = (0..300)
+            .map(|page| site.url(&format!("/leaf{page}")))
+            .collect();
 
-        let children = qrawl_children(vec![site.url("/leaf")], ctx(4)).await;
+        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), ctx(4)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].0, site.url("/leaf"));
-        assert_eq!(site.hits(), 1);
+        assert_eq!(pages.len(), 1);
+        assert!(site.hits() < 30, "{} requests after the limit", site.hits());
     }
 
-    #[tokio::test]
-    async fn discover_children_yields_each_child_once_without_fetching_it() {
-        let site = TestSite::serve(parents_with_children).await;
-
-        let children: Vec<String> =
-            qrawl_discover_children(vec![site.url("/p1"), site.url("/p1/")], ctx(4))
-                .collect()
-                .await;
-
-        assert_eq!(children.len(), 12);
-        assert!(children.contains(&site.url("/p1/c0")), "{children:?}");
-        assert_eq!(site.hits(), 1);
-
-        let pages: Vec<_> = qrawl_fetch_stream(futures_util::stream::iter(children), ctx(4))
-            .collect()
-            .await;
-        assert_eq!(pages.len(), 12);
+    async fn fetch_address(target: Target, _level: usize) -> Option<(String, Vec<String>)> {
+        let fetched = fetch_strategy(&target.address).await.ok()?;
+        Some((fetched.url, Vec::new()))
     }
 
     #[tokio::test]
@@ -223,7 +235,7 @@ mod local_site {
             .map(|page| site.url(&format!("/leaf{page}")))
             .collect();
 
-        let mut pages = Box::pin(qrawl_fetch_stream(futures_util::stream::iter(urls), ctx(2)));
+        let mut pages = Box::pin(crawl(ctx(2), urls, 0, |_url| true, fetch_address));
         let mut received = 0;
         while pages.next().await.is_some() {
             received += 1;
@@ -237,24 +249,26 @@ mod local_site {
     }
 
     #[tokio::test]
-    async fn dropping_a_stream_stops_its_fetches() {
-        let site = TestSite::serve(|path| match path {
-            "/good" => Reply::Html(listing_page("good", "", &[])),
-            _ => Reply::NotFound,
-        })
-        .await;
-        let urls: Vec<String> = std::iter::once(site.url("/good"))
-            .chain((0..300).map(|missing| site.url(&format!("/missing{missing}"))))
+    async fn a_page_that_panics_is_dropped_and_the_rest_arrive() {
+        let site = TestSite::serve(parents_with_children).await;
+        let urls: Vec<String> = (0..20)
+            .map(|page| site.url(&format!("/leaf{page}")))
             .collect();
 
-        let first = qrawl_fetch_stream(futures_util::stream::iter(urls), ctx(4))
-            .take(1)
-            .collect::<Vec<_>>()
-            .await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let pages: Vec<(usize, String)> = crawl(
+            ctx(4),
+            urls,
+            0,
+            |_url| true,
+            |target, level| async move {
+                assert!(!target.address.ends_with("/leaf7"), "leaf7 panics");
+                fetch_address(target, level).await
+            },
+        )
+        .collect()
+        .await;
 
-        assert_eq!(first.len(), 1);
-        assert!(site.hits() < 30, "{} requests after the drop", site.hits());
+        assert_eq!(pages.len(), 19);
     }
 
     /// Seeds `/a` and `/b`; `/a` → `/c` → `/x`, `/b` → `/x`, `/x` → `/y`.
@@ -282,7 +296,7 @@ mod local_site {
             let site = TestSite::serve(diamond).await;
             let seeds = seeds.iter().map(|seed| site.url(seed)).collect();
 
-            let pages = qrawl_many_urls(seeds, ctx(1).with_depth(2)).await;
+            let pages = qrawl_many_urls(seeds, depth(2), ctx(1)).await;
 
             let crawled = paths(&pages, site.port());
             assert!(crawled.contains("/x"), "{crawled:?}");
@@ -295,18 +309,19 @@ mod local_site {
         let site = TestSite::serve(diamond).await;
         let seeds = || vec![site.url("/a"), site.url("/b")];
 
-        let depth_zero = qrawl_many_urls(seeds(), ctx(4)).await;
-        assert_eq!(
-            paths(&depth_zero, site.port()),
-            HashSet::from(["/a".to_string(), "/b".to_string()])
-        );
+        let depth_zero = qrawl_many_urls(seeds(), CrawlOptions::default(), ctx(4)).await;
+        assert_eq!(paths(&depth_zero, site.port()), set(&["/a", "/b"]));
 
-        let limited = qrawl_many_urls(seeds(), ctx(4).with_depth(2).with_limit(3)).await;
+        let limited = qrawl_many_urls(seeds(), depth(2).with_limit(3), ctx(4)).await;
         assert_eq!(limited.len(), 3);
+
+        let none = qrawl_many_urls(seeds(), depth(2).with_limit(0), ctx(4)).await;
+        assert!(none.is_empty());
 
         let blocked = qrawl_many_urls(
             seeds(),
-            ctx(4).with_depth(2).with_block_urls(vec![site.url("/x")]),
+            depth(2).with_block_urls(vec![site.url("/x")]),
+            ctx(4),
         )
         .await;
         let crawled = paths(&blocked, site.port());
@@ -318,50 +333,70 @@ mod local_site {
 
         let allowed = qrawl_many_urls(
             seeds(),
-            ctx(4)
-                .with_depth(2)
-                .with_allow_urls(vec![site.url("/a"), site.url("/c")]),
+            depth(2).with_allow_urls(vec![site.url("/a"), site.url("/c")]),
+            ctx(4),
         )
         .await;
-        assert_eq!(
-            paths(&allowed, site.port()),
-            HashSet::from(["/a".to_string(), "/c".to_string()])
-        );
+        assert_eq!(paths(&allowed, site.port()), set(&["/a", "/c"]));
+    }
+
+    fn recipes_and_articles(path: &str) -> Reply {
+        let schema = |schema_type: &str| {
+            format!(
+                r#"<script type="application/ld+json">{{"@type":"{schema_type}","name":"x"}}</script>"#
+            )
+        };
+        match path {
+            "/roundup" => Reply::Html(listing_page(
+                path,
+                "",
+                &[
+                    "/soup".to_string(),
+                    "/stew".to_string(),
+                    "/news".to_string(),
+                    "/about".to_string(),
+                ],
+            )),
+            "/soup" | "/stew" => Reply::Html(listing_page(path, &schema("Recipe"), &[])),
+            "/news" => Reply::Html(listing_page(path, &schema("Article"), &[])),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        }
     }
 
     #[tokio::test]
-    async fn schema_filter_keeps_matching_pages_and_still_follows_the_rest() {
-        let site = TestSite::serve(|path| {
-            let recipe =
-                r#"<script type="application/ld+json">{"@type":"Recipe","name":"Soup"}</script>"#;
-            match path {
-                "/roundup" => Reply::Html(listing_page(
-                    path,
-                    "",
-                    &[
-                        "/soup".to_string(),
-                        "/about".to_string(),
-                        "/contact".to_string(),
-                    ],
-                )),
-                "/soup" => Reply::Html(listing_page(path, recipe, &[])),
-                _ => Reply::Html(listing_page(path, "", &[])),
-            }
-        })
-        .await;
+    async fn schema_filters_decide_results_and_the_limit_counts_only_results() {
+        let site = TestSite::serve(recipes_and_articles).await;
+        let seeds = || vec![site.url("/roundup")];
 
         let recipes = qrawl_many_urls(
-            vec![site.url("/roundup")],
-            ctx(4)
-                .with_depth(1)
-                .with_include_schemas(vec!["Recipe".to_string()]),
+            seeds(),
+            depth(1).with_include_schemas(vec!["recipe".to_string()]),
+            ctx(4),
         )
         .await;
+        assert_eq!(paths(&recipes, site.port()), set(&["/soup", "/stew"]));
 
+        let not_articles = qrawl_many_urls(
+            seeds(),
+            depth(1).with_exclude_schemas(vec!["Article".to_string()]),
+            ctx(4),
+        )
+        .await;
         assert_eq!(
-            paths(&recipes, site.port()),
-            HashSet::from(["/soup".to_string()])
+            paths(&not_articles, site.port()),
+            set(&["/roundup", "/soup", "/stew", "/about"])
         );
+
+        let one_recipe = qrawl_many_urls(
+            seeds(),
+            depth(1)
+                .with_include_schemas(vec!["Recipe".to_string()])
+                .with_limit(1),
+            ctx(1),
+        )
+        .await;
+        assert_eq!(one_recipe.len(), 1);
+        assert!(set(&["/soup", "/stew"]).is_superset(&paths(&one_recipe, site.port())));
     }
 
     #[tokio::test]
@@ -373,24 +408,34 @@ mod local_site {
         let hits = site.hits();
         assert!(hits > 0);
 
-        let blocked = qrawl_any_url(
+        for listed in ["127.0.0.1", "http://127.0.0.1/"] {
+            let blocked = qrawl_any_url(
+                &site.url("/b"),
+                ctx(4).with_block_domains(vec![listed.to_string()]),
+            )
+            .await;
+            assert!(
+                matches!(blocked, Err(QrawlError::BlockedDomain(_))),
+                "{blocked:?}"
+            );
+        }
+        let allow_other = qrawl_any_url(
             &site.url("/b"),
-            ctx(4).with_block_domains(vec!["127.0.0.1".to_string()]),
+            ctx(4).with_allow_domains(vec!["example.com".to_string()]),
         )
         .await;
-        assert!(blocked.is_err());
+        assert!(matches!(allow_other, Err(QrawlError::BlockedDomain(_))));
         assert_eq!(site.hits(), hits);
     }
 
     #[tokio::test]
-    async fn a_redirect_to_a_blocked_domain_is_rejected() {
+    async fn a_redirect_to_a_blocked_domain_is_never_requested() {
         let site = TestSite::serve(diamond).await;
         let target = format!("http://localhost:{}/a", site.port());
         let redirecting = TestSite::serve(move |_path| Reply::Redirect(target.clone())).await;
 
         let followed = qrawl_any_url(&redirecting.url("/go"), ctx(4)).await;
         assert!(followed.is_ok(), "{followed:?}");
-
         let hits = site.hits();
         assert!(hits > 0);
 
@@ -399,29 +444,55 @@ mod local_site {
             ctx(4).with_block_domains(vec!["localhost".to_string()]),
         )
         .await;
-        assert!(blocked.is_err());
+        assert!(
+            matches!(blocked, Err(QrawlError::BlockedDomain(_))),
+            "{blocked:?}"
+        );
         assert_eq!(site.hits(), hits, "the blocked host got a request");
     }
 
     #[tokio::test]
-    async fn one_crawl_fetches_a_url_once_and_distinct_urls_separately() {
-        let site = TestSite::serve(|path| Reply::Html(listing_page(path, "", &[]))).await;
-        let (plain, slash) = (site.url("/echo?tag=b"), site.url("/echo/?tag=b"));
+    async fn relative_links_resolve_against_the_url_a_redirect_landed_on() {
+        let site = TestSite::serve(|path| match path {
+            "/blog" => Reply::Redirect("/blog/".to_string()),
+            "/blog/" => Reply::Html(listing_page(
+                path,
+                "",
+                &[
+                    "post0".to_string(),
+                    "post1".to_string(),
+                    "post2".to_string(),
+                ],
+            )),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
 
-        let (first, again, other) = ctx(4)
-            .scope(async {
-                (
-                    fetch_strategy(&plain).await.expect("fetches"),
-                    fetch_strategy(&plain).await.expect("fetches"),
-                    fetch_strategy(&slash).await.expect("fetches"),
-                )
-            })
+        let pages = qrawl_many_urls(vec![site.url("/blog")], depth(1), ctx(4)).await;
+
+        assert_eq!(
+            paths(&pages, site.port()),
+            set(&["/blog", "/blog/post0", "/blog/post1", "/blog/post2"])
+        );
+        let blog = pages
+            .iter()
+            .find(|page| page.title.as_deref() == Some("/blog/"));
+        assert_eq!(
+            blog.map(|page| page.address.clone()),
+            Some(site.url("/blog/"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_page_is_requested_once_under_every_strategy() {
+        let site = TestSite::serve(|_path| Reply::NotFound).await;
+
+        let missing = Context::auto()
+            .scope(fetch_strategy(&site.url("/gone")))
             .await;
 
-        assert_eq!(first, again);
-        assert!(first.as_str().contains("<title>/echo?tag=b</title>"));
-        assert!(other.as_str().contains("<title>/echo/?tag=b</title>"));
-        assert_eq!(site.hits(), 2);
+        assert_eq!(missing.unwrap_err(), QrawlError::Status(404));
+        assert_eq!(site.hits(), 1);
     }
 
     #[tokio::test]
@@ -430,6 +501,7 @@ mod local_site {
             let head = r#"<meta property="og:title" content="Soup night">
                 <meta name="description" content="A soup recipe">
                 <meta name="author" content="Jane">
+                <meta name="oembed:title" content="Not an embed">
                 <meta property="og:image" content="https://img.example/soup.jpg">
                 <script type="application/ld+json">{"@type":"Recipe","name":"Soup"}</script>"#;
             let body_links = [
@@ -442,13 +514,18 @@ mod local_site {
         })
         .await;
 
-        let page = qrawl_any_url(&site.url("/soup"), ctx(4))
+        let page = qrawl_any_url(&site.url("/soup/"), ctx(4))
             .await
             .expect("fetches");
 
+        assert_eq!(
+            page.url.as_str(),
+            format!("https://127.0.0.1:{}/soup", site.port())
+        );
+        assert_eq!(page.address, site.url("/soup/"));
         assert_eq!(page.platform, None);
         assert_eq!(page.kind, None);
-        assert_eq!(page.title.as_deref(), Some("/soup"));
+        assert_eq!(page.title.as_deref(), Some("/soup/"));
         assert_eq!(page.text.as_deref(), Some("A soup recipe"));
         assert_eq!(page.author.as_deref(), Some("Jane"));
         assert_eq!(
@@ -458,69 +535,13 @@ mod local_site {
         assert_eq!(page.structured.len(), 1);
         assert_eq!(page.structured[0]["name"], "Soup");
         assert!(page.metadata.iter().any(|(key, _)| key == "og:title"));
+        assert!(!page
+            .metadata
+            .iter()
+            .any(|(key, _)| key.starts_with("oembed:")));
         assert_eq!(page.socials, ["https://instagram.com/janecooks"]);
         assert!(page
             .body
             .is_some_and(|body| body.as_str().contains("<article>")));
     }
-
-    #[tokio::test]
-    async fn an_http_url_is_fetched_as_given() {
-        let site = TestSite::serve(|path| Reply::Html(listing_page(path, "", &[]))).await;
-
-        let page = qrawl_any_url(&site.url("/page/"), ctx(4))
-            .await
-            .expect("fetches");
-
-        assert_eq!(page.title.as_deref(), Some("/page/"));
-        assert_eq!(
-            page.url.as_str(),
-            format!("https://127.0.0.1:{}/page", site.port())
-        );
-    }
-}
-
-#[tokio::test]
-async fn emails_come_from_pages_up_to_two_links_from_the_seed() {
-    use crate::test_site::{listing_page, Reply, TestSite};
-    let site = TestSite::serve(|path| match path {
-        "/" => Reply::Html(listing_page(
-            path,
-            "",
-            &[
-                "/team".to_string(),
-                "/blog".to_string(),
-                "/shop".to_string(),
-            ],
-        )),
-        "/team" => Reply::Html(listing_page(path, "", &["/contact".to_string()])),
-        "/contact" => Reply::Html(listing_page(
-            "contact",
-            "",
-            &["mailto:Hello@Example.com".to_string()],
-        )),
-        _ => Reply::Html(listing_page(path, "", &[])),
-    })
-    .await;
-
-    let emails = super::qrawl_emails(vec![site.url("/")], Context::fast()).await;
-
-    assert_eq!(emails, ["hello@example.com"]);
-}
-
-#[tokio::test]
-async fn emails_of_a_childless_seed_come_from_the_seed_itself() {
-    use crate::test_site::{listing_page, Reply, TestSite};
-    let site = TestSite::serve(|path| {
-        Reply::Html(listing_page(
-            path,
-            "",
-            &["mailto:hi@example.com".to_string()],
-        ))
-    })
-    .await;
-
-    let emails = super::qrawl_emails(vec![site.url("/contact")], Context::fast()).await;
-
-    assert_eq!(emails, ["hi@example.com"]);
 }

@@ -48,27 +48,9 @@ fn windows_has_chrome_headers() {
 
 #[test]
 fn ios_has_safari_headers() {
-    let headers = headers_for_profile(FetchProfile::IOS);
+    let headers = headers_for_profile(FetchProfile::Ios);
     assert!(headers.contains_key("accept"));
     assert!(!headers.contains_key("sec-ch-ua"));
-}
-
-#[test]
-fn android_has_mobile_chrome_headers() {
-    let headers = headers_for_profile(FetchProfile::Android);
-    assert!(headers.contains_key("sec-ch-ua-mobile"));
-    assert_eq!(
-        headers
-            .get("sec-ch-ua-mobile")
-            .and_then(|v| v.to_str().ok()),
-        Some("?1")
-    );
-    assert_eq!(
-        headers
-            .get("sec-ch-ua-platform")
-            .and_then(|v| v.to_str().ok()),
-        Some("\"Android\"")
-    );
 }
 
 #[test]
@@ -88,11 +70,17 @@ fn is_suspicious_cloudflare_captcha() {
 }
 
 #[test]
-fn is_suspicious_perimeter_x() {
-    let html = padded_html("PerimeterX robot detection blocking this request");
+fn is_suspicious_perimeter_x_challenge() {
+    let html = padded_html(r#"<div id="px-captcha"></div>"#);
     let err = validate_response(StatusCode::OK, &html).unwrap_err();
-    assert!(err.to_string().contains("suspicious"));
-    assert!(err.to_string().contains("perimeterx"));
+    assert_eq!(err, crate::errors::QrawlError::BotChallenge("px-captcha"));
+}
+
+#[test]
+fn a_page_that_loads_the_perimeterx_sensor_is_not_a_challenge() {
+    let html =
+        padded_html(r#"<script src="https://client.perimeterx.net/PX123/main.min.js"></script>"#);
+    assert!(validate_response(StatusCode::OK, &html).is_ok());
 }
 
 #[test]
@@ -201,13 +189,13 @@ fn attempt_order_moves_cached_profile_first_and_keeps_the_rest() {
     let profiles = [
         FetchProfile::Minimal,
         FetchProfile::Windows,
-        FetchProfile::IOS,
+        FetchProfile::Ios,
     ];
     assert_eq!(attempt_order(&profiles, None), profiles);
     assert_eq!(
-        attempt_order(&profiles, Some(FetchProfile::IOS)),
+        attempt_order(&profiles, Some(FetchProfile::Ios)),
         [
-            FetchProfile::IOS,
+            FetchProfile::Ios,
             FetchProfile::Minimal,
             FetchProfile::Windows
         ]

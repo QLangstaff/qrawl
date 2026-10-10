@@ -413,3 +413,28 @@ fn extract_schema_types_shortens_iris_and_dedupes() {
     ];
     assert_eq!(extract_schema_types(&jsonld), ["Recipe", "Article"]);
 }
+
+#[test]
+fn site_pages_and_authorless_paths_are_not_profiles() {
+    for url in [
+        "https://x.com/privacy",
+        "https://facebook.com/privacy",
+        "https://vimeo.com/categories",
+        "https://facebook.com/watch/",
+    ] {
+        let social = extract_social_parts(url).expect("social host");
+        assert_eq!(social.kind, None, "{url}");
+    }
+    let post = extract_social_parts("https://x.com/i/status/1").expect("social host");
+    assert_eq!(post.kind, Some(SocialKind::Post));
+    assert_eq!(post.handle, None);
+}
+
+#[test]
+fn a_www_prefix_does_not_change_what_a_short_host_means() {
+    let short = extract_social_parts("https://www.pin.it/abc").expect("social host");
+    assert_eq!(short.kind, None);
+    let video = extract_social_parts("https://www.youtu.be/dQw4w9WgXcQ").expect("social host");
+    assert_eq!(video.kind, Some(SocialKind::Video));
+    assert_eq!(video.id.as_deref(), Some("dQw4w9WgXcQ"));
+}

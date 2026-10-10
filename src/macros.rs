@@ -20,12 +20,12 @@
 /// | `extract(f)` | `async fn(&Html) -> Vec<String>` | pages → list |
 /// | `filter(p)` | `async fn(Html) -> bool` | pages → pages |
 ///
-/// `fetch` requests each URL exactly as the step before it produced it. A
-/// normalize step such as `all(normalize_urls)` dedupes by rewriting every URL
-/// to its canonical form (`https`, no `www.`, no trailing slash), so after it
-/// `fetch` requests that form, which a few servers answer differently.
+/// `fetch` requests each URL exactly as the step before it produced it, so
+/// dedupe with `all(dedupe_urls)`, which keeps URLs as written.
+/// `all(normalize_urls)` rewrites each URL to its canonical form (`https`, no
+/// `www.`, no trailing slash), which a few servers don't answer.
 ///
-/// A "page" is a `(String, Html)` — its source URL and body. `map`/`extract`/
+/// A "page" is a `(String, Html)` — the URL that served it and its body. `map`/`extract`/
 /// `filter` fan their tool out across the pages with bounded concurrency; a
 /// capturing closure is cloned per page, so it must be `Clone + Send + Sync`.
 ///
@@ -33,14 +33,14 @@
 /// use qrawl::chain;
 /// use qrawl::tools::extract::extract_emails;
 /// use qrawl::tools::map::map_children;
-/// use qrawl::tools::normalize::{normalize_emails, normalize_urls};
+/// use qrawl::tools::normalize::{dedupe_urls, normalize_emails};
 /// use qrawl::types::Context;
 ///
 /// # async fn run(urls: Vec<String>) {
 /// let emails = chain! {
 ///     urls, Context::auto() =>
-///     all(normalize_urls) -> fetch -> map(map_children) ->
-///     all(normalize_urls) -> fetch -> extract(extract_emails) -> all(normalize_emails)
+///     all(dedupe_urls) -> fetch -> map(map_children) ->
+///     all(dedupe_urls) -> fetch -> extract(extract_emails) -> all(normalize_emails)
 /// };
 /// # }
 /// ```
@@ -69,7 +69,7 @@ macro_rules! chain {
     // The one I/O primitive: fetch each URL, drop failures, pair with its body.
     (@op $items:expr, fetch) => {
         $crate::tools::batch::batch($items, $crate::types::get_concurrency(), |url: String| async move {
-            $crate::tools::fetch::fetch_strategy(&url).await.ok().map(|html| (url, html))
+            $crate::tools::fetch::fetch_strategy(&url).await.ok().map(|fetched| (fetched.url, fetched.html))
         })
         .await
         .into_iter()

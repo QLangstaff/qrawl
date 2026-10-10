@@ -48,27 +48,25 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
 }
 
 /// Extract all email addresses from HTML document.
-pub(super) fn extract_email_elements(html: &str) -> Vec<String> {
-    let doc = Html::parse_fragment(html);
+pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
     [
-        extract_with_prefix(&doc, "mailto:"),
-        extract_with_regex(&doc, &EMAIL_REGEX),
+        extract_with_prefix(doc, "mailto:"),
+        extract_with_regex(doc, &EMAIL_REGEX),
     ]
     .concat()
 }
 
 /// Extract all phone numbers from HTML document.
-pub(super) fn extract_phone_elements(html: &str) -> Vec<String> {
-    let doc = Html::parse_fragment(html);
+pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
     [
-        extract_with_prefix(&doc, "tel:"),
-        extract_with_regex(&doc, &PHONE_REGEX),
+        extract_with_prefix(doc, "tel:"),
+        extract_with_regex(doc, &PHONE_REGEX),
     ]
     .concat()
 }
 
 /// Find the first non-empty value for any of the given keys in metadata pairs.
-pub fn find_metadata_value(pairs: &[(String, String)], keys: &[&str]) -> Option<String> {
+pub(super) fn find_metadata_value(pairs: &[(String, String)], keys: &[&str]) -> Option<String> {
     for key in keys {
         for (k, v) in pairs {
             if k.eq_ignore_ascii_case(key) {

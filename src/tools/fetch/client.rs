@@ -33,7 +33,7 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
 
     builder
         .build()
-        .map_err(|e| QrawlError::new(format!("Failed to build client: {}", e)))
+        .map_err(|e| QrawlError::Request(format!("building the client: {}", e)))
 }
 
 /// Follow at most `limit` redirects, and none to a host the domain filter
@@ -45,7 +45,7 @@ fn redirect_policy(limit: usize) -> redirect::Policy {
         }
         match check_domain_filter(attempt.url().as_str()) {
             Ok(()) => attempt.follow(),
-            Err(e) => attempt.error(e),
+            Err(blocked) => attempt.error(blocked),
         }
     })
 }

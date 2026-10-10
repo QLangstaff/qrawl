@@ -7,73 +7,75 @@ use crate::tools::map::map_children;
 use crate::tools::normalize::CanonicalUrl;
 use crate::types::{Context, Jsonld};
 
-use super::types::PageContent;
+use super::types::{CrawlOptions, PageContent};
 use super::utils::{crawl, page_content};
 
-/// Upper bound on crawl depth — a guardrail against a runaway expansion;
-/// `ctx.depth` is clamped to this.
-const MAX_DEPTH: usize = 3;
-
 /// [`qrawl_any_url`](super::qrawl_any_url) over **many** URLs — concurrent,
-/// best-effort, and optionally crawling `ctx.depth` levels of children deep.
+/// best-effort, and optionally crawling their children.
 ///
 /// Every URL becomes a [`PageContent`] by the same steps as `qrawl_any_url`.
 /// A URL that can't be fetched is dropped, so the result holds only
 /// successes: level by level, in completion order within a level.
 ///
-/// - `ctx.depth == 0`: exactly the given URLs.
-/// - `ctx.depth >= 1`: also each fetched page's children (`map_children`), up
-///   to `ctx.depth` levels (at most `MAX_DEPTH`). Each page is crawled once,
-///   at the shallowest level that reaches it.
-/// - `allow_domains`/`block_domains`: a URL on a filtered host fails its fetch,
-///   so it's never returned or expanded.
-/// - `allow_urls`/`block_urls`: filter seeds and children before their fetch.
-/// - `include_schemas`/`exclude_schemas`: filter the *results*. A page counts
-///   (toward `limit` too) only if its structured data includes an include-type
-///   (empty = any) and none of the exclude-types; a page that doesn't count is
-///   still expanded for its children.
-/// - `limit`: stop once this many results are in, cancelling the fetches in
-///   flight; `None` = no cap.
+/// `options` ([`CrawlOptions`]):
+/// - depth 0 (the default): exactly the given URLs. Depth N: also each fetched
+///   page's children (`map_children`), N levels deep. Each page is crawled
+///   once, at the shallowest level that reaches it.
+/// - allow/block URLs: filter seeds and children before their fetch.
+/// - include/exclude schemas: filter the *results*. A page counts (toward the
+///   limit too) only if its structured data includes an include-type (empty =
+///   any) and none of the exclude-types; a page that doesn't count is still
+///   expanded for its children.
+/// - limit: stop once this many pages are returned, cancelling the fetches in
+///   flight.
+///
+/// `ctx`'s domain lists apply to every fetch, so a page on a filtered host is
+/// never requested, returned, or expanded.
 ///
 /// ```no_run
-/// use qrawl::templates::qrawl_many_urls;
+/// use qrawl::templates::{qrawl_many_urls, CrawlOptions};
 /// use qrawl::types::Context;
 ///
 /// # async fn run(seeds: Vec<String>) {
 /// // Just these URLs.
-/// let pages = qrawl_many_urls(seeds.clone(), Context::fast()).await;
+/// let pages = qrawl_many_urls(seeds.clone(), CrawlOptions::default(), Context::fast()).await;
 /// // One level deep, recipe pages only, stop after 30.
-/// let ctx = Context::fast()
+/// let options = CrawlOptions::default()
 ///     .with_depth(1)
 ///     .with_limit(30)
 ///     .with_include_schemas(vec!["Recipe".to_string()]);
-/// let recipes = qrawl_many_urls(seeds, ctx).await;
+/// let recipes = qrawl_many_urls(seeds, options, Context::fast()).await;
 /// # }
 /// ```
-pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent> {
-    let limit = ctx.limit;
-    let depth = ctx.depth.min(MAX_DEPTH);
-    let (include_schemas, exclude_schemas) =
-        (ctx.include_schemas.clone(), ctx.exclude_schemas.clone());
+pub async fn qrawl_many_urls(
+    urls: Vec<String>,
+    options: CrawlOptions,
+    ctx: Context,
+) -> Vec<PageContent> {
+    let CrawlOptions {
+        depth,
+        limit,
+        allow_urls,
+        block_urls,
+        include_schemas,
+        exclude_schemas,
+    } = options;
     let canonical_set = |urls: &[String]| -> HashSet<CanonicalUrl> {
         urls.iter().map(|url| CanonicalUrl::new(url)).collect()
     };
-    let (allow_urls, block_urls) = (
-        canonical_set(&ctx.allow_urls),
-        canonical_set(&ctx.block_urls),
-    );
+    let (allow_urls, block_urls) = (canonical_set(&allow_urls), canonical_set(&block_urls));
     let admit = move |url: &CanonicalUrl| {
         (allow_urls.is_empty() || allow_urls.contains(url)) && !block_urls.contains(url)
     };
 
     let pages = crawl(ctx, urls, depth, admit, move |target, level| async move {
-        let (page, html) = page_content(&target)
+        let (page, fetched) = page_content(&target)
             .await
             .map_err(|e| log::debug!("{} failed: {}", target.address, e))
             .ok()?;
-        log::info!("crawled {}", target.address);
-        let children = match html {
-            Some(html) if level < depth => map_children(&html, &target.address).await,
+        log::info!("crawled {}", page.address);
+        let children = match fetched {
+            Some(fetched) if level < depth => map_children(&fetched.html, &fetched.url).await,
             _ => Vec::new(),
         };
         Some((page, children))

@@ -22,6 +22,7 @@ qrawl url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```json
 {
   "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
+  "address": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   "platform": "YouTube",
   "kind": "Video",
   "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
@@ -55,8 +56,8 @@ use qrawl::tools::transform::transform_markdown;
 async fn main() {
     // HTTP that gets through (retry across browser profiles), rendered to
     // LLM-ready Markdown.
-    let html = fetch_auto("https://www.rust-lang.org").await.unwrap();
-    let markdown = transform_markdown(&html).await;
+    let page = fetch_auto("https://www.rust-lang.org").await.unwrap();
+    let markdown = transform_markdown(&page.html).await;
     println!("{markdown}");
 }
 ```
@@ -67,14 +68,14 @@ Or declare a whole crawl with `chain!`, which fans each step out with bounded co
 use qrawl::chain;
 use qrawl::tools::extract::extract_emails;
 use qrawl::tools::map::map_children;
-use qrawl::tools::normalize::{normalize_emails, normalize_urls};
+use qrawl::tools::normalize::{dedupe_urls, normalize_emails};
 use qrawl::types::Context;
 
 async fn emails(urls: Vec<String>) -> Vec<String> {
     chain! {
         urls, Context::auto() =>
-        all(normalize_urls) -> fetch -> map(map_children) ->
-        all(normalize_urls) -> fetch -> extract(extract_emails) -> all(normalize_emails)
+        all(dedupe_urls) -> fetch -> map(map_children) ->
+        all(dedupe_urls) -> fetch -> extract(extract_emails) -> all(normalize_emails)
     }
 }
 ```
@@ -92,36 +93,34 @@ Small, focused functions — async where they fetch or parse, sync where they do
 | **extract** | Surface structured signal: emails, phones, schema.org types, a preview, a URL's social platform and ids |
 | **map** | Discover URLs from a page: every link, or just the children |
 | **classify** | Answer yes/no: is this URL social, does this page carry a schema.org type |
-| **normalize** | Canonicalize URLs, strip junk HTML, normalize text, dedupe emails / phones / socials |
+| **normalize** | Canonicalize and dedupe URLs, strip junk HTML, normalize text, dedupe emails / phones |
 | **transform** | Render HTML to Markdown |
 | **batch** | Run any async op across a `Vec` with bounded concurrency |
 
-## Templates: pre-built pipelines
+## Templates: any URL in, one shape out
 
-Drop-in compositions of the tools for the common jobs. They're tiny — [read the source](https://github.com/QLangstaff/qrawl/tree/main/src/templates).
+Two compositions of the tools. They're small — [read the source](https://github.com/QLangstaff/qrawl/tree/main/src/templates).
 
 | Template | Give it | Get back |
 |----------|---------|----------|
 | `qrawl_any_url` | any link | one `PageContent` (the `url` command above) |
-| `qrawl_many_urls` | many links | a `PageContent` per page, optionally crawled `depth` levels deep and filtered by domain, URL, or schema.org type |
-| `qrawl_children` | parent URLs | the fetched HTML of each child page |
-| `qrawl_children_stream` | parent URLs | the same crawl as a stream, to stop early |
-| `qrawl_discover_children`, `qrawl_fetch_stream` | parent URLs; a URL stream | the crawl in two halves, to filter the child URLs before fetching them |
-| `qrawl_emails` | site URLs | the deduped emails on each URL, its children, and the pages they link to |
+| `qrawl_many_urls` | many links | a `PageContent` per page, optionally crawled up to 3 levels of children deep and filtered by URL or schema.org type |
 
 ```rust,no_run
-use qrawl::templates::{qrawl_many_urls, PageContent};
+use qrawl::templates::{qrawl_many_urls, CrawlOptions, PageContent};
 use qrawl::types::Context;
 
 // One level deep, recipe pages only, stop after 30.
 async fn recipes(urls: Vec<String>) -> Vec<PageContent> {
-    let ctx = Context::fast()
+    let options = CrawlOptions::default()
         .with_depth(1)
         .with_limit(30)
         .with_include_schemas(vec!["Recipe".to_string()]);
-    qrawl_many_urls(urls, ctx).await
+    qrawl_many_urls(urls, options, Context::fast()).await
 }
 ```
+
+`PageContent` is domain-agnostic. A recipe app reads `structured` for a schema.org `Recipe` and falls back to `title` and `text` for a video's caption; a product finder reads `structured` for `Product`. `Context` carries what every fetch honors: the strategy, the concurrency, and the domains to allow or block.
 
 Full API reference: [docs.rs/qrawl](https://docs.rs/qrawl).
 
@@ -135,7 +134,7 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 |---------|--------|
 | `qrawl url <url>` | any link → `PageContent` |
 | `qrawl urls <url>...` | many links → a `PageContent` each; `--depth` (at most 3), `--limit`, `--allow`, `--block`, `--allow-url`, `--block-url`, `--include-schema`, `--exclude-schema` |
-| `qrawl fetch <url>` | fetch and report the page's size |
+| `qrawl fetch <url>` | fetch and report the page's size and the URL that served it |
 | `qrawl preview <url>` | the page's preview — title, text, author, image, video |
 | `qrawl metadata <input>` | all `<meta>` tags |
 | `qrawl body <input>` | the `<body>` HTML |
@@ -145,10 +144,10 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl has-schema <input> <type>` | whether the page carries a schema.org type |
 | `qrawl phones <input>` | phone numbers |
 | `qrawl page <url>` | every link on the page |
-| `qrawl children <url>` | child URLs under the page that fetch |
-| `qrawl schema <url> <type>` | the page and its children that carry a schema.org type |
-| `qrawl emails <url>` | deduped emails on the URL, its children, and the pages they link to |
-| `qrawl socials <url>` | deduped social links on the URL and the pages two levels of children from it |
+| `qrawl children <url>` | the page's children: the items of its main listing |
+| `qrawl schema <url> <type>` | the addresses of the page and its children that carry a schema.org type |
+| `qrawl emails <input>` | email addresses |
+| `qrawl socials <url>` | deduped social links on the page and two levels of its children |
 
 ## License
 

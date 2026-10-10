@@ -4,70 +4,33 @@ mod tests;
 mod utils;
 
 use crate::types::Html;
-use crate::utils::LINK_SELECTOR;
+use crate::utils::{with_document, LINK_SELECTOR};
 
-/// Map URLs from HTML.
+/// Map URLs from HTML: every `http(s)` link on the page, resolved against
+/// `url`.
 pub async fn map_page(html: &Html, url: &str) -> Vec<String> {
-    let html = html.to_string();
-    let url = url.to_string();
-    tokio::task::spawn_blocking(move || {
-        let base = match url::Url::parse(&url) {
-            Ok(u) => u,
-            Err(_) => return Vec::new(),
-        };
-
-        let doc = scraper::Html::parse_document(&html);
-
+    let Ok(base) = url::Url::parse(url) else {
+        return Vec::new();
+    };
+    with_document(html, move |doc| {
         doc.select(&LINK_SELECTOR)
-            .filter_map(|link| {
-                let href = link
-                    .value()
-                    .attr("href")?
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .trim();
-
-                // Handle protocol-relative URLs (//example.com/path)
-                let url = if href.starts_with("//") {
-                    let full_href = format!("{}:{}", base.scheme(), href);
-                    url::Url::parse(&full_href).ok()?
-                } else {
-                    url::Url::parse(href)
-                        .ok()
-                        .or_else(|| base.join(href).ok())?
-                };
-
-                // Only accept HTTP and HTTPS schemes
-                if matches!(url.scheme(), "http" | "https") {
-                    Some(url.to_string())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|link| utils::resolve_href(link.value().attr("href")?, &base))
+            .map(String::from)
             .collect()
     })
     .await
-    .expect("map_page: spawn_blocking failed")
 }
 
-/// Map child URLs from HTML.
+/// Map child URLs from HTML: the items of the page's main listing (repeated
+/// siblings, a JSON-LD `ItemList`). Empty when the page lists nothing.
 pub async fn map_children(html: &Html, url: &str) -> Vec<String> {
-    let html = html.to_string();
     let url = url.to_string();
-    tokio::task::spawn_blocking(move || {
-        let doc = scraper::Html::parse_document(&html);
-        let children = [
-            utils::map_siblings_from_doc(&doc, &url),
-            utils::map_itemlist_from_doc(&doc, &url),
+    with_document(html, move |doc| {
+        [
+            utils::map_siblings_from_doc(doc, &url),
+            utils::map_itemlist_from_doc(doc, &url),
         ]
-        .concat();
-        if children.is_empty() {
-            vec![url]
-        } else {
-            children
-        }
+        .concat()
     })
     .await
-    .expect("map_children: spawn_blocking failed")
 }

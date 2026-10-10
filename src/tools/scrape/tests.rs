@@ -848,10 +848,7 @@ fn scrape_embed_oembed_fields() {
         "thumbnail_url":"https://i.example/t.jpg",
         "html":"<iframe></iframe>"
     }"#;
-    let r = scrape_embed(
-        &Embed::Oembed(body.to_string()),
-        "https://youtube.com/watch?v=x",
-    );
+    let r = scrape_embed(&Embed::Oembed(body.to_string()));
     assert_eq!(value(&r, "oembed:title"), Some("My Video"));
     assert_eq!(value(&r, "oembed:author_name"), Some("Creator"));
     assert_eq!(
@@ -870,10 +867,10 @@ fn scrape_embed_reddit_comment_is_the_comment_not_its_post() {
             {"data":{"id":"def","body":"the comment","author":"commenter"}}
         ]}}
     ]"#;
-    let r = scrape_embed(
-        &Embed::RedditJson(body.to_string()),
-        "https://reddit.com/r/rust/comments/abc/title/def",
-    );
+    let r = scrape_embed(&Embed::RedditJson {
+        body: body.to_string(),
+        comment_id: Some("def".to_string()),
+    });
     assert_eq!(value(&r, "reddit:title"), Some("Post title"));
     assert_eq!(value(&r, "reddit:text"), Some("the comment"));
     assert_eq!(value(&r, "reddit:author"), Some("u/commenter"));
@@ -889,10 +886,10 @@ fn value<'a>(metadata: &'a Metadata, key: &str) -> Option<&'a str> {
 }
 
 fn reddit(body: &str) -> Metadata {
-    scrape_embed(
-        &Embed::RedditJson(body.to_string()),
-        "https://reddit.com/r/rust/comments/abc/title",
-    )
+    scrape_embed(&Embed::RedditJson {
+        body: body.to_string(),
+        comment_id: None,
+    })
 }
 
 #[test]

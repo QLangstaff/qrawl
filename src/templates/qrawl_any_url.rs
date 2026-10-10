@@ -12,7 +12,8 @@ use super::utils::{page_content, parse_url};
 ///    the item's embed (`fetch_embed`).
 /// 2. `scrape`: both into the same layers — body, metadata pairs, schema.org
 ///    entities (`scrape_all`, `scrape_embed`).
-/// 3. `map` + `normalize`: the page's links, canonical and deduped.
+/// 3. `map` + `normalize`: the page's links, canonical and deduped, kept when
+///    they're social profiles or items.
 /// 4. `extract`: the content fields (`extract_preview`) and the URL's social
 ///    facts (`extract_social_parts`).
 ///

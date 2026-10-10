@@ -179,19 +179,21 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
 /// - `https://example.com/page#section` → `https://example.com/page`
 /// - `https://example.com?utm_source=x&id=7` → `https://example.com/?id=7`
 fn normalize_any_url(url: &str) -> String {
-    // `mailto:`, `ftp://`, and `localhost:8080` already name a scheme, and a
-    // relative path names no host, so none of them gains an `https://` prefix.
+    // `mailto:` and `ftp://` already name a scheme, and a relative path names
+    // no host, so none of them gains an `https://` prefix.
     let url_lower = url.to_ascii_lowercase();
     let is_http = url_lower.starts_with("http://") || url_lower.starts_with("https://");
-    let has_scheme = url.split_once(':').is_some_and(|(scheme, _)| {
+    // `localhost:8080/a` is a host and a port, not a scheme.
+    let has_scheme = url.split_once(':').is_some_and(|(scheme, rest)| {
         !scheme.is_empty()
             && scheme
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+            && !rest.starts_with(|c: char| c.is_ascii_digit())
     });
     let url_with_protocol = if is_http {
         url.to_string()
-    } else if has_scheme || url.starts_with('/') || !url.contains('.') {
+    } else if has_scheme || url.starts_with('/') || !(url.contains('.') || url.contains(':')) {
         return url.to_string();
     } else {
         format!("https://{}", url)

@@ -2,17 +2,20 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 
+use futures_util::future::FutureExt;
 use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::errors::QrawlError;
 use crate::tools::extract::{extract_preview, extract_social_parts};
-use crate::tools::fetch::{fetch_embed, fetch_strategy};
-use crate::tools::map::{map_children, map_page};
+use crate::tools::fetch::{fetch_embed, fetch_strategy, Fetched};
+use crate::tools::map::map_page;
 use crate::tools::normalize::{normalize_urls, CanonicalUrl};
 use crate::tools::scrape::{scrape_all, scrape_embed};
-use crate::types::{Context, Html};
+use crate::types::{Context, Html, Metadata};
+use crate::utils::embed_keys::PREFIXES;
 
 use super::types::PageContent;
 
@@ -34,9 +37,11 @@ pub(super) fn parse_url(input: &str) -> Result<Target, QrawlError> {
     let url = CanonicalUrl::new(input);
     // `CanonicalUrl` is `https` for every HTTP URL and leaves anything else
     // (`mailto:`, `ftp:`, a relative path) as written.
-    let is_http = url::Url::parse(url.as_str()).is_ok_and(|parsed| parsed.scheme() == "https");
+    // An email address parses as a host with a user (`https://a@b.com`).
+    let is_http = url::Url::parse(url.as_str())
+        .is_ok_and(|parsed| parsed.scheme() == "https" && parsed.username().is_empty());
     if !is_http {
-        return Err(QrawlError::new(format!("invalid URL: {input}")));
+        return Err(QrawlError::InvalidUrl(input.to_string()));
     }
     let lower = input.to_ascii_lowercase();
     let address = if lower.starts_with("http://") || lower.starts_with("https://") {
@@ -48,35 +53,35 @@ pub(super) fn parse_url(input: &str) -> Result<Target, QrawlError> {
 }
 
 /// Fetch one [`Target`] and compose its [`PageContent`] from the tools, the
-/// same steps for every URL. Also returns the page [`Html`], when it fetched,
+/// same steps for every URL. Also returns the fetched page, when it fetched,
 /// for a crawl to map children from.
 ///
 /// Fails only when neither the page nor an embed could be fetched.
 pub(super) async fn page_content(
     target: &Target,
-) -> Result<(PageContent, Option<Html>), QrawlError> {
+) -> Result<(PageContent, Option<Fetched>), QrawlError> {
     let url = target.url.as_str();
 
     // fetch: the page, and the platform's embed when the URL has one.
-    let (html, embed) =
+    let (fetched, embed) =
         futures_util::future::join(fetch_strategy(&target.address), fetch_embed(url)).await;
 
     // scrape: the embed and the page into the same layers.
-    let embed_metadata = embed.map_or_else(Vec::new, |embed| scrape_embed(&embed, url));
-    let html = match html {
-        Ok(html) => Some(html),
+    let embed_metadata = embed.map_or_else(Vec::new, |embed| scrape_embed(&embed));
+    let fetched = match fetched {
+        Ok(fetched) => Some(fetched),
         Err(e) if embed_metadata.is_empty() => return Err(e),
         Err(_) => None,
     };
-    let (body, page_metadata, structured) = match &html {
-        Some(html) => scrape_all(html).await,
+    let (body, page_metadata, structured) = match &fetched {
+        Some(fetched) => scrape_all(&fetched.html).await,
         None => (Html::new(String::new()), Vec::new(), Vec::new()),
     };
-    let metadata = [embed_metadata, page_metadata].concat();
+    let metadata = merge_metadata(embed_metadata, page_metadata);
 
     // map + normalize + extract: the social URLs the page links to.
-    let links = match &html {
-        Some(html) => map_page(html, &target.address).await,
+    let links = match &fetched {
+        Some(fetched) => map_page(&fetched.html, &fetched.url).await,
         None => Vec::new(),
     };
     let socials = normalize_urls(&links)
@@ -89,6 +94,9 @@ pub(super) async fn page_content(
     let social = extract_social_parts(url);
     let page = PageContent {
         url: target.url.clone(),
+        address: fetched
+            .as_ref()
+            .map_or_else(|| target.address.clone(), |fetched| fetched.url.clone()),
         platform: social.as_ref().map(|social| social.platform),
         kind: social.as_ref().and_then(|social| social.kind),
         title: preview.title,
@@ -101,7 +109,21 @@ pub(super) async fn page_content(
         socials,
         body: (!body.as_str().is_empty()).then_some(body),
     };
-    Ok((page, html))
+    Ok((page, fetched))
+}
+
+/// The embed's pairs, then the page's — without any page pair that uses an
+/// embed key, so a page's own `<meta>` tags can't pose as its embed.
+fn merge_metadata(embed_metadata: Metadata, page_metadata: Metadata) -> Metadata {
+    let is_embed_key = |key: &str| PREFIXES.iter().any(|prefix| key.starts_with(prefix));
+    embed_metadata
+        .into_iter()
+        .chain(
+            page_metadata
+                .into_iter()
+                .filter(|(key, _)| !is_embed_key(key)),
+        )
+        .collect()
 }
 
 /// Run `work` over `source`, at most `concurrency` at once, and send what
@@ -145,36 +167,6 @@ where
             _ = tx.closed() => return false,
         }
     }
-}
-
-/// Fetch each URL of `urls` as one crawl ([`Context::scope`]) on its own task,
-/// and yield the `(url, html)` pairs that succeed, in completion order.
-pub(super) fn fetch_stream<S>(
-    ctx: Context,
-    urls: S,
-) -> impl Stream<Item = (String, Html)> + Send + 'static
-where
-    S: Stream<Item = String> + Send + 'static,
-{
-    let concurrency = ctx.concurrency.get();
-    let (tx, rx) = mpsc::channel(concurrency);
-    tokio::spawn(ctx.scope(async move {
-        drive(
-            urls,
-            concurrency,
-            &tx,
-            |url| async move {
-                fetch_strategy(&url)
-                    .await
-                    .map_err(|e| log::debug!("fetch failed {}: {}", url, e))
-                    .ok()
-                    .map(|html| (url, html))
-            },
-            |fetched| fetched,
-        )
-        .await;
-    }));
-    receiver_stream(rx)
 }
 
 fn receiver_stream<T: Send + 'static>(
@@ -228,7 +220,20 @@ where
                 futures_util::stream::iter(std::mem::take(&mut frontier)),
                 concurrency,
                 &tx,
-                |target| visit(target, level),
+                // A page whose visit panics is dropped; the rest of the crawl goes on.
+                |target: Target| {
+                    let address = target.address.clone();
+                    let visiting = AssertUnwindSafe(visit(target, level)).catch_unwind();
+                    async move {
+                        match visiting.await {
+                            Ok(visited) => visited,
+                            Err(_) => {
+                                log::error!("crawling {} panicked", address);
+                                None
+                            }
+                        }
+                    }
+                },
                 |visited| {
                     let (item, children) = visited?;
                     next.extend(admit_new(&children));
@@ -243,35 +248,4 @@ where
         }
     }));
     receiver_stream(rx)
-}
-
-/// Fetch the parents, map each one's children, and yield every child once — as
-/// the page links to it, so it can be fetched.
-pub(super) fn discover_children(
-    ctx: Context,
-    urls: Vec<String>,
-) -> impl Stream<Item = String> + Send + 'static {
-    crawl(
-        ctx,
-        urls,
-        0,
-        |_url| true,
-        |target, _level| async move {
-            let html = fetch_strategy(&target.address)
-                .await
-                .map_err(|e| log::debug!("fetch failed {}: {}", target.address, e))
-                .ok()?;
-            Some((map_children(&html, &target.address).await, Vec::new()))
-        },
-    )
-    .flat_map({
-        let mut seen = HashSet::new();
-        move |(_level, children): (usize, Vec<String>)| {
-            let unseen: Vec<String> = children
-                .into_iter()
-                .filter(|child| seen.insert(CanonicalUrl::new(child)))
-                .collect();
-            futures_util::stream::iter(unseen)
-        }
-    })
 }

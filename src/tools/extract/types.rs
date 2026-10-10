@@ -10,6 +10,6 @@ pub struct Preview {
     pub author: Option<String>,
     /// Hero image or thumbnail.
     pub image_url: Option<String>,
-    /// Playable video.
+    /// A video: a file, or an embeddable player.
     pub video_url: Option<String>,
 }

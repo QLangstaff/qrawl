@@ -5,13 +5,13 @@ use url::Url;
 
 use crate::types::{SocialKind, SocialParts, SocialPlatform};
 
-use super::{host_of_url, social_platform};
+use super::{canonical_domain, host_of_url, social_platform};
 
 /// The [`SocialParts`] of a social URL, or `None` when the host isn't a
 /// recognized platform or the input isn't a URL.
 pub(crate) fn social_parts(input: &str) -> Option<SocialParts> {
     let url = Url::parse(input).ok()?;
-    let host = host_of_url(&url)?;
+    let host = canonical_domain(&host_of_url(&url)?);
     let platform = social_platform(&host)?;
 
     let (kind, id, handle) = if is_opaque_shortener(&host) {
@@ -137,7 +137,10 @@ fn instagram_parts(segs: &[&str]) -> Parts {
 
 fn facebook_parts(segs: &[&str], url: &Url) -> Parts {
     match segs {
-        ["watch", ..] => (Some(SocialKind::Video), query_value(url, "v"), None),
+        ["watch", ..] => {
+            let id = query_value(url, "v");
+            (id.is_some().then_some(SocialKind::Video), id, None)
+        }
         [_user, "videos", id, ..] => (Some(SocialKind::Video), Some((*id).to_string()), None),
         [user, "posts", id, ..] => (
             Some(SocialKind::Post),
@@ -206,10 +209,11 @@ fn youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
 
 fn twitter_parts(segs: &[&str]) -> Parts {
     match segs {
+        // `/i/status/{id}` addresses a post without naming its author.
         [user, "status", id, ..] => (
             Some(SocialKind::Post),
             Some((*id).to_string()),
-            Some(format!("@{}", user)),
+            (*user != "i").then(|| format!("@{}", user)),
         ),
         [user] if !is_reserved_twitter(user) => {
             (Some(SocialKind::Profile), None, Some(format!("@{}", user)))
@@ -236,9 +240,31 @@ fn vimeo_parts(segs: &[&str]) -> Parts {
         [id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
-        [user] => (Some(SocialKind::Profile), None, Some((*user).to_string())),
+        [user] if !is_reserved_vimeo(user) => {
+            (Some(SocialKind::Profile), None, Some((*user).to_string()))
+        }
         _ => (None, None, None),
     }
+}
+
+fn is_reserved_vimeo(s: &str) -> bool {
+    matches!(
+        s,
+        "categories"
+            | "channels"
+            | "groups"
+            | "watch"
+            | "features"
+            | "upgrade"
+            | "about"
+            | "help"
+            | "blog"
+            | "jobs"
+            | "log_in"
+            | "join"
+            | "privacy"
+            | "terms"
+    )
 }
 
 // First-segment words that are routes, not usernames.
@@ -262,6 +288,11 @@ fn is_reserved_facebook(s: &str) -> bool {
     matches!(
         s,
         "watch"
+            | "privacy"
+            | "policies"
+            | "legal"
+            | "about"
+            | "login"
             | "share"
             | "share.php"
             | "sharer"
@@ -293,6 +324,12 @@ fn is_reserved_twitter(s: &str) -> bool {
     matches!(
         s,
         "home"
+            | "privacy"
+            | "tos"
+            | "about"
+            | "help"
+            | "jobs"
+            | "download"
             | "share"
             | "intent"
             | "search"

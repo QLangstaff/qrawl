@@ -5,9 +5,9 @@ mod types;
 mod utils;
 
 use crate::types::{Html, Jsonld, Metadata, SocialParts};
-use crate::utils::{schema_types, social_parts};
+use crate::utils::embed_keys::*;
+use crate::utils::{schema_types, social_parts, with_document};
 pub use types::Preview;
-pub use utils::find_metadata_value;
 
 /// Extract the schema.org types in JSON-LD, as short names (`Recipe`), each
 /// once, in first-seen order.
@@ -29,33 +29,33 @@ pub fn extract_preview(metadata: &Metadata) -> Preview {
     let find = |keys: &[&str]| utils::find_metadata_value(metadata, keys);
     Preview {
         title: find(&[
-            "oembed:title",
-            "reddit:title",
+            OEMBED_TITLE,
+            REDDIT_TITLE,
             "title",
             "og:title",
             "twitter:title",
         ]),
         text: find(&[
-            "reddit:text",
+            REDDIT_TEXT,
             "description",
             "og:description",
             "twitter:description",
         ]),
         author: find(&[
-            "oembed:author_name",
-            "reddit:author",
+            OEMBED_AUTHOR_NAME,
+            REDDIT_AUTHOR,
             "author",
             "article:author",
         ]),
         image_url: find(&[
-            "reddit:image",
-            "oembed:thumbnail_url",
+            REDDIT_IMAGE,
+            OEMBED_THUMBNAIL_URL,
             "og:image",
             "twitter:image",
             "og:image:secure_url",
         ]),
         video_url: find(&[
-            "reddit:video",
+            REDDIT_VIDEO,
             "og:video:secure_url",
             "og:video:url",
             "og:video",
@@ -85,16 +85,10 @@ pub fn extract_social_parts(url: &str) -> Option<SocialParts> {
 
 /// Extract email addresses from HTML.
 pub async fn extract_emails(html: &Html) -> Vec<String> {
-    let html = html.to_string();
-    tokio::task::spawn_blocking(move || utils::extract_email_elements(&html))
-        .await
-        .expect("extract_emails: spawn_blocking failed")
+    with_document(html, utils::extract_email_elements).await
 }
 
 /// Extract phone numbers from HTML.
 pub async fn extract_phones(html: &Html) -> Vec<String> {
-    let html = html.to_string();
-    tokio::task::spawn_blocking(move || utils::extract_phone_elements(&html))
-        .await
-        .expect("extract_phones: spawn_blocking failed")
+    with_document(html, utils::extract_phone_elements).await
 }

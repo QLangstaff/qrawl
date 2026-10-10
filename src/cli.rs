@@ -3,8 +3,10 @@
 use clap::{Parser, Subcommand};
 use std::io::Read;
 
+use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions};
+use crate::tools::fetch::Fetched;
 use crate::types::{Context, Html};
-use crate::{runtime, templates, tools};
+use crate::{runtime, tools};
 
 #[derive(Parser)]
 #[command(
@@ -29,7 +31,7 @@ enum Commands {
         url: String,
     },
 
-    /// Crawl Children URLs (the ones that fetch)
+    /// Map Children URLs
     Children {
         /// URL
         url: String,
@@ -93,10 +95,10 @@ enum Commands {
         schema_type: String,
     },
 
-    /// Extract & Normalize Email Addresses from a URL, Its Children, and Their Links
+    /// Extract & Normalize Email Addresses
     Emails {
-        /// URL
-        url: String,
+        /// URL, file path, or `-` for stdin
+        input: String,
     },
 
     /// Extract & Normalize Phone Numbers
@@ -161,10 +163,21 @@ fn print_json<T: serde::Serialize>(value: &T) {
     }
 }
 
-async fn fetch(url: &str, ctx: Context) -> Html {
-    ctx.scope(tools::fetch::fetch_strategy(url))
+fn is_http_url(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Fetch `url`, over `https` when it names no scheme.
+async fn fetch(url: &str, ctx: Context) -> Fetched {
+    let address = if is_http_url(url) {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    };
+    ctx.scope(tools::fetch::fetch_strategy(&address))
         .await
-        .unwrap_or_else(|e| fail(format!("fetching {}: {}", url, e)))
+        .unwrap_or_else(|e| fail(format!("fetching {}: {}", address, e)))
 }
 
 /// Load HTML from stdin (`-`), a URL, or a file path.
@@ -175,18 +188,14 @@ async fn load(input: &str, ctx: Context) -> Html {
             .read_to_string(&mut html)
             .unwrap_or_else(|e| fail(format!("reading stdin: {}", e)));
         Html::new(html)
-    } else if input.starts_with("http://") || input.starts_with("https://") {
-        fetch(input, ctx).await
+    } else if is_http_url(input) {
+        fetch(input, ctx).await.html
     } else {
         Html::new(
             std::fs::read_to_string(input)
                 .unwrap_or_else(|e| fail(format!("reading file '{}': {}", input, e))),
         )
     }
-}
-
-fn urls_of(pages: Vec<(String, Html)>) -> Vec<String> {
-    pages.into_iter().map(|(url, _html)| url).collect()
 }
 
 pub fn run() {
@@ -206,17 +215,22 @@ async fn run_command(command: Commands, ctx: Context) {
                 "Fetching {}... (set RUST_LOG=qrawl=info for profile/timing)",
                 url
             );
-            let html = fetch(&url, ctx).await;
-            eprintln!("✓ Fetched {} bytes", html.as_str().len());
+            let fetched = fetch(&url, ctx).await;
+            eprintln!(
+                "✓ Fetched {} bytes from {}",
+                fetched.html.as_str().len(),
+                fetched.url
+            );
         }
 
         Commands::Children { url } => {
-            print_json(&urls_of(templates::qrawl_children(vec![url], ctx).await));
+            let fetched = fetch(&url, ctx).await;
+            print_json(&tools::map::map_children(&fetched.html, &fetched.url).await);
         }
 
         Commands::Page { url } => {
-            let html = fetch(&url, ctx).await;
-            print_json(&tools::map::map_page(&html, &url).await);
+            let fetched = fetch(&url, ctx).await;
+            print_json(&tools::map::map_page(&fetched.html, &fetched.url).await);
         }
 
         Commands::Body { input } => {
@@ -238,7 +252,7 @@ async fn run_command(command: Commands, ctx: Context) {
         }
 
         Commands::Preview { url } => {
-            let metadata = tools::scrape::scrape_metadata(&fetch(&url, ctx).await).await;
+            let metadata = tools::scrape::scrape_metadata(&fetch(&url, ctx).await.html).await;
             print_json(&tools::extract::extract_preview(&metadata));
         }
 
@@ -256,13 +270,21 @@ async fn run_command(command: Commands, ctx: Context) {
         }
 
         Commands::Schema { url, schema_type } => {
-            let ctx = ctx.with_depth(1).with_include_schemas(vec![schema_type]);
-            let pages = templates::qrawl_many_urls(vec![url], ctx).await;
-            print_json(&pages.into_iter().map(|page| page.url).collect::<Vec<_>>());
+            let options = CrawlOptions::default()
+                .with_depth(1)
+                .with_include_schemas(vec![schema_type]);
+            let pages = qrawl_many_urls(vec![url], options, ctx).await;
+            print_json(
+                &pages
+                    .into_iter()
+                    .map(|page| page.address)
+                    .collect::<Vec<_>>(),
+            );
         }
 
-        Commands::Emails { url } => {
-            print_json(&templates::qrawl_emails(vec![url], ctx).await);
+        Commands::Emails { input } => {
+            let emails = tools::extract::extract_emails(&load(&input, ctx).await).await;
+            print_json(&tools::normalize::normalize_emails(&emails));
         }
 
         Commands::Phones { input } => {
@@ -271,13 +293,13 @@ async fn run_command(command: Commands, ctx: Context) {
         }
 
         Commands::Socials { url } => {
-            // Depth 2: the seed, its children, and their children.
-            let pages = templates::qrawl_many_urls(vec![url], ctx.with_depth(2)).await;
+            let options = CrawlOptions::default().with_depth(2);
+            let pages = qrawl_many_urls(vec![url], options, ctx).await;
             let socials: Vec<String> = pages.into_iter().flat_map(|page| page.socials).collect();
             print_json(&tools::normalize::normalize_urls(&socials));
         }
 
-        Commands::Url { url } => match templates::qrawl_any_url(&url, ctx).await {
+        Commands::Url { url } => match qrawl_any_url(&url, ctx).await {
             Ok(page) => print_json(&page),
             Err(e) => fail(e),
         },
@@ -294,15 +316,19 @@ async fn run_command(command: Commands, ctx: Context) {
             exclude_schemas,
         } => {
             let ctx = ctx
-                .with_depth(depth)
-                .with_limit(limit)
                 .with_allow_domains(allow_domains)
-                .with_block_domains(block_domains)
+                .with_block_domains(block_domains);
+            let options = CrawlOptions::default()
+                .with_depth(depth)
                 .with_allow_urls(allow_urls)
                 .with_block_urls(block_urls)
                 .with_include_schemas(include_schemas)
                 .with_exclude_schemas(exclude_schemas);
-            print_json(&templates::qrawl_many_urls(urls, ctx).await);
+            let options = match limit {
+                Some(limit) => options.with_limit(limit),
+                None => options,
+            };
+            print_json(&qrawl_many_urls(urls, options, ctx).await);
         }
     }
 }

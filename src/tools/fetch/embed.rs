@@ -37,28 +37,26 @@ pub async fn fetch_embed(url: &str) -> Option<Embed> {
 }
 
 /// Wraps a response body as the [`Embed`] its endpoint serves.
-type EmbedOf = fn(String) -> Embed;
+type EmbedOf = Box<dyn FnOnce(String) -> Embed + Send>;
 
 /// The request that serves `url`'s embed, and the [`Embed`] its response is.
 pub(super) fn embed_request(url: &str) -> Option<(String, EmbedOf)> {
     let social = social_parts(url)?;
-    match social.platform {
-        SocialPlatform::Reddit
-            if matches!(social.kind, Some(SocialKind::Post | SocialKind::Comment)) =>
-        {
-            Some((reddit_json_url(url), Embed::RedditJson))
+    match (social.platform, social.kind) {
+        (SocialPlatform::Reddit, Some(kind @ (SocialKind::Post | SocialKind::Comment))) => {
+            let comment_id = social.id.filter(|_| kind == SocialKind::Comment);
+            Some((
+                reddit_json_url(url),
+                Box::new(move |body| Embed::RedditJson { body, comment_id }),
+            ))
         }
-        SocialPlatform::TikTok
-        | SocialPlatform::YouTube
-        | SocialPlatform::Pinterest
-        | SocialPlatform::Vimeo
-            if matches!(
-                social.kind,
-                Some(SocialKind::Video | SocialKind::Post | SocialKind::Photo)
-            ) =>
-        {
-            Some((oembed_request_url(&social)?, Embed::Oembed))
-        }
+        (
+            SocialPlatform::TikTok
+            | SocialPlatform::YouTube
+            | SocialPlatform::Pinterest
+            | SocialPlatform::Vimeo,
+            Some(SocialKind::Video | SocialKind::Post | SocialKind::Photo),
+        ) => Some((oembed_request_url(&social)?, Box::new(Embed::Oembed))),
         _ => None,
     }
 }

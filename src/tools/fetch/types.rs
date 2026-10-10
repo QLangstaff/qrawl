@@ -1,27 +1,21 @@
-use serde::{Deserialize, Serialize};
+use crate::types::Html;
 
-/// Fetch Profiles
-///
-/// Each profile represents a platform with its natural default browser so User-Agent and headers are always consistent:
-/// - `Windows` → Chrome (most popular on Windows)
-/// - `MacOS` → Safari (native browser)
-/// - `IOS` → Safari (only real browser on iPhone)
-/// - `Android` → Chrome (most popular on Android)
-/// - `Minimal` → Basic Mozilla (no platform-specific headers)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FetchProfile {
-    /// Minimal (just User-Agent)
+/// A fetched page: its HTML and the URL that served it, which differs from
+/// the URL requested when the server redirected. Relative links in `html`
+/// resolve against `url`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub url: String,
+    pub html: Html,
+}
+
+/// A browser a request presents itself as: its User-Agent and matching headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum FetchProfile {
+    /// Just a User-Agent.
     Minimal,
-
-    /// Chrome on Windows (most popular desktop platform)
+    /// Chrome on Windows.
     Windows,
-
-    /// Safari on macOS
-    MacOS,
-
-    /// Safari on iPhone (most popular mobile browser)
-    IOS,
-
-    /// Chrome on Android
-    Android,
+    /// Safari on iPhone.
+    Ios,
 }

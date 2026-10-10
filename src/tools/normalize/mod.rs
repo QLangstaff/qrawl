@@ -80,3 +80,14 @@ pub fn normalize_phones(phones: &[String]) -> Vec<String> {
 pub fn normalize_urls(urls: &[String]) -> Vec<String> {
     utils::normalize_each(urls, utils::normalize_url)
 }
+
+/// Deduplicate URLs by their canonical form ([`normalize_url`]), keeping each
+/// as written — unlike [`normalize_urls`], whose output is a key, not always
+/// an address a server answers.
+pub fn dedupe_urls(urls: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    urls.iter()
+        .filter(|url| seen.insert(normalize_url(url)))
+        .cloned()
+        .collect()
+}

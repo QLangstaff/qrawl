@@ -9,8 +9,8 @@ use crate::utils::{canonical_domain, host_matches, host_of};
 /// Whether `url`'s host passes the allow/block lists. An empty list filters
 /// nothing; a blocked host loses even when it's also allowed; a URL with no
 /// host passes only when there's no allowlist. Hosts and listed domains
-/// compare in [`canonical_domain`] form, so `WWW.Example.com` lists
-/// `example.com`.
+/// compare in [`canonical_domain`] form, and a listed URL counts as its host,
+/// so `WWW.Example.com` and `https://example.com/` both list `example.com`.
 pub(super) fn is_url_allowed(
     url: &str,
     allow_domains: &[String],
@@ -24,15 +24,17 @@ pub(super) fn is_url_allowed(
     };
     let host = canonical_domain(&host);
     let matches_any = |domains: &[String]| {
-        domains
-            .iter()
-            .any(|domain| host_matches(&host, &canonical_domain(domain)))
+        domains.iter().any(|listed| {
+            let domain = host_of(listed).unwrap_or_else(|| listed.clone());
+            host_matches(&host, &canonical_domain(&domain))
+        })
     };
     !matches_any(block_domains) && (allow_domains.is_empty() || matches_any(allow_domains))
 }
 
-/// Enforce the enclosing `Context`'s domain lists on a URL about to be fetched,
-/// or one a redirect landed on. Outside a `Context::scope` nothing is filtered.
+/// Enforce the enclosing `Context`'s domain lists on a URL about to be
+/// requested: the one given, or one a redirect points to. Outside a
+/// `Context::scope` nothing is filtered.
 pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
     let is_allowed =
         with_context(|ctx| is_url_allowed(url, &ctx.allow_domains, &ctx.block_domains))
@@ -40,7 +42,7 @@ pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
     if is_allowed {
         Ok(())
     } else {
-        Err(QrawlError::new(format!("blocked by domain filter: {url}")))
+        Err(QrawlError::BlockedDomain(url.to_string()))
     }
 }
 
@@ -50,12 +52,10 @@ pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
 
 const MIN_BODY_LEN: usize = 500;
 
-/// Bot-challenge markers — vendor / challenge-page-specific strings that a 200-OK
-/// *soft* block carries but ordinary page text does not. Looser phrases ("bot
-/// detection", "suspicious activity", "please enable javascript and cookies") are
-/// deliberately excluded: they appear in legitimate content and caused false
-/// rejections.
-const SUSPICIOUS_PATTERNS: [&str; 9] = [
+/// Bot-challenge markers: strings a 200-OK *soft* block carries in its
+/// challenge markup. A vendor's name alone (`perimeterx`) isn't one — its
+/// sensor script loads on ordinary pages.
+const SUSPICIOUS_PATTERNS: [&str; 8] = [
     "verify you are a human",
     "please complete the captcha",
     "solve this captcha",
@@ -64,7 +64,6 @@ const SUSPICIOUS_PATTERNS: [&str; 9] = [
     "cf-captcha-container",
     "px-captcha",
     "blocked by cloudflare",
-    "perimeterx",
 ];
 
 /// Validate that an HTTP response carries scrapable HTML.
@@ -90,17 +89,17 @@ pub(super) fn validate_response(
 ) -> Result<(), QrawlError> {
     check_status(status_code)?;
     if body.len() < MIN_BODY_LEN {
-        return Err(QrawlError::new("invalid content - body is too short"));
+        return Err(QrawlError::NotHtml("body is too short"));
     }
     let lower = body.to_ascii_lowercase();
     if !lower.contains("<html") && !lower.contains("<!doctype") {
-        return Err(QrawlError::new("invalid content - missing HTML markers"));
+        return Err(QrawlError::NotHtml("missing HTML markers"));
     }
     if let Some(pattern) = SUSPICIOUS_PATTERNS
         .iter()
         .find(|pattern| lower.contains(**pattern))
     {
-        return Err(QrawlError::new(format!("suspicious content - {}", pattern)));
+        return Err(QrawlError::BotChallenge(pattern));
     }
     Ok(())
 }
@@ -110,9 +109,6 @@ pub(super) fn check_status(status_code: reqwest::StatusCode) -> Result<(), Qrawl
     if status_code.is_success() {
         Ok(())
     } else {
-        Err(QrawlError::new(format!(
-            "HTTP status {}",
-            status_code.as_u16()
-        )))
+        Err(QrawlError::Status(status_code.as_u16()))
     }
 }

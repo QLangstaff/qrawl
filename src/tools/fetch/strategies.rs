@@ -27,6 +27,10 @@ pub(super) static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy:
 /// fan-out; this caps per-host fan-out independently.
 pub(super) const PER_HOST_CONCURRENCY: usize = 8;
 
+/// Hosts the two per-host maps remember before forgetting the idle ones, so a
+/// long-running process that crawls the open web doesn't grow without bound.
+const MAX_TRACKED_HOSTS: usize = 10_000;
+
 /// The profiles a strategy tries, in order.
 fn profiles(strategy: FetchStrategy) -> &'static [FetchProfile] {
     match strategy {
@@ -34,7 +38,7 @@ fn profiles(strategy: FetchStrategy) -> &'static [FetchProfile] {
         FetchStrategy::Auto => &[
             FetchProfile::Minimal,
             FetchProfile::Windows,
-            FetchProfile::IOS,
+            FetchProfile::Ios,
         ],
     }
 }
@@ -52,6 +56,11 @@ fn attempt_timeout(strategy: FetchStrategy) -> Duration {
 /// the cap.
 pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemaphorePermit> {
     let host = host?;
+    if HOST_SEMAPHORES.len() >= MAX_TRACKED_HOSTS {
+        // A semaphore only the map holds has no fetch waiting on it.
+        HOST_SEMAPHORES.retain(|_, sema| Arc::strong_count(sema) > 1);
+        HOST_PROFILE_CACHE.clear();
+    }
     let sema = HOST_SEMAPHORES
         .entry(host.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
@@ -68,16 +77,21 @@ fn client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
     Ok(client)
 }
 
-/// Fetch a page as text, validated as scrapable HTML.
-pub(super) async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<String, QrawlError> {
+/// Fetch a page as text, validated as scrapable HTML, with the URL that
+/// served it.
+pub(super) async fn fetch_html(
+    url: &str,
+    strategy: FetchStrategy,
+) -> Result<(String, String), QrawlError> {
     cascade(url, strategy, None, |response| async move {
         let status = response.status();
+        let served_by = response.url().to_string();
         let body = response
             .text()
             .await
-            .map_err(|e| QrawlError::new(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?;
         validate_response(status, &body)?;
-        Ok(body)
+        Ok((served_by, body))
     })
     .await
 }
@@ -94,7 +108,7 @@ pub(super) async fn fetch_bytes(
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| QrawlError::new(format!("Failed to read response bytes: {}", e)))?;
+            .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?;
         Ok(bytes.to_vec())
     })
     .await
@@ -155,15 +169,16 @@ where
                 );
                 return Ok(value);
             }
-            Err(e) => errors.push(format!("{:?}: {}", profile, e)),
+            // A 404 or a blocked domain is the same under every profile.
+            Err(e) if e.is_final() => return Err(e),
+            Err(e) => {
+                log::debug!("{} via {:?} failed: {}", url, profile, e);
+                errors.push(e);
+            }
         }
     }
 
-    Err(QrawlError::new(format!(
-        "All {} profiles failed: [{}]",
-        errors.len(),
-        errors.join("; ")
-    )))
+    Err(QrawlError::AllProfilesFailed(errors))
 }
 
 async fn send(
@@ -184,5 +199,11 @@ async fn send(
         .timeout(timeout)
         .send()
         .await
-        .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))
+        .map_err(|e| {
+            // A redirect the domain filter refused surfaces as a reqwest error.
+            match std::error::Error::source(&e).and_then(|s| s.downcast_ref::<QrawlError>()) {
+                Some(blocked) => blocked.clone(),
+                None => QrawlError::Request(e.to_string()),
+            }
+        })
 }

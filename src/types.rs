@@ -1,6 +1,5 @@
 //! Shared Types
 
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
@@ -23,44 +22,26 @@ pub const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(1000) {
     None => panic!("default concurrency is nonzero"),
 };
 
-/// Context to chain tools
+/// How every fetch inside a [`Context::scope`] behaves.
 #[derive(Debug, Clone)]
 pub struct Context {
     pub fetch_strategy: FetchStrategy,
-    /// Max fetches in flight. Nonzero, because a crawl with no slots never
-    /// finishes.
+    /// Max pages in flight (each may also fetch its embed). Nonzero, because
+    /// a crawl with no slots never finishes.
     pub concurrency: NonZeroUsize,
-    pub depth: usize,
-    /// Max results to return. `None` = unbounded.
-    pub limit: Option<usize>,
     /// Fetch only these domains, redirects included. Empty = allow all.
     pub allow_domains: Vec<String>,
     /// Never request these domains, redirects included. Empty = block none.
     pub block_domains: Vec<String>,
-    /// `qrawl_many_urls` crawls only these URLs. Empty = allow all.
-    pub allow_urls: Vec<String>,
-    /// `qrawl_many_urls` skips these URLs. Empty = block none.
-    pub block_urls: Vec<String>,
-    /// `qrawl_many_urls` returns only pages with one of these schema.org types. Empty = include all.
-    pub include_schemas: Vec<String>,
-    /// `qrawl_many_urls` drops pages with one of these schema.org types. Empty = exclude none.
-    pub exclude_schemas: Vec<String>,
 }
 
 impl Context {
-    /// Base context: all defaults, `fetch_strategy` chosen by the caller.
     fn with_strategy(fetch_strategy: FetchStrategy) -> Self {
         Self {
             fetch_strategy,
             concurrency: DEFAULT_CONCURRENCY,
-            depth: 0,
-            limit: None,
             allow_domains: Vec::new(),
             block_domains: Vec::new(),
-            allow_urls: Vec::new(),
-            block_urls: Vec::new(),
-            include_schemas: Vec::new(),
-            exclude_schemas: Vec::new(),
         }
     }
 
@@ -79,16 +60,6 @@ impl Context {
         self
     }
 
-    pub fn with_depth(mut self, depth: usize) -> Self {
-        self.depth = depth;
-        self
-    }
-
-    pub fn with_limit(mut self, limit: impl Into<Option<usize>>) -> Self {
-        self.limit = limit.into();
-        self
-    }
-
     pub fn with_allow_domains(mut self, domains: Vec<String>) -> Self {
         self.allow_domains = domains;
         self
@@ -99,56 +70,16 @@ impl Context {
         self
     }
 
-    pub fn with_allow_urls(mut self, urls: Vec<String>) -> Self {
-        self.allow_urls = urls;
-        self
-    }
-
-    pub fn with_block_urls(mut self, urls: Vec<String>) -> Self {
-        self.block_urls = urls;
-        self
-    }
-
-    pub fn with_include_schemas(mut self, schemas: Vec<String>) -> Self {
-        self.include_schemas = schemas;
-        self
-    }
-
-    pub fn with_exclude_schemas(mut self, schemas: Vec<String>) -> Self {
-        self.exclude_schemas = schemas;
-        self
-    }
-
-    /// Run `future` as one crawl: every fetch inside it reads this context and
-    /// shares one fetch cache, so the same URL string fetched again after its
-    /// first fetch completed costs no request. A fetch outside any scope uses the defaults
-    /// and no cache.
+    /// Run `future` with this context: every fetch inside it uses this
+    /// strategy and these domain lists. A fetch outside any scope uses the
+    /// defaults.
     pub async fn scope<F: Future>(self, future: F) -> F::Output {
-        CTX.scope(
-            Arc::new(self),
-            FETCH_CACHE.scope(Arc::new(DashMap::new()), future),
-        )
-        .await
+        CTX.scope(Arc::new(self), future).await
     }
 }
 
 tokio::task_local! {
     static CTX: Arc<Context>;
-    /// Fetched HTML by the URL fetched, for the crawl [`Context::scope`] runs.
-    static FETCH_CACHE: Arc<DashMap<String, String>>;
-}
-
-pub(crate) fn fetch_cache_get(url: &str) -> Option<String> {
-    FETCH_CACHE
-        .try_with(|cache| cache.get(url).map(|html| html.clone()))
-        .ok()
-        .flatten()
-}
-
-pub(crate) fn fetch_cache_put(url: &str, html: &str) {
-    let _ = FETCH_CACHE.try_with(|cache| {
-        cache.insert(url.to_string(), html.to_string());
-    });
 }
 
 /// Read a field of the enclosing [`Context`], or `None` outside a
@@ -161,6 +92,7 @@ pub fn get_fetch_strategy() -> FetchStrategy {
     with_context(|ctx| ctx.fetch_strategy).unwrap_or(FetchStrategy::Auto)
 }
 
+#[doc(hidden)]
 pub fn get_concurrency() -> NonZeroUsize {
     with_context(|ctx| ctx.concurrency).unwrap_or(DEFAULT_CONCURRENCY)
 }
@@ -327,8 +259,12 @@ pub enum SocialKind {
 /// HTML page — fetched by `fetch_embed`, read by `scrape_embed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Embed {
-    /// Reddit's `.json` representation of a post or comment.
-    RedditJson(String),
+    /// Reddit's `.json` representation of a post, or of the comment
+    /// `comment_id` under it.
+    RedditJson {
+        body: String,
+        comment_id: Option<String>,
+    },
     /// A provider's oEmbed JSON.
     Oembed(String),
 }

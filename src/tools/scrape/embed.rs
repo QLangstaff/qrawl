@@ -4,12 +4,12 @@
 
 use serde_json::Value;
 
-use crate::types::{Embed, Metadata, SocialKind};
-use crate::utils::social_parts;
+use crate::types::{Embed, Metadata};
+use crate::utils::embed_keys::*;
 
-pub(super) fn scrape_embed(embed: &Embed, url: &str) -> Metadata {
+pub(super) fn scrape_embed(embed: &Embed) -> Metadata {
     let fields = match embed {
-        Embed::RedditJson(body) => reddit_fields(body, url),
+        Embed::RedditJson { body, comment_id } => reddit_fields(body, comment_id.as_deref()),
         Embed::Oembed(body) => oembed_fields(body),
     };
     fields
@@ -31,18 +31,18 @@ fn oembed_fields(body: &str) -> Fields {
         return Vec::new();
     };
     vec![
-        ("oembed:title", json_string(value.get("title"))),
-        ("oembed:author_name", json_string(value.get("author_name"))),
+        (OEMBED_TITLE, json_string(value.get("title"))),
+        (OEMBED_AUTHOR_NAME, json_string(value.get("author_name"))),
         (
-            "oembed:thumbnail_url",
+            OEMBED_THUMBNAIL_URL,
             json_string(value.get("thumbnail_url")),
         ),
     ]
 }
 
-/// The post's fields — or, when `url` names a comment, that comment's text
-/// and author under its post's title.
-fn reddit_fields(body: &str, url: &str) -> Fields {
+/// The post's fields — or, for `comment_id`, that comment's text and author
+/// under its post's title.
+fn reddit_fields(body: &str, comment_id: Option<&str>) -> Fields {
     let Some(value) = parse(body) else {
         return Vec::new();
     };
@@ -50,33 +50,26 @@ fn reddit_fields(body: &str, url: &str) -> Fields {
         return Vec::new();
     };
     let author = |item: &Value| json_string(item.get("author")).map(|a| format!("u/{}", a));
-    let title = ("reddit:title", json_string(post.get("title")));
+    let title = (REDDIT_TITLE, json_string(post.get("title")));
 
-    let social = social_parts(url);
-    if social.as_ref().and_then(|social| social.kind) == Some(SocialKind::Comment) {
-        let comment = social
-            .and_then(|social| social.id)
-            .and_then(|id| reddit_comment(&value, &id));
-        return match comment {
+    if let Some(comment_id) = comment_id {
+        return match reddit_comment(&value, comment_id) {
             Some(comment) => vec![
                 title,
-                ("reddit:text", json_string(comment.get("body"))),
-                ("reddit:author", author(comment)),
+                (REDDIT_TEXT, json_string(comment.get("body"))),
+                (REDDIT_AUTHOR, author(comment)),
             ],
             None => Vec::new(),
         };
     }
     vec![
         title,
-        ("reddit:text", json_string(post.get("selftext"))),
-        ("reddit:author", author(post)),
-        ("reddit:image", reddit_image(post)),
-        ("reddit:video", reddit_video(post)),
+        (REDDIT_TEXT, json_string(post.get("selftext"))),
+        (REDDIT_AUTHOR, author(post)),
+        (REDDIT_IMAGE, reddit_image(post)),
+        (REDDIT_VIDEO, reddit_video(post)),
         // A link post's destination: the page the post is about.
-        (
-            "reddit:url",
-            json_string(post.get("url_overridden_by_dest")),
-        ),
+        (REDDIT_URL, json_string(post.get("url_overridden_by_dest"))),
     ]
 }
 
