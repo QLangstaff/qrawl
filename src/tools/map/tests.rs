@@ -390,7 +390,7 @@ async fn map_children_stays_fast_on_a_thousand_siblings() {
 
 #[tokio::test]
 async fn map_children_finds_long_repeating_units_every_time() {
-    for unit in [3usize, 9, 10, 12, 16, 20, 24, 30] {
+    for unit in [3usize, 9, 10, 12, 16, 20, 24, 30, 48, 64] {
         let item = |n: usize| {
             let filler: String = (1..unit).map(|tag| format!("<x{tag}>t</x{tag}>")).collect();
             format!("<div><a href=\"/item{n}\">Item {n}</a></div>{filler}")
@@ -402,6 +402,30 @@ async fn map_children_finds_long_repeating_units_every_time() {
         for _ in 0..6 {
             let urls = map_children(&html.as_str().into(), "https://example.com/").await;
             assert_eq!(urls.len(), 6, "unit of {unit} siblings");
+            // The whole unit, not a slice of it that happens to hold the link.
+            let siblings = map_body_siblings(&html);
+            assert_eq!(siblings.len(), 6, "unit of {unit} siblings");
+            assert_eq!(siblings[0], item(0), "unit of {unit} siblings");
         }
+    }
+}
+
+#[tokio::test]
+async fn map_children_finds_units_of_distinct_siblings_then_filler() {
+    // Two distinctive siblings, then paragraphs: every short distance matches
+    // inside the paragraphs, and only the unit's length matches the whole.
+    for (unit, items) in [(20usize, 3usize), (24, 4), (40, 6), (64, 10)] {
+        let item = |n: usize| {
+            format!(
+                "<h2><a href=\"/item{n}\">Item {n}</a></h2><div><img src=\"/i{n}.png\"></div>{}",
+                "<p>text</p>".repeat(unit - 2)
+            )
+        };
+        let html = format!(
+            "<html><body><main>{}</main></body></html>",
+            (0..items).map(item).collect::<String>()
+        );
+        let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+        assert_eq!(urls.len(), items, "{items} units of {unit} siblings");
     }
 }

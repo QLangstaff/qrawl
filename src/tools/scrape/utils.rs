@@ -1,4 +1,6 @@
 use scraper::Selector;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::types::{Html, Jsonld, Metadata};
@@ -20,6 +22,12 @@ static MICRODATA_SELECTOR: LazyLock<Selector> =
 /// filtered in code (a `typeof` that also has `property` is a nested resource).
 static RDFA_SELECTOR: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("[typeof]").expect("valid rdfa selector"));
+
+/// Selectors for property elements, to tell when one encloses another.
+static MICRODATA_PROP_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("[itemprop]").expect("valid microdata selector"));
+static RDFA_PROP_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("[property]").expect("valid rdfa selector"));
 
 /// Selector for any element with a `class` attribute. Microformats are
 /// class-based (`h-*` roots, `p-*`/`u-*`/`dt-*`/`e-*` properties), so candidates
@@ -187,7 +195,7 @@ pub(super) fn scrape_metadata_from_doc(document: &scraper::Html) -> Metadata {
 // ---------------------------------------------------------------------------
 
 pub(super) fn scrape_microdata_from_doc(document: &scraper::Html) -> Jsonld {
-    reset_copy_budget();
+    reset_copy_budget(document);
     document
         .select(&MICRODATA_SELECTOR)
         // Top-level items only: an `itemscope` element that also has `itemprop`
@@ -234,11 +242,20 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     let mut props = Vec::new();
     collect_properties(item, "itemscope", "itemprop", &mut props);
     for (el, names) in props {
-        let value = if el.value().attr("itemscope").is_some() {
-            microdata_item_to_value(&el) // nested item
+        let is_nested_item = el.value().attr("itemscope").is_some();
+        // A property enclosing another holds that one's text again: a copy.
+        let is_copy = !is_nested_item && el.select(&MICRODATA_PROP_SELECTOR).next().is_some();
+        if is_copy && !has_copy_budget() {
+            continue;
+        }
+        let value = if is_nested_item {
+            microdata_item_to_value(&el)
         } else {
             microdata_prop_value(&el)
         };
+        if is_copy && !spend_copy_budget(&value) {
+            continue;
+        }
         insert_under_names(&mut obj, &names, value, insert_prop);
     }
 
@@ -275,23 +292,30 @@ fn collect_properties<'a>(
     }
 }
 
-/// Bytes one document may spend on *copies* of a value. An attribute may list
-/// several property names, and its value belongs to each. The first name gets
-/// the value for free, so a page that names each property once is never cut;
-/// every further copy is charged, so nested items under several names — or
-/// one long text under thousands — can't turn a small page into gigabytes.
-const COPY_BUDGET_BYTES: usize = 1024 * 1024;
+/// Bytes of *copies* one document may yield per byte of its markup, over
+/// [`COPY_BUDGET_FLOOR_BYTES`]. A value is stored free under the first
+/// property that holds it, so a page is never cut for what it says once.
+/// Every further storing is a copy and is charged: the value under each
+/// further name its attribute lists, a property's text when it encloses
+/// another property's, a microformat element read under each further class.
+/// A page copies a few times its size at most; one that lists thousands of
+/// names, or nests a property hundreds deep, would copy gigabytes.
+const COPY_BYTES_PER_MARKUP_BYTE: usize = 8;
+
+/// The copy budget every document has, however small its markup.
+const COPY_BUDGET_FLOOR_BYTES: usize = 64 * 1024;
 
 thread_local! {
-    static COPY_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(COPY_BUDGET_BYTES) };
+    static COPY_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Start a document's walk with a full budget.
-fn reset_copy_budget() {
-    COPY_BUDGET.with(|budget| budget.set(COPY_BUDGET_BYTES));
+/// Start a document's walk with the budget its size allows.
+fn reset_copy_budget(document: &scraper::Html) {
+    let budget = document.html().len() * COPY_BYTES_PER_MARKUP_BYTE + COPY_BUDGET_FLOOR_BYTES;
+    COPY_BUDGET.with(|left| left.set(budget));
 }
 
-/// What one copy of `value` costs.
+/// What one copy of `value` costs: its text and its keys.
 fn copy_cost(value: &serde_json::Value) -> usize {
     let mut cost = 0usize;
     let mut pending = vec![value];
@@ -310,19 +334,23 @@ fn copy_cost(value: &serde_json::Value) -> usize {
     cost
 }
 
-/// Whether any budget is left. Checked before a copy is even priced, so a
+/// Whether any budget is left. Checked before a copy is even read, so a
 /// document that has spent its budget pays nothing more for asking.
 fn has_copy_budget() -> bool {
-    COPY_BUDGET.with(|budget| budget.get() > 0)
+    COPY_BUDGET.with(|left| left.get() > 0)
 }
 
-/// Take `cost` from the budget. A copy the budget can't cover ends it: no
-/// later copy is made either.
-fn spend_copy_budget(cost: usize) -> bool {
-    COPY_BUDGET.with(|budget| {
-        let left = budget.get();
-        budget.set(left.saturating_sub(cost));
-        left >= cost
+/// Take one copy of `value` from the budget. A copy the budget can't cover
+/// ends it: no later copy is made either.
+fn spend_copy_budget(value: &serde_json::Value) -> bool {
+    COPY_BUDGET.with(|left| {
+        if left.get() == 0 {
+            return false;
+        }
+        let cost = copy_cost(value);
+        let before = left.get();
+        left.set(before.saturating_sub(cost));
+        before >= cost
     })
 }
 
@@ -338,15 +366,11 @@ fn insert_under_names(
     let Some(first) = names.next() else {
         return;
     };
-    let mut extra = names.peekable();
-    if extra.peek().is_some() && has_copy_budget() {
-        let cost = copy_cost(&value);
-        for name in extra {
-            if !spend_copy_budget(cost) {
-                break;
-            }
-            insert(obj, name, value.clone());
+    for name in names {
+        if !spend_copy_budget(&value) {
+            break;
         }
+        insert(obj, name, value.clone());
     }
     insert(obj, first, value);
 }
@@ -417,7 +441,7 @@ fn microdata_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 pub(super) fn scrape_rdfa_from_doc(document: &scraper::Html) -> Jsonld {
-    reset_copy_budget();
+    reset_copy_budget(document);
     document
         .select(&RDFA_SELECTOR)
         // Top-level typed resources: a `typeof` that also has `property` is a
@@ -464,11 +488,20 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     let mut props = Vec::new();
     collect_properties(item, "typeof", "property", &mut props);
     for (el, names) in props {
-        let value = if el.value().attr("typeof").is_some() {
-            rdfa_item_to_value(&el) // nested typed resource
+        let is_nested_resource = el.value().attr("typeof").is_some();
+        // A property enclosing another holds that one's text again: a copy.
+        let is_copy = !is_nested_resource && el.select(&RDFA_PROP_SELECTOR).next().is_some();
+        if is_copy && !has_copy_budget() {
+            continue;
+        }
+        let value = if is_nested_resource {
+            rdfa_item_to_value(&el)
         } else {
             rdfa_prop_value(&el)
         };
+        if is_copy && !spend_copy_budget(&value) {
+            continue;
+        }
         insert_under_names(&mut obj, &names, value, insert_prop);
     }
 
@@ -557,7 +590,7 @@ enum PropKind {
 }
 
 pub(super) fn scrape_microformats_from_doc(document: &scraper::Html) -> Microformats {
-    reset_copy_budget();
+    reset_copy_budget(document);
     document
         .select(&CLASS_SELECTOR)
         // Top-level roots only: a root nested inside another root is reached by
@@ -618,6 +651,15 @@ fn has_mf_root_ancestor(el: &scraper::ElementRef) -> bool {
     false
 }
 
+/// Property `(kind, name)` pairs on an element: mf1's under its `vocab`, mf2's
+/// outside one.
+fn property_classes(el: &scraper::ElementRef, vocab: Option<Mf1Vocab>) -> Vec<(PropKind, String)> {
+    match vocab {
+        Some(vocab) => mf1_property_classes(el, vocab),
+        None => mf_property_classes(el),
+    }
+}
+
 /// Property `(kind, name)` pairs on an element. The no-letter guard drops CSS
 /// utility classes like `p-4`/`p-2` that share a property prefix.
 fn mf_property_classes(el: &scraper::ElementRef) -> Vec<(PropKind, String)> {
@@ -675,10 +717,7 @@ fn collect_mf(
     children: &mut Vec<serde_json::Value>,
 ) {
     for child in el.children().filter_map(scraper::ElementRef::wrap) {
-        let prop_classes = match vocab {
-            Some(v) => mf1_property_classes(&child, v),
-            None => mf_property_classes(&child),
-        };
+        let prop_classes = property_classes(&child, vocab);
 
         if is_mf_root(&child) {
             let nested = parse_mf_item(&child);
@@ -696,13 +735,20 @@ fn collect_mf(
             // Boundary: do not descend into the nested root.
         } else {
             // Each class reads the element its own way (`p-` text, `u-` URL), so
-            // each is a value of its own: the first free, the rest charged.
+            // each is a value of its own: the first free, the rest copies. A
+            // property enclosing another holds that one's text again: a copy.
+            let encloses_a_property = !prop_classes.is_empty()
+                && child
+                    .descendants()
+                    .filter_map(scraper::ElementRef::wrap)
+                    .any(|descendant| !property_classes(&descendant, vocab).is_empty());
             for (index, (kind, name)) in prop_classes.iter().enumerate() {
-                if index > 0 && !has_copy_budget() {
+                let is_copy = index > 0 || encloses_a_property;
+                if is_copy && !has_copy_budget() {
                     break;
                 }
                 let value = mf_property_value(&child, *kind);
-                if index > 0 && !spend_copy_budget(copy_cost(&value)) {
+                if is_copy && !spend_copy_budget(&value) {
                     break;
                 }
                 push_mf_prop(properties, name, value);
@@ -951,23 +997,38 @@ fn is_empty_geo_or_adr(item: &serde_json::Value) -> bool {
 /// steps) and an h-recipe microformat (with steps) — into one complete entity
 /// rather than a partial duplicate.
 pub(super) fn merge_schema_entities(base: &mut Jsonld, extra: Jsonld) {
+    // Where each identity first appears in `base`.
+    let mut index_of: HashMap<SchemaIdentity, usize> = HashMap::new();
+    for (index, entity) in base.iter().enumerate() {
+        if let Some(identity) = schema_identity(entity) {
+            index_of.entry(identity).or_insert(index);
+        }
+    }
     for entity in extra {
-        match base.iter_mut().find(|e| same_schema_entity(e, &entity)) {
-            Some(existing) => fill_missing_props(existing, entity),
+        match schema_identity(&entity).map(|identity| index_of.entry(identity)) {
+            Some(Entry::Occupied(existing)) => {
+                fill_missing_props(&mut base[*existing.get()], entity)
+            }
+            Some(Entry::Vacant(vacant)) => {
+                vacant.insert(base.len());
+                base.push(entity);
+            }
             None => base.push(entity),
         }
     }
 }
 
-/// Two entities are "the same" when they share a `@type` (short name) and a
-/// non-empty `name`. Without a name there's no safe identity — don't merge.
-fn same_schema_entity(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    match (schema_name(a), schema_name(b)) {
-        (Some(na), Some(nb)) if na.eq_ignore_ascii_case(&nb) => {
-            schema_type_short(a) == schema_type_short(b)
-        }
-        _ => false,
-    }
+/// What makes two entities the same: their `@type` (short name) and their
+/// `name`, case-insensitive.
+type SchemaIdentity = (Option<String>, String);
+
+/// The entity's identity, or `None` when it has no non-empty `name`: without
+/// one there's no safe identity, so it's never merged.
+fn schema_identity(entity: &serde_json::Value) -> Option<SchemaIdentity> {
+    Some((
+        schema_type_short(entity),
+        schema_name(entity)?.to_ascii_lowercase(),
+    ))
 }
 
 fn schema_name(v: &serde_json::Value) -> Option<String> {

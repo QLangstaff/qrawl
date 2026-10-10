@@ -303,13 +303,72 @@ async fn test_normalize_html_preserves_jsonld_case_variants() {
 }
 
 #[tokio::test]
-async fn test_normalize_html_normalizes_escaped_newlines() {
-    assert_eq!(
-        normalize_html(&"<div>Line\\nBreak</div>".into())
-            .await
-            .as_str(),
-        "<div>Line Break</div>"
-    );
+async fn normalize_html_keeps_text_as_written() {
+    for (html, expected) in [
+        // A backslash-n in text is text, not a newline.
+        ("<p>C:\\new\\table</p>", "<p>C:\\new\\table</p>"),
+        // A non-breaking space is content; it isn't collapsed into the spaces.
+        ("<p>a&nbsp;&nbsp;b  c</p>", "<p>a\u{a0}\u{a0}b c</p>"),
+    ] {
+        assert_eq!(normalize_html(&html.into()).await.as_str(), expected);
+    }
+}
+
+#[tokio::test]
+async fn normalize_html_keeps_attributes_in_source_order_with_their_prefixes() {
+    for (html, expected) in [
+        (
+            r#"<a href="/x" title="t" rel="nofollow" target="_blank" name="n" class="c">go</a>"#,
+            r#"<a href="/x" title="t" rel="nofollow" target="_blank" name="n">go</a>"#,
+        ),
+        (
+            r##"<math xlink:href="#a" xml:lang="en"><mi>x</mi></math>"##,
+            r##"<math xlink:href="#a" xml:lang="en"><mi>x</mi></math>"##,
+        ),
+    ] {
+        for _ in 0..8 {
+            assert_eq!(normalize_html(&html.into()).await.as_str(), expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn normalize_html_reads_a_document_from_its_first_tag_alone() {
+    for (html, expected) in [
+        // `<html>` inside an attribute doesn't make a fragment a document.
+        (
+            r#"<p title="<html>">x</p>"#,
+            r#"<p title="&lt;html&gt;">x</p>"#,
+        ),
+        (
+            "<textarea>&lt;!doctype html&gt;</textarea>",
+            "<textarea>&lt;!doctype html&gt;</textarea>",
+        ),
+        // A document keeps its doctype, even after a comment.
+        (
+            "<!-- c --><!DOCTYPE html><html><body><p>x</p></body></html>",
+            "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>",
+        ),
+    ] {
+        assert_eq!(
+            normalize_html(&html.into()).await.as_str(),
+            expected,
+            "{html}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn normalize_html_keeps_a_table_fragments_structure() {
+    for html in [
+        "<tr><td>a</td><td>b</td></tr>",
+        r#"<td nowrap="">y</td>"#,
+        "<caption>c</caption><thead><tr><th>h</th></tr></thead>",
+        "<tbody><tr><td>a</td></tr></tbody>",
+        "<col><col>",
+    ] {
+        assert_eq!(normalize_html(&html.into()).await.as_str(), html);
+    }
 }
 
 // Tests for normalize_urls()
@@ -926,6 +985,10 @@ fn absolute_url_completes_what_names_an_http_url_and_refuses_the_rest() {
             Some("http://www.Example.com/a/"),
         ),
         ("example.com/a", Some("https://example.com/a")),
+        (
+            "my_host.example.com/a",
+            Some("https://my_host.example.com/a"),
+        ),
         ("localhost:8080/a", Some("https://localhost:8080/a")),
         ("https:example.com", Some("https://example.com/")),
         ("HTTPS:example.com/a", Some("https://example.com/a")),

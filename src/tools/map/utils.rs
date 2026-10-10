@@ -301,13 +301,16 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 
     // A unit of `p` elements repeats its structures `p` apart, so a length is
     // scored by how many siblings match the one `p` later; the best few are
-    // scanned, in a fixed order.
+    // scanned, in a fixed order. Only the last sibling of a run of equal
+    // structures counts: inside a run (a unit's filler paragraphs), every
+    // short distance matches, which would outscore the unit's own length.
+    let ends_a_run = |idx: usize| structures.get(idx + 1) != Some(&structures[idx]);
     let mut candidates: Vec<(usize, usize)> = (MIN_PATTERN_LEN
         ..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN))
         .filter(|len| n >= len * MIN_SIBLING_GROUP_SIZE)
         .map(|len| {
             let repeats = (0..n - len)
-                .filter(|&idx| structures[idx] == structures[idx + len])
+                .filter(|&idx| ends_a_run(idx) && structures[idx] == structures[idx + len])
                 .count();
             (len, repeats)
         })

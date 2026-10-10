@@ -748,4 +748,41 @@ mod local_site {
             transform_markdown(html).await;
         }
     }
+
+    #[tokio::test]
+    async fn the_limit_stops_a_crawl_of_urls_that_all_redirect() {
+        let site = TestSite::serve(|path| match path.strip_prefix("/short") {
+            Some(n) => Reply::Redirect(format!("/item{n}")),
+            None => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
+        let urls: Vec<String> = (0..200).map(|n| site.url(&format!("/short{n}"))).collect();
+
+        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), ctx(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert_eq!(pages.len(), 1);
+        assert!(site.hits() < 30, "{} requests after the limit", site.hits());
+    }
+
+    #[tokio::test]
+    async fn a_seed_a_redirect_already_landed_on_is_not_fetched_again() {
+        let site = TestSite::serve(|path| match path {
+            "/a" => Reply::Redirect("/b".to_string()),
+            "/b" => Reply::Redirect("/c".to_string()),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
+
+        let pages = qrawl_many_urls(
+            vec![site.url("/a"), site.url("/c")],
+            CrawlOptions::default(),
+            ctx(1),
+        )
+        .await;
+
+        assert_eq!(paths(&pages, site.port()), set(&["/c"]));
+        // `/a`, `/b`, `/c` once each: the chain reached `/c` before its own visit.
+        assert_eq!(site.hits(), 3);
+    }
 }

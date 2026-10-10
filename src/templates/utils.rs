@@ -3,6 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::Mutex;
 
 use futures_util::future::FutureExt;
 use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
@@ -201,10 +202,12 @@ pub(super) struct Visited<T> {
 /// `visit` fetches one [`Target`] at its level (seeds are level 0) and
 /// returns what it [`Visited`], or `None` to drop it. Children of the last
 /// level are ignored. Each page is yielded once, at the shallowest level that
-/// reaches it: a level starts only when the one before it has finished, so
-/// the result doesn't depend on which fetch completes first. A target that
-/// redirects counts as the page it landed on. `admit` filters every
-/// URL before its visit, and the URL a redirect served after it.
+/// reaches it: a level starts only when the one before it has finished. A
+/// target that redirects counts as the page it landed on, so within a level
+/// the first visit to arrive at a page yields it, and the item is that
+/// visit's: the address it served and the children it listed. A target the
+/// level already yielded isn't visited. `admit` filters every URL before its
+/// visit, and the URL a redirect served after it.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
 /// a level shares one pool of `ctx.concurrency` ([`drive`]), and dropping the
@@ -225,9 +228,11 @@ where
     let concurrency = ctx.concurrency.get();
     let (tx, rx) = mpsc::channel(concurrency);
     tokio::spawn(ctx.scope(async move {
-        // Every URL ever queued, and every page yielded.
+        // Every URL ever queued, and every page yielded. Pulling a target
+        // reads `yielded` and finishing a visit writes it, from two closures,
+        // so a lock shares it; it's never held across an await.
         let mut seen: HashSet<CanonicalUrl> = HashSet::new();
-        let mut yielded: HashSet<CanonicalUrl> = HashSet::new();
+        let yielded: Mutex<HashSet<CanonicalUrl>> = Mutex::new(HashSet::new());
         let mut frontier = Vec::new();
         let enqueue =
             |urls: &[String], seen: &mut HashSet<CanonicalUrl>, queue: &mut Vec<Target>| {
@@ -241,7 +246,11 @@ where
         for level in 0..=depth {
             let mut next = Vec::new();
             let consumer_is_listening = drive(
-                futures_util::stream::iter(std::mem::take(&mut frontier)),
+                // A target a redirect already landed on isn't fetched again.
+                futures_util::stream::iter(std::mem::take(&mut frontier)).filter(|target| {
+                    let is_yielded = yielded.lock().expect("yielded").contains(&target.url);
+                    futures_util::future::ready(!is_yielded)
+                }),
                 concurrency,
                 &tx,
                 // A page whose visit panics is dropped; the rest of the crawl goes on.
@@ -262,11 +271,10 @@ where
                 |(given, visited): (CanonicalUrl, Option<Visited<T>>)| {
                     let visited = visited?;
                     // The first visit to arrive at a page yields it, whether
-                    // it was asked for that page or redirected to it. Any
-                    // visit of the same page makes the same item, so which
-                    // one arrives first changes nothing.
+                    // it was asked for that page or redirected to it.
                     let is_redirect = visited.url != given;
-                    if (is_redirect && !admit(&visited.url)) || !yielded.insert(visited.url.clone())
+                    if (is_redirect && !admit(&visited.url))
+                        || !yielded.lock().expect("yielded").insert(visited.url.clone())
                     {
                         return None;
                     }
@@ -279,8 +287,6 @@ where
             if !consumer_is_listening {
                 return;
             }
-            // A page a redirect reached in this level isn't crawled again.
-            next.retain(|target| !yielded.contains(&target.url));
             frontier = next;
         }
     }));

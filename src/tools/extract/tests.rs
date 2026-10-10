@@ -289,6 +289,20 @@ fn pinterest_pin_board_profile() {
 }
 
 #[test]
+fn pinterest_and_facebook_system_routes_are_not_items() {
+    for url in [
+        "https://www.pinterest.com/login/",
+        "https://pinterest.com/explore/",
+        "https://pinterest.com/password/reset/",
+        "https://facebook.com/checkpoint/",
+    ] {
+        let s = social(url);
+        assert_eq!(s.kind, None, "{url}");
+        assert_eq!(s.handle, None, "{url}");
+    }
+}
+
+#[test]
 fn pinterest_international_tld() {
     let s = social("https://pinterest.co.uk/pin/999");
     assert_eq!(s.platform, SocialPlatform::Pinterest);
@@ -527,15 +541,56 @@ async fn jsonld_emails_and_phones_come_from_their_properties_only() {
 async fn jsonld_contact_properties_are_read_in_every_shape() {
     let html = r#"<html><head><script type="application/ld+json">{
         "@type":"Organization",
-        "email":["a@example.com","mailto:b@example.com","n/a"],
+        "email":["a@example.com","mailto:b@example.com","n/a",{"@id":"mailto:c@example.com"}],
         "schema:telephone":[{"@value":"tel:+1 212-555-1212"},"call us"],
         "Telephone":2125551313,
+        "contactPoint":[
+            {"telephone":{"@list":["+44 20 7946 0958"]}},
+            {"telephone":{"@set":["TEL:020 7946 0958"]}},
+            {"email":{"@list":["d@example.com"]}}
+        ],
         "name":"R&D <team>"
     }</script></head><body></body></html>"#;
     let mut emails = extract_emails(&html.into()).await;
     emails.sort();
-    assert_eq!(emails, ["a@example.com", "b@example.com"]);
+    assert_eq!(
+        emails,
+        [
+            "a@example.com",
+            "b@example.com",
+            "c@example.com",
+            "d@example.com"
+        ]
+    );
     let mut phones = extract_phones(&html.into()).await;
     phones.sort();
-    assert_eq!(phones, ["+1 212-555-1212", "2125551313"]);
+    assert_eq!(
+        phones,
+        [
+            "+1 212-555-1212",
+            "+44 20 7946 0958",
+            "020 7946 0958",
+            "2125551313"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn jsonld_telephones_keep_every_countrys_format() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type":"LocalBusiness",
+        "telephone":["+33 1 42 86 82 00","+49 30 901820","+61 2 9374 4000","+91 98765 43210","+442079460958"]
+    }</script></head><body></body></html>"#;
+    let mut phones = extract_phones(&html.into()).await;
+    phones.sort();
+    assert_eq!(
+        phones,
+        [
+            "+33 1 42 86 82 00",
+            "+442079460958",
+            "+49 30 901820",
+            "+61 2 9374 4000",
+            "+91 98765 43210"
+        ]
+    );
 }

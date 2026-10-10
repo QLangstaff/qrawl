@@ -64,11 +64,12 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
         .collect()
 }
 
-/// What `regex` finds in the values a page's JSON-LD holds under the
-/// schema.org property `key` (`email`, `telephone`), at any depth. JSON-LD is
-/// data, so the property says what a value is: read as raw text, an SKU would
-/// pass for a phone number.
-fn extract_from_jsonld(doc: &Html, key: &str, regex: &Regex) -> Vec<String> {
+/// What `read` finds in the values a page's JSON-LD holds under the
+/// schema.org property `key` (`email`, `telephone`), at any depth: in a
+/// string, a number, an array, a typed literal's `@value`, an IRI's `@id`, or
+/// the items of a `@list` or `@set`. JSON-LD is data, so the property says
+/// what a value is: read as raw text, an SKU would pass for a phone number.
+fn extract_from_jsonld(doc: &Html, key: &str, read: impl Fn(&str) -> Vec<String>) -> Vec<String> {
     let is_key = |name: &str| {
         name.rsplit([':', '/', '#'])
             .next()
@@ -84,20 +85,18 @@ fn extract_from_jsonld(doc: &Html, key: &str, regex: &Regex) -> Vec<String> {
         let mut pending = vec![(&value, false)];
         while let Some((value, under_key)) = pending.pop() {
             match value {
-                serde_json::Value::String(text) if under_key => {
-                    found.extend(regex.find_iter(text).map(|m| m.as_str().to_string()));
-                }
+                serde_json::Value::String(text) if under_key => found.extend(read(text)),
                 serde_json::Value::Number(number) if under_key => {
-                    let digits = number.to_string();
-                    found.extend(regex.find_iter(&digits).map(|m| m.as_str().to_string()));
+                    found.extend(read(&number.to_string()));
                 }
                 serde_json::Value::Array(items) => {
                     pending.extend(items.iter().map(|item| (item, under_key)));
                 }
                 serde_json::Value::Object(fields) => {
                     pending.extend(fields.iter().map(|(name, value)| {
-                        // A typed literal keeps its text in `@value`.
-                        (value, is_key(name) || (under_key && name == "@value"))
+                        let is_value_of_key = under_key
+                            && matches!(name.as_str(), "@value" | "@id" | "@list" | "@set");
+                        (value, is_key(name) || is_value_of_key)
                     }));
                 }
                 _ => {}
@@ -107,12 +106,33 @@ fn extract_from_jsonld(doc: &Html, key: &str, regex: &Regex) -> Vec<String> {
     found
 }
 
+/// A JSON-LD `telephone` value as a phone number: the value itself, without a
+/// `tel:` scheme, when it has a digit. The property already says it's a phone
+/// number, so no one country's format is imposed on it; `"call us"` has no
+/// digit and is dropped.
+fn read_jsonld_telephone(text: &str) -> Vec<String> {
+    let text = text.trim();
+    let scheme = text.get(.."tel:".len()).unwrap_or_default();
+    let number = if scheme.eq_ignore_ascii_case("tel:") {
+        text["tel:".len()..].trim()
+    } else {
+        text
+    };
+    let has_digit = number.chars().any(|c| c.is_ascii_digit());
+    has_digit.then(|| number.to_string()).into_iter().collect()
+}
+
 /// Extract all email addresses from HTML document.
 pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "mailto:"),
         extract_with_regex(doc, &EMAIL_REGEX),
-        extract_from_jsonld(doc, "email", &EMAIL_REGEX),
+        extract_from_jsonld(doc, "email", |text| {
+            EMAIL_REGEX
+                .find_iter(text)
+                .map(|found| found.as_str().to_string())
+                .collect()
+        }),
     ]
     .concat()
 }
@@ -122,7 +142,7 @@ pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "tel:"),
         extract_with_regex(doc, &PHONE_REGEX),
-        extract_from_jsonld(doc, "telephone", &PHONE_REGEX),
+        extract_from_jsonld(doc, "telephone", read_jsonld_telephone),
     ]
     .concat()
 }

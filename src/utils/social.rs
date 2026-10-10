@@ -312,13 +312,28 @@ fn is_reserved_facebook(s: &str) -> bool {
             | "gaming"
             | "help"
             | "settings"
+            | "checkpoint"
     )
 }
 
 fn is_reserved_pinterest(s: &str) -> bool {
     matches!(
         s,
-        "pin" | "search" | "ideas" | "today" | "business" | "settings" | "categories"
+        "pin"
+            | "search"
+            | "ideas"
+            | "today"
+            | "business"
+            | "settings"
+            | "categories"
+            | "login"
+            | "signup"
+            | "explore"
+            | "password"
+            | "about"
+            | "careers"
+            | "privacy"
+            | "terms"
     )
 }
 

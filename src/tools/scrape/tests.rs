@@ -986,6 +986,61 @@ fn nested_items_under_several_names_are_bounded_in_size_and_time() {
 }
 
 #[tokio::test]
+async fn a_value_nested_under_one_property_at_every_level_is_bounded() {
+    let text = "word ".repeat(200_000);
+    for open in [
+        "<span itemprop=\"a\">",
+        "<span property=\"a\">",
+        "<span class=\"p-name\">",
+        "<span class=\"e-content\">",
+    ] {
+        let html = format!(
+            "<html><body><div itemscope typeof=\"T\" class=\"h-entry\">{}{text}{}</div></body></html>",
+            open.repeat(500),
+            "</span>".repeat(500)
+        );
+        let started = std::time::Instant::now();
+        let jsonld = scrape_jsonld(&html.as_str().into()).await;
+        let size = serde_json::to_string(&jsonld).unwrap().len();
+        // The text is held once per enclosing property, which proves the
+        // nesting was read…
+        assert!(size > 2 * text.len(), "{open}: {size} bytes");
+        // …and a few times over at most, however deep it goes.
+        assert!(
+            size < 10 * html.len(),
+            "{open}: {size} bytes from {}",
+            html.len()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{open}: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[tokio::test]
+async fn thousands_of_entities_each_keep_every_property_and_merge_fast() {
+    let entries: String = (0..4_000)
+        .map(|n| {
+            format!(
+                "<div class=\"h-entry\"><a class=\"p-name u-url\" href=\"https://example.com/posts/{n}\">Entry {n}</a></div>"
+            )
+        })
+        .collect();
+    let html = format!("<html><body>{entries}</body></html>");
+    let started = std::time::Instant::now();
+    let jsonld = scrape_jsonld(&html.as_str().into()).await;
+    assert_eq!(jsonld.len(), 4_000);
+    assert!(jsonld.iter().all(|entity| entity.get("url").is_some()));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn a_long_value_under_one_name_is_never_cut() {
     let body = "word ".repeat(1_000_000);
     let html = format!(

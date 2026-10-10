@@ -12,9 +12,16 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
 
 // HTML normalization
 
-/// Markup that is a whole document, not a fragment.
-static DOCUMENT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<!doctype|<html[\s>]").expect("valid regex"));
+/// Markup that is a whole document, not a fragment: its first tag, after any
+/// comments, is a doctype or `<html>`.
+static DOCUMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^\s*(?:<!--.*?-->\s*)*(?:<!doctype|<html[\s>])").expect("valid regex")
+});
+
+/// A fragment's first tag, after any comments.
+static FIRST_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^\s*(?:<!--.*?-->\s*)*<([a-z][a-z0-9]*)").expect("valid regex")
+});
 
 static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -388,11 +395,41 @@ fn is_jsonld_script(element: &scraper::node::Element) -> bool {
         })
 }
 
+/// The element a fragment's first tag belongs in, which decides how the
+/// parser reads it: a `<tr>` outside a table is dropped, its cells' text run
+/// together.
+fn fragment_context(html: &str) -> &'static str {
+    let first_tag = FIRST_TAG_REGEX
+        .captures(html)
+        .map(|found| found[1].to_ascii_lowercase());
+    match first_tag.as_deref() {
+        Some("td" | "th") => "tr",
+        Some("tr") => "tbody",
+        Some("thead" | "tbody" | "tfoot" | "caption" | "colgroup") => "table",
+        Some("col") => "colgroup",
+        _ => "body",
+    }
+}
+
+/// Parse a fragment as if it stood inside a `context` element.
+fn parse_fragment_in(html: &str, context: &str) -> scraper::Html {
+    use html5ever::tendril::TendrilSink;
+    use html5ever::{namespace_url, ns, LocalName, QualName};
+
+    html5ever::parse_fragment(
+        scraper::Html::new_fragment(),
+        html5ever::ParseOpts::default(),
+        QualName::new(None, ns!(html), LocalName::from(context)),
+        Vec::new(),
+    )
+    .one(html)
+}
+
 /// Normalize HTML by parsing it and writing back what is content: no comments,
-/// no junk elements or attributes, whitespace collapsed. JSON-LD scripts are
-/// data, so each stays where it is with its text untouched. A parser decides
-/// what is a comment, a script, or an attribute, so text that merely looks
-/// like one is left alone.
+/// no junk elements or attributes, text whitespace collapsed. JSON-LD scripts
+/// are data, so each stays where it is with its text untouched. A parser
+/// decides what is a comment, a script, or an attribute, so text that merely
+/// looks like one is left alone.
 pub(super) fn normalize_markup(html: &str) -> String {
     use ego_tree::iter::Edge;
     use scraper::node::Node;
@@ -402,7 +439,7 @@ pub(super) fn normalize_markup(html: &str) -> String {
     let parsed = if is_document {
         scraper::Html::parse_document(html)
     } else {
-        scraper::Html::parse_fragment(html)
+        parse_fragment_in(html, fragment_context(html))
     };
     let root = if is_document {
         parsed.tree.root()
@@ -424,8 +461,13 @@ pub(super) fn normalize_markup(html: &str) -> String {
                 Node::Element(element) => {
                     out.push('<');
                     out.push_str(element.name());
-                    for (name, value) in element.attrs() {
-                        if !JUNK_ATTR_NAME_REGEX.is_match(name) {
+                    // In source order: `scraper`'s `deterministic` feature.
+                    for (qualified, value) in &element.attrs {
+                        let name = match &qualified.prefix {
+                            Some(prefix) => format!("{prefix}:{}", qualified.local),
+                            None => qualified.local.to_string(),
+                        };
+                        if !JUNK_ATTR_NAME_REGEX.is_match(&name) {
                             out.push_str(&format!(" {name}=\"{}\"", escape(value, true)));
                         }
                     }
@@ -439,8 +481,11 @@ pub(super) fn normalize_markup(html: &str) -> String {
                     if in_jsonld {
                         out.push_str(text);
                     } else {
-                        push_collapsed(&mut out, &escape(&text.replace("\\n", " "), false));
+                        push_collapsed(&mut out, &escape(text, false));
                     }
+                }
+                Node::Doctype(doctype) => {
+                    out.push_str(&format!("<!DOCTYPE {}>", doctype.name()));
                 }
                 _ => {}
             },
@@ -459,10 +504,11 @@ pub(super) fn normalize_markup(html: &str) -> String {
 }
 
 /// Append `text` with each run of whitespace as one space, and none doubled
-/// where it meets the whitespace already written.
+/// where it meets the whitespace already written. A non-breaking space is
+/// content, not layout, and stays.
 fn push_collapsed(out: &mut String, text: &str) {
     for c in text.chars() {
-        if !c.is_whitespace() {
+        if !c.is_ascii_whitespace() {
             out.push(c);
         } else if !out.ends_with(' ') {
             out.push(' ');
