@@ -120,8 +120,8 @@ impl Context {
     }
 
     /// Run `future` as one crawl: every fetch inside it reads this context and
-    /// shares one fetch cache, so a URL fetched again after its first fetch
-    /// completed costs no request. A fetch outside any scope uses the defaults
+    /// shares one fetch cache, so the same URL string fetched again after its
+    /// first fetch completed costs no request. A fetch outside any scope uses the defaults
     /// and no cache.
     pub async fn scope<F: Future>(self, future: F) -> F::Output {
         CTX.scope(
@@ -134,24 +134,20 @@ impl Context {
 
 tokio::task_local! {
     static CTX: Arc<Context>;
-    /// Fetched HTML by canonical URL, for the crawl [`Context::scope`] runs.
+    /// Fetched HTML by the URL fetched, for the crawl [`Context::scope`] runs.
     static FETCH_CACHE: Arc<DashMap<String, String>>;
 }
 
-// Keys are `CanonicalUrl`'s form, so `m.` and tracking-param variants of one
-// URL share an entry.
 pub(crate) fn fetch_cache_get(url: &str) -> Option<String> {
-    let key = crate::tools::normalize::normalize_social(url);
     FETCH_CACHE
-        .try_with(|cache| cache.get(&key).map(|html| html.clone()))
+        .try_with(|cache| cache.get(url).map(|html| html.clone()))
         .ok()
         .flatten()
 }
 
 pub(crate) fn fetch_cache_put(url: &str, html: &str) {
-    let key = crate::tools::normalize::normalize_social(url);
     let _ = FETCH_CACHE.try_with(|cache| {
-        cache.insert(key, html.to_string());
+        cache.insert(url.to_string(), html.to_string());
     });
 }
 

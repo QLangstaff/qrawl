@@ -31,8 +31,8 @@ pub(crate) fn is_url_allowed(
     !matches_any(block_domains) && (allow_domains.is_empty() || matches_any(allow_domains))
 }
 
-/// Enforce the task-local `Context`'s domain lists on a fetch about to
-/// dispatch. Outside a `CTX` scope nothing is filtered.
+/// Enforce the enclosing `Context`'s domain lists on a URL about to be fetched,
+/// or one a redirect landed on. Outside a `Context::scope` nothing is filtered.
 pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
     let is_allowed =
         with_context(|ctx| is_url_allowed(url, &ctx.allow_domains, &ctx.block_domains))

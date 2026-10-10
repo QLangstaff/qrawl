@@ -29,7 +29,7 @@ use super::utils::{parse_url, resolve_url};
 /// # }
 /// ```
 pub async fn qrawl_any_url(url: &str, ctx: Context) -> Result<PageContent, QrawlError> {
-    let url = parse_url(url)?;
-    let (page, _html) = ctx.scope(resolve_url(&url)).await?;
+    let target = parse_url(url)?;
+    let (page, _html) = ctx.scope(resolve_url(&target)).await?;
     Ok(page)
 }

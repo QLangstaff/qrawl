@@ -30,10 +30,10 @@ pub async fn qrawl_share(
     caption: Option<String>,
     ctx: Context,
 ) -> Result<PageContent, QrawlError> {
-    let url = parse_url(url)?;
-    let page = match ctx.scope(resolve_url(&url)).await {
+    let target = parse_url(url)?;
+    let page = match ctx.scope(resolve_url(&target)).await {
         Ok((page, _html)) => page,
-        Err(_) => share_payload_only(&url),
+        Err(_) => share_payload_only(&target.url),
     };
     let caption = caption
         .as_deref()

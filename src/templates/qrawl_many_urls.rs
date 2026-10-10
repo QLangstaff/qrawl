@@ -1,13 +1,13 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::StreamExt;
 
 use crate::tools::classify::classify_has_schema_type;
 use crate::tools::fetch::is_url_allowed;
 use crate::tools::map::map_children;
 use crate::types::{CanonicalUrl, Context, Jsonld, PageContent};
 
-use super::utils::resolve_url;
+use super::utils::{crawl, resolve_url};
 
 /// Upper bound on crawl depth — a guardrail against a runaway expansion;
 /// `ctx.depth` is clamped to this.
@@ -59,66 +59,54 @@ const MAX_DEPTH: usize = 3;
 /// # }
 /// ```
 pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent> {
-    ctx.clone().scope(crawl(urls, &ctx)).await
-}
-
-/// Breadth-first crawl with `ctx.concurrency` nodes in flight. Stops as soon
-/// as `ctx.limit` is reached, which drops — and so cancels — the fetches still
-/// in flight.
-async fn crawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
+    let limit = ctx.limit;
     let depth = ctx.depth.min(MAX_DEPTH);
-    let allow_urls: HashSet<CanonicalUrl> = ctx
-        .allow_urls
-        .iter()
-        .map(|url| CanonicalUrl::new(url))
-        .collect();
-    // A blocked URL starts out seen, so it's never queued.
-    let mut seen: HashSet<CanonicalUrl> = ctx
-        .block_urls
-        .iter()
-        .map(|url| CanonicalUrl::new(url))
-        .collect();
-    let mut queue: VecDeque<(CanonicalUrl, usize)> = VecDeque::new();
-    let mut enqueue = |queue: &mut VecDeque<(CanonicalUrl, usize)>, url: &str, level: usize| {
-        let url = CanonicalUrl::new(url);
-        let is_allowed = is_url_allowed(url.as_str(), &ctx.allow_domains, &ctx.block_domains)
-            && (allow_urls.is_empty() || allow_urls.contains(&url));
-        if is_allowed && seen.insert(url.clone()) {
-            queue.push_back((url, level));
-        }
+    let (include_schemas, exclude_schemas) =
+        (ctx.include_schemas.clone(), ctx.exclude_schemas.clone());
+    let (allow_domains, block_domains) = (ctx.allow_domains.clone(), ctx.block_domains.clone());
+    let canonical_set = |urls: &[String]| -> HashSet<CanonicalUrl> {
+        urls.iter().map(|url| CanonicalUrl::new(url)).collect()
     };
-    for url in &urls {
-        enqueue(&mut queue, url, 0);
+    let (allow_urls, block_urls) = (
+        canonical_set(&ctx.allow_urls),
+        canonical_set(&ctx.block_urls),
+    );
+    let admit = move |url: &CanonicalUrl| {
+        is_url_allowed(url.as_str(), &allow_domains, &block_domains)
+            && (allow_urls.is_empty() || allow_urls.contains(url))
+            && !block_urls.contains(url)
+    };
+
+    let pages = crawl(
+        ctx,
+        urls,
+        depth,
+        admit,
+        |target, with_children| async move {
+            let (mut page, html) = resolve_url(&target)
+                .await
+                .map_err(|e| log::debug!("{} failed: {}", target.address, e))
+                .ok()?;
+            log::info!("crawled {} ({:?})", target.address, page.source);
+            page.body = None;
+            // A side-door hit has no page to map, so it's a leaf.
+            let children = match html {
+                Some(html) if with_children => map_children(&html, &target.address).await,
+                _ => Vec::new(),
+            };
+            Some((page, children))
+        },
+    )
+    // The schema filter decides results only: a roundup that doesn't match
+    // still yields its matching children.
+    .filter_map(move |(_level, page)| {
+        let passes = schema_passes(&page.structured, &include_schemas, &exclude_schemas);
+        async move { passes.then_some(page) }
+    });
+    match limit {
+        Some(limit) => pages.take(limit).collect().await,
+        None => pages.collect().await,
     }
-
-    let mut in_flight = FuturesUnordered::new();
-    let mut results: Vec<PageContent> = Vec::new();
-
-    while ctx.limit.is_none_or(|limit| results.len() < limit) {
-        while in_flight.len() < ctx.concurrency.get() {
-            match queue.pop_front() {
-                Some((url, level)) => in_flight.push(crawl_node(url, level, level < depth)),
-                None => break,
-            }
-        }
-        let Some(node) = in_flight.next().await else {
-            break;
-        };
-        let Some((page, children, level)) = node else {
-            continue;
-        };
-
-        // The schema filter decides results only: a roundup that doesn't match
-        // still yields its matching children.
-        if schema_passes(&page.structured, &ctx.include_schemas, &ctx.exclude_schemas) {
-            results.push(page);
-        }
-        for child in &children {
-            enqueue(&mut queue, child, level + 1);
-        }
-    }
-
-    results
 }
 
 /// Whether a page's structured data carries one of the `include` types (empty
@@ -131,26 +119,4 @@ pub(super) fn schema_passes(structured: &Jsonld, include: &[String], exclude: &[
             .any(|schema_type| classify_has_schema_type(structured, schema_type))
     };
     (include.is_empty() || has_any(include)) && !has_any(exclude)
-}
-
-/// Resolve one node, plus its child URLs when `with_children` — a side-door
-/// hit has no page to map, so it's a leaf. `None` when nothing could be
-/// fetched. `level` is returned so the crawl can queue the children at
-/// `level + 1`.
-async fn crawl_node(
-    url: CanonicalUrl,
-    level: usize,
-    with_children: bool,
-) -> Option<(PageContent, Vec<String>, usize)> {
-    let (mut page, html) = resolve_url(&url)
-        .await
-        .map_err(|e| log::debug!("depth {} {} failed: {}", level, url, e))
-        .ok()?;
-    log::info!("depth {} {} ({:?})", level, url, page.source);
-    page.body = None;
-    let children = match html {
-        Some(html) if with_children => map_children(&html, url.as_str()).await,
-        _ => Vec::new(),
-    };
-    Some((page, children, level))
 }

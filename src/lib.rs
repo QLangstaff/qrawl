@@ -11,3 +11,6 @@ pub mod templates;
 pub mod tools;
 pub mod types;
 mod utils;
+
+#[cfg(test)]
+mod test_site;

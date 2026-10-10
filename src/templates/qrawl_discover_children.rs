@@ -2,7 +2,7 @@ use futures_util::stream::Stream;
 
 use crate::types::Context;
 
-use super::utils::{discover_stream, spawn_crawl};
+use super::utils::discover_children;
 
 /// Streaming child-URL discovery.
 ///
@@ -36,6 +36,5 @@ pub fn qrawl_discover_children(
     urls: Vec<String>,
     ctx: Context,
 ) -> impl Stream<Item = String> + Send + 'static {
-    let concurrency = ctx.concurrency.get();
-    spawn_crawl(ctx, discover_stream(urls, concurrency))
+    discover_children(ctx, urls)
 }
