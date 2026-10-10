@@ -5,9 +5,7 @@ mod utils;
 
 use crate::tools::normalize::normalize_social_urls;
 use crate::tools::scrape::scrape_all;
-use crate::types::{
-    CanonicalUrl, ContentSource, Html, Jsonld, Metadata, PageContent, SocialParts,
-};
+use crate::types::{CanonicalUrl, ContentSource, Html, Jsonld, Metadata, PageContent, SocialParts};
 pub use utils::{extract_social_parts, find_metadata_value};
 
 /// Extract a social door's payload into its [`PageContent`] — dispatches on
@@ -140,4 +138,3 @@ pub async fn extract_social_urls(html: &Html) -> Vec<String> {
         .await
         .expect("extract_social_urls: spawn_blocking failed")
 }
-

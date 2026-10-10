@@ -86,10 +86,7 @@ fn page_scrape_assembly_carries_structured_and_optional_body() {
     assert_eq!(lean.socials, socials);
     assert!(lean.body.is_none());
     assert_eq!(lean.title.as_deref(), Some("Soup"));
-    assert_eq!(
-        lean.image_url.as_deref(),
-        Some("https://img.example/x.jpg")
-    );
+    assert_eq!(lean.image_url.as_deref(), Some("https://img.example/x.jpg"));
     // No social facts: platform/kind are None.
     assert_eq!(lean.platform, None);
     assert_eq!(lean.kind, None);
@@ -219,10 +216,7 @@ async fn live_share_reddit_subreddit() {
     assert_eq!(page.platform, Some(SocialPlatform::Reddit));
     // RedditJson from a residential IP; datacenter traffic 403s and self-heals
     // to the page scrape. Either way it must return content.
-    assert!(
-        page.title.is_some(),
-        "expected content for an r/rust share"
-    );
+    assert!(page.title.is_some(), "expected content for an r/rust share");
 }
 
 #[tokio::test]
@@ -306,9 +300,7 @@ async fn live_many_urls_concurrent_best_effort() {
     .await;
     // Best-effort: the two real recipes return, the dead URL is dropped.
     assert_eq!(pages.len(), 2, "expected the bad URL to be dropped");
-    assert!(pages
-        .iter()
-        .all(|p| p.source == ContentSource::Html));
+    assert!(pages.iter().all(|p| p.source == ContentSource::Html));
     assert!(pages.iter().any(|p| !p.structured.is_empty()));
     // The lean spine carries no body text.
     assert!(pages.iter().all(|p| p.body.is_none()));
@@ -344,7 +336,5 @@ async fn live_many_urls_depth_one_expands_and_respects_limit() {
     .await;
     assert!(!pages.is_empty(), "depth-1 crawl should yield pages");
     assert!(pages.len() <= 5, "limit must cap the crawl");
-    assert!(pages
-        .iter()
-        .all(|p| p.source == ContentSource::Html));
+    assert!(pages.iter().all(|p| p.source == ContentSource::Html));
 }

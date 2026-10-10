@@ -290,7 +290,9 @@ async fn no_door(platform: SocialPlatform, kind: Option<SocialKind>, url: &str) 
         id: None,
         handle: None,
     };
-    fetch_social(&social, &CanonicalUrl::new(url)).await.is_none()
+    fetch_social(&social, &CanonicalUrl::new(url))
+        .await
+        .is_none()
 }
 
 #[tokio::test]
@@ -343,5 +345,12 @@ async fn fetch_social_no_door_for_none_kind_shortlink() {
     // An opaque TikTok shortener classifies with `kind: None` — the path is
     // a short code, not an addressable item. It must fall through to the page
     // fetch, NOT oEmbed (which needs an id/handle the shortlink lacks).
-    assert!(no_door(SocialPlatform::TikTok, None, "https://vm.tiktok.com/ZMabc123").await);
+    assert!(
+        no_door(
+            SocialPlatform::TikTok,
+            None,
+            "https://vm.tiktok.com/ZMabc123"
+        )
+        .await
+    );
 }
