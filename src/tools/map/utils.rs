@@ -1,6 +1,6 @@
-use crate::utils::schema_types;
+use crate::utils::{canonical_domain, schema_types};
 use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
-use scraper::{ElementRef, Html, Selector};
+use scraper::{ElementRef, Html};
 use serde_json::Value;
 use url::Url;
 
@@ -19,9 +19,11 @@ const MIN_PATTERN_LEN: usize = 2;
 /// Maximum pattern length as a ratio of total children (e.g., 2 = half).
 const MAX_PATTERN_RATIO: usize = 2;
 
-/// Longest run of sibling elements that counts as one repeating item. Without
-/// it, a page of a thousand siblings costs a billion comparisons.
-const MAX_PATTERN_LEN: usize = 8;
+/// Longest run of sibling elements that counts as one repeating item, and how
+/// many candidate lengths are scanned, so a page of thousands of siblings
+/// stays cheap.
+const MAX_PATTERN_LEN: usize = 64;
+const MAX_PATTERN_CANDIDATES: usize = 8;
 
 /// HTML tag name for main content elements.
 const MAIN_TAG: &str = "main";
@@ -297,12 +299,27 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
     let n = children.len();
     let structures: Vec<StructurePattern> = children.iter().map(map_structure_pattern).collect();
 
-    // Try pattern lengths from MIN_PATTERN_LEN up to n/MAX_PATTERN_RATIO
-    for pattern_len in MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN) {
-        if n < pattern_len * MIN_SIBLING_GROUP_SIZE {
-            break;
+    // A unit of `p` elements repeats its structures `p` apart, so the
+    // distances between repeats of one structure are the only lengths worth
+    // scanning: the most frequent few, in a fixed order.
+    let mut last_seen: HashMap<&StructurePattern, usize> = HashMap::new();
+    let mut distances: HashMap<usize, usize> = HashMap::new();
+    for (idx, structure) in structures.iter().enumerate() {
+        if let Some(previous) = last_seen.insert(structure, idx) {
+            *distances.entry(idx - previous).or_default() += 1;
         }
+    }
+    let mut candidates: Vec<(usize, usize)> = distances
+        .into_iter()
+        .filter(|(len, _)| {
+            (MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN)).contains(len)
+                && n >= len * MIN_SIBLING_GROUP_SIZE
+        })
+        .collect();
+    candidates.sort_by_key(|(len, repeats)| (std::cmp::Reverse(*repeats), *len));
+    candidates.truncate(MAX_PATTERN_CANDIDATES);
 
+    for (pattern_len, _) in candidates {
         let mut multi_pattern_groups: HashMap<Vec<StructurePattern>, Vec<usize>> = HashMap::new();
 
         // Scan through all possible positions
@@ -315,7 +332,11 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         }
 
         // Each multi-element pattern that repeats `MIN_SIBLING_GROUP_SIZE` times is a group
-        for (pattern, start_indices) in multi_pattern_groups {
+        // In order of first appearance, so equal-scoring groups always rank
+        // the same way.
+        let mut pattern_groups: Vec<_> = multi_pattern_groups.into_iter().collect();
+        pattern_groups.sort_by_key(|(_, start_indices)| start_indices[0]);
+        for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
                 // Skip homogeneous patterns (handled by single-element detection)
                 let first = &pattern[0];
@@ -462,18 +483,22 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                             return None;
                         }
 
-                        // Case 2: a link to an anchor of this same page, which
-                        // stands for the link inside that anchor's element
+                        // Case 2: a link to an anchor of this same page stands
+                        // for the link inside that anchor's element
                         let url = resolve_href(url_str, &base)?;
-                        let before_fragment =
-                            |url: &Url| url[..url::Position::AfterQuery].to_string();
-                        let anchor_link = url
-                            .fragment()
-                            .filter(|_| before_fragment(&url) == before_fragment(&base))
-                            .and_then(|fragment| urlencoding::decode(fragment).ok())
-                            .and_then(|anchor_id| map_anchor_to_link(&anchor_id, doc, &base));
-                        // Case 3: any other URL, absolute or relative
-                        Some(anchor_link.unwrap_or_else(|| url.to_string()))
+                        let is_this_page = url.path() == base.path()
+                            && url.query() == base.query()
+                            && url.port_or_known_default() == base.port_or_known_default()
+                            && url.host_str().map(canonical_domain)
+                                == base.host_str().map(canonical_domain);
+                        match url.fragment() {
+                            Some(fragment) if is_this_page => {
+                                let anchor_id = urlencoding::decode(fragment).ok()?;
+                                map_anchor_to_link(&anchor_id, doc, &base)
+                            }
+                            // Case 3: any other URL, absolute or relative
+                            _ => Some(url.to_string()),
+                        }
                     })
                     .collect::<Vec<String>>(),
             )
@@ -488,9 +513,11 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
 /// Selector must be dynamically created per anchor_id (cannot reuse a static Lazy value).
 /// This is acceptable because anchor resolution is rare compared to other operations.
 fn map_anchor_to_link(anchor_id: &str, doc: &Html, base: &Url) -> Option<String> {
-    // Dynamic selector - necessary because anchor_id is runtime data
-    let selector = Selector::parse(&format!("[id='{}']", anchor_id)).ok()?;
-    let element = doc.select(&selector).next()?;
+    let element = doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+        .find(|element| element.value().id() == Some(anchor_id))?;
     select_primary_link_in_element(&element, base)
 }
 

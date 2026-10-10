@@ -352,6 +352,8 @@ async fn test_map_children_from_real_website_2() {
     );
 }
 
+// An anchor of this page stands for its link; a missing one yields nothing;
+// another page's anchor is that page's URL.
 #[tokio::test]
 async fn itemlist_anchor_is_followed_only_on_this_exact_page() {
     let html = r#"<html><head><script type="application/ld+json">{"@type":"ItemList","itemListElement":[
@@ -367,8 +369,7 @@ async fn itemlist_anchor_is_followed_only_on_this_exact_page() {
         urls,
         [
             "https://example.com/r1",
-            "https://example.com/list?page=2#two",
-            "https://example.com/list?page=1#missing"
+            "https://example.com/list?page=2#two"
         ]
     );
 }
@@ -385,4 +386,22 @@ async fn map_children_stays_fast_on_a_thousand_siblings() {
         "{:?}",
         started.elapsed()
     );
+}
+
+#[tokio::test]
+async fn map_children_finds_long_repeating_units_every_time() {
+    for unit in [9usize, 10, 12, 20] {
+        let item = |n: usize| {
+            let filler: String = (1..unit).map(|tag| format!("<x{tag}>t</x{tag}>")).collect();
+            format!("<div><a href=\"/item{n}\">Item {n}</a></div>{filler}")
+        };
+        let html = format!(
+            "<html><body><main>{}</main></body></html>",
+            (0..6).map(item).collect::<String>()
+        );
+        for _ in 0..6 {
+            let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+            assert_eq!(urls.len(), 6, "unit of {unit} siblings");
+        }
+    }
 }

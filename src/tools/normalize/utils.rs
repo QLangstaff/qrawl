@@ -11,13 +11,15 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
 
 // HTML normalization regexes
-static JSONLD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)^<script[^>]*type=["']?application/ld\+json["']?[^>]*>"#)
-        .expect("valid regex")
+
+/// A comment or a script, whichever starts first, so neither is read inside
+/// the other.
+static COMMENT_OR_SCRIPT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<!--.*?-->|<script(?:\s[^>]*)?>.*?</script\s*>").expect("valid regex")
 });
 
-static SCRIPT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex"));
+static PLACEHOLDER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("\0(\\d+)\0").expect("valid regex"));
 
 static STYLE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("valid regex"));
@@ -30,9 +32,6 @@ static IFRAME_REGEX: LazyLock<Regex> =
 
 static SVG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<svg[^>]*>.*?</svg>").expect("valid regex"));
-
-static COMMENT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid regex"));
 
 static START_TAG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<[a-zA-Z][^>]*>").expect("valid regex"));
@@ -410,20 +409,51 @@ pub(super) fn normalize_phone(phone: &str) -> String {
 /// collapse whitespace. JSON-LD scripts are data: each stays where it is,
 /// byte for byte.
 pub(super) fn normalize_markup(html: &str) -> String {
-    // Comments go first, so a `<script>` inside one can't pair with a real
-    // `</script>` further down.
-    let html = COMMENT_REGEX.replace_all(html, "");
-    let mut normalized = String::new();
-    let mut rest = 0;
-    for script in SCRIPT_REGEX.find_iter(&html) {
-        normalized.push_str(&strip_junk(&html[rest..script.start()]));
-        if JSONLD_REGEX.is_match(script.as_str()) {
-            normalized.push_str(script.as_str());
+    // Each kept JSON-LD script is swapped for a placeholder while the rest is
+    // stripped, then put back. NUL can't occur in HTML text, so a placeholder
+    // can't collide with content.
+    let mut markup = html.replace('\0', "");
+    let mut jsonld: Vec<String> = Vec::new();
+    // Until nothing changes: removing a script can join the two halves of
+    // another (`<scr<script></script>ipt>`).
+    loop {
+        let stripped = COMMENT_OR_SCRIPT_REGEX
+            .replace_all(&markup, |found: &regex::Captures| {
+                let found = &found[0];
+                if found.starts_with("<!--") || !is_jsonld_script(found) {
+                    return String::new();
+                }
+                jsonld.push(found.to_string());
+                format!("\0{}\0", jsonld.len() - 1)
+            })
+            .to_string();
+        if stripped == markup {
+            break;
         }
-        rest = script.end();
+        markup = stripped;
     }
-    normalized.push_str(&strip_junk(&html[rest..]));
-    normalized.trim().to_string()
+    let stripped = strip_junk(&markup);
+    PLACEHOLDER_REGEX
+        .replace_all(&stripped, |placeholder: &regex::Captures| {
+            placeholder[1]
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| jsonld.get(index).cloned())
+                .unwrap_or_default()
+        })
+        .trim()
+        .to_string()
+}
+
+/// Whether a `<script>…</script>` declares `type="application/ld+json"`.
+fn is_jsonld_script(script: &str) -> bool {
+    let start_tag = script.split('>').next().unwrap_or(script);
+    ATTR_REGEX.captures_iter(start_tag).any(|attr| {
+        let value = attr[0]
+            .split_once('=')
+            .map_or("", |(_, value)| value.trim().trim_matches(['"', '\'']));
+        attr[1].eq_ignore_ascii_case("type") && value.eq_ignore_ascii_case("application/ld+json")
+    })
 }
 
 /// Strip junk from script-free HTML and collapse its whitespace.

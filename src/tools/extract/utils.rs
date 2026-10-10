@@ -2,7 +2,7 @@ use regex::Regex;
 use scraper::Html;
 use std::sync::LazyLock;
 
-use crate::utils::{LINK_SELECTOR, TLD_LEN};
+use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR, TLD_LEN};
 
 // Lazy static regex patterns
 static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -44,23 +44,16 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
 
 /// Extract values from text content using a regex pattern
 fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
-    // Join text nodes with spaces to prevent adjacent elements from creating false patterns
-    // e.g., <div>9631</div><a>contact@domain.com</a> becomes "9631 contact@domain.com"
-    // instead of "9631contact@domain.com"
-    // Script and style text is code, not content — except JSON-LD, which is
-    // data.
+    // Script and style text is code, not content. Text nodes are joined with
+    // spaces so adjacent elements don't run together: `<div>9631</div>` beside
+    // `<a>contact@domain.com</a>` must not read `9631contact@domain.com`.
     let text = doc
         .root_element()
         .descendants()
         .filter_map(|node| {
             let text = node.value().as_text()?;
-            let parent = node.parent()?.value().as_element()?;
-            let is_code = match parent.name() {
-                "style" => true,
-                "script" => parent.attr("type") != Some("application/ld+json"),
-                _ => false,
-            };
-            (!is_code).then_some(&**text)
+            let parent = node.parent()?.value().as_element()?.name();
+            (!matches!(parent, "script" | "style")).then_some(&**text)
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -71,11 +64,42 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
         .collect()
 }
 
+/// The string values a page's JSON-LD holds under the schema.org property
+/// `key` (`email`, `telephone`), at any depth. JSON-LD is data, so the
+/// property says what a value is; its raw text would read an SKU as a phone.
+fn extract_jsonld_values(doc: &Html, key: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for script in doc.select(&JSONLD_SELECTOR) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&script.inner_html()) else {
+            continue;
+        };
+        let mut pending = vec![&value];
+        while let Some(value) = pending.pop() {
+            match value {
+                serde_json::Value::Array(items) => pending.extend(items),
+                serde_json::Value::Object(fields) => {
+                    for (name, value) in fields {
+                        match value {
+                            serde_json::Value::String(text) if name == key => {
+                                found.push(text.trim().to_string());
+                            }
+                            nested => pending.push(nested),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
 /// Extract all email addresses from HTML document.
 pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "mailto:"),
         extract_with_regex(doc, &EMAIL_REGEX),
+        extract_jsonld_values(doc, "email"),
     ]
     .concat()
 }
@@ -85,6 +109,7 @@ pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "tel:"),
         extract_with_regex(doc, &PHONE_REGEX),
+        extract_jsonld_values(doc, "telephone"),
     ]
     .concat()
 }

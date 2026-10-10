@@ -63,18 +63,21 @@ pub(super) async fn page_content(
     };
 
     // normalize: the page is the URL that served it. A shortlink redirects
-    // to its item, so the served URL may have an embed the given one lacks;
-    // a consent or login wall has none, so the given URL's embed stands.
+    // to its item, whose embed is the one to read; a consent or login wall is
+    // no item.
     let url = fetched.as_ref().map_or_else(
         || target.url.clone(),
         |fetched| CanonicalUrl::new(&fetched.url),
     );
-    let is_same_item =
-        extract_social_parts(url.as_str()) == extract_social_parts(target.url.as_str());
-    let embed = if is_same_item {
-        embed
-    } else {
-        fetch_embed(url.as_str()).await.or(embed)
+    let item = |url: &CanonicalUrl| {
+        extract_social_parts(url.as_str()).map(|social| (social.platform, social.kind, social.id))
+    };
+    let embed = match item(&url) {
+        served if served == item(&target.url) => embed,
+        // A different item: its embed, never the given one's.
+        Some((_, Some(_), _)) => fetch_embed(url.as_str()).await,
+        // A wall or a plain page: the given item's embed stands.
+        _ => embed,
     };
 
     // scrape: the embed and the page into the same layers.
@@ -257,8 +260,22 @@ where
                 |(given, visited): (CanonicalUrl, Option<Visited<T>>)| {
                     let visited = visited?;
                     if visited.url != given {
-                        redirected.push(visited);
-                        return None;
+                        if yielded.contains(&visited.url) {
+                            return None;
+                        }
+                        // A landing page that is also queued waits for its
+                        // level to finish; any other is this redirect's alone.
+                        if seen.contains(&visited.url) {
+                            redirected.push(visited);
+                            return None;
+                        }
+                        if !admit(&visited.url) {
+                            return None;
+                        }
+                        seen.insert(visited.url.clone());
+                        yielded.insert(visited.url.clone());
+                        enqueue(&visited.children, &mut seen, &mut next);
+                        return Some((level, visited.item));
                     }
                     yielded.insert(given);
                     enqueue(&visited.children, &mut seen, &mut next);
@@ -269,9 +286,9 @@ where
             if !consumer_is_listening {
                 return;
             }
-            // A redirect is settled once its whole level is in, so which page
-            // it yields doesn't depend on which fetch finished first: the page
-            // it landed on, unless that page was already yielded.
+            // A redirect onto a queued page is settled once the level is in,
+            // so which page it yields doesn't depend on which fetch finished
+            // first: the page it landed on, unless that page was yielded.
             for visited in redirected {
                 if !admit(&visited.url) || !yielded.insert(visited.url.clone()) {
                     continue;

@@ -505,3 +505,20 @@ fn a_playlist_player_is_not_a_video() {
         extract_social_parts("https://youtube.com/embed/videoseries?list=PL1").expect("youtube");
     assert_eq!(player.kind, None);
 }
+
+#[tokio::test]
+async fn jsonld_emails_and_phones_come_from_their_properties_only() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type":"Organization",
+        "email":"ld@example.com",
+        "telephone":"212-555-1212",
+        "description":"Reach us:\nme@x.com",
+        "image":"https://cdn.example.com/img@2x.png",
+        "gtin13":"0012345678905",
+        "contactPoint":{"@type":"ContactPoint","email":"help@example.com"}
+    }</script></head><body></body></html>"#;
+    let mut emails = extract_emails(&html.into()).await;
+    emails.sort();
+    assert_eq!(emails, ["help@example.com", "ld@example.com"]);
+    assert_eq!(extract_phones(&html.into()).await, ["212-555-1212"]);
+}

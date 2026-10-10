@@ -65,6 +65,7 @@ pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
 /// Microdata + RDFa + Microformats2, with cross-encoding entities merged (same
 /// `@type` + `name`).
 pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
+    STRUCTURED_BUDGET.with(|budget| budget.set(STRUCTURED_BUDGET_BYTES));
     let mut items: Jsonld = document
         .select(&JSONLD_SELECTOR)
         .filter_map(|el| serde_json::from_str(&el.text().collect::<String>()).ok())
@@ -94,7 +95,9 @@ fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
         serde_json::Value::Object(mut obj) => {
             let graph = obj.remove("@graph").map(flatten_jsonld).unwrap_or_default();
             // An object that only wraps its `@graph` is not an entity itself.
-            let is_entity = obj.keys().any(|key| key != "@context");
+            let is_entity = obj
+                .keys()
+                .any(|key| !matches!(key.as_str(), "@context" | "@id"));
             let mut entity = serde_json::Value::Object(obj);
             shorten_types(&mut entity);
             is_entity
@@ -108,24 +111,27 @@ fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// Rewrite every `@type`, nested ones too, to short names, like the other
-/// encodings yield.
+/// encodings yield. `@context` defines terms and a `@value` object is a typed
+/// literal (`xsd:date`), so neither holds an entity type.
 fn shorten_types(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(items) => items.iter_mut().for_each(shorten_types),
-        serde_json::Value::Object(fields) => {
-            let types = schema_types(&serde_json::Value::Object(fields.clone()));
-            match types.as_slice() {
-                [] => {}
-                [one] => {
-                    fields.insert("@type".to_string(), one.clone().into());
-                }
-                many => {
-                    fields.insert("@type".to_string(), many.to_vec().into());
+        serde_json::Value::Object(fields) if !fields.contains_key("@value") => {
+            if let Some(declared) = fields.get("@type") {
+                let types = schema_types(&serde_json::json!({ "@type": declared }));
+                match types.as_slice() {
+                    [] => {}
+                    [one] => {
+                        fields.insert("@type".to_string(), one.clone().into());
+                    }
+                    many => {
+                        fields.insert("@type".to_string(), many.to_vec().into());
+                    }
                 }
             }
             fields
                 .iter_mut()
-                .filter(|(key, _)| *key != "@type")
+                .filter(|(key, _)| !matches!(key.as_str(), "@type" | "@context"))
                 .for_each(|(_, nested)| shorten_types(nested));
         }
         _ => {}
@@ -233,7 +239,7 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         } else {
             microdata_prop_value(&el)
         };
-        for name in property_names(&names, &value) {
+        for name in names.split_whitespace() {
             insert_prop(&mut obj, name, value.clone());
         }
     }
@@ -271,34 +277,39 @@ fn collect_properties<'a>(
     }
 }
 
-/// A value this big is a nested item with items of its own.
-const LARGE_VALUE_NODES: usize = 256;
+/// Bytes of structured data one document may yield. An attribute may list
+/// several property names, and its value belongs to each, so nested items
+/// under several names — or one long text under thousands — would otherwise
+/// turn a small page into gigabytes.
+const STRUCTURED_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
-/// Whether `value` holds more than [`LARGE_VALUE_NODES`] values.
-fn is_large_value(value: &serde_json::Value) -> bool {
+thread_local! {
+    static STRUCTURED_BUDGET: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(STRUCTURED_BUDGET_BYTES) };
+}
+
+/// Charge `value` to the document's budget. `false` once the budget is spent:
+/// the value is then left out.
+fn spend_budget(value: &serde_json::Value) -> bool {
+    let mut cost = 0usize;
     let mut pending = vec![value];
-    let mut nodes = 0usize;
     while let Some(value) = pending.pop() {
-        nodes += 1;
-        if nodes > LARGE_VALUE_NODES {
-            return true;
-        }
+        cost += 8;
         match value {
+            serde_json::Value::String(text) => cost += text.len(),
             serde_json::Value::Array(items) => pending.extend(items),
-            serde_json::Value::Object(fields) => pending.extend(fields.values()),
+            serde_json::Value::Object(fields) => {
+                cost += fields.keys().map(String::len).sum::<usize>();
+                pending.extend(fields.values());
+            }
             _ => {}
         }
     }
-    false
-}
-
-/// The property names a value is stored under. An attribute may list several
-/// space-separated names, and the value belongs to each — except a large
-/// nested item, which goes under the first only: copied under every name at
-/// every level, a page of a few hundred bytes would grow without bound.
-fn property_names<'a>(names: &'a str, value: &serde_json::Value) -> impl Iterator<Item = &'a str> {
-    let limit = if is_large_value(value) { 1 } else { usize::MAX };
-    names.split_whitespace().take(limit)
+    STRUCTURED_BUDGET.with(|budget| {
+        let left = budget.get();
+        budget.set(left.saturating_sub(cost));
+        left >= cost
+    })
 }
 
 /// Insert a property, promoting to an array when the same name repeats.
@@ -307,6 +318,9 @@ fn insert_prop(
     name: &str,
     value: serde_json::Value,
 ) {
+    if !spend_budget(&value) {
+        return;
+    }
     match obj.get_mut(name) {
         Some(serde_json::Value::Array(arr)) => arr.push(value),
         Some(existing) => {
@@ -418,7 +432,7 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         } else {
             rdfa_prop_value(&el)
         };
-        for name in property_names(&names, &value) {
+        for name in names.split_whitespace() {
             insert_prop(&mut obj, name, value.clone());
         }
     }
@@ -646,14 +660,8 @@ fn collect_mf(
             }
             // Boundary: do not descend into the nested root.
         } else {
-            let mut is_large = false;
             for (kind, name) in &prop_classes {
-                if is_large {
-                    break;
-                }
-                let value = mf_property_value(&child, *kind);
-                is_large = is_large_value(&value);
-                push_mf_prop(properties, name, value);
+                push_mf_prop(properties, name, mf_property_value(&child, *kind));
             }
             collect_mf(&child, vocab, properties, children);
         }
@@ -665,6 +673,9 @@ fn push_mf_prop(
     name: &str,
     value: serde_json::Value,
 ) {
+    if !spend_budget(&value) {
+        return;
+    }
     match properties.get_mut(name) {
         Some(serde_json::Value::Array(arr)) => arr.push(value),
         _ => {

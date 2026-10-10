@@ -80,52 +80,66 @@ pub(crate) fn listed_domain(entry: &str) -> String {
 /// The `http(s)` URL `input` names — with `https://` when it names no scheme
 /// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `tel:911`,
 /// `ftp:`, a relative path, an email address, a bare word or number).
+///
+/// With an explicit `http(s)://`, any host is taken as written (`intranet`,
+/// an IDN, an IP address). Without one, the input has to look like a host for
+/// `https://` to be put before it.
 pub(crate) fn absolute_url(input: &str) -> Option<String> {
     let input = input.trim();
-    // A host is a name under a TLD, `localhost`, or an IP address — not
-    // `3.14`, which the `url` crate would read as the address 3.0.0.14.
-    let names_a_host = |url: &url::Url| match url.host() {
-        Some(url::Host::Domain(domain)) => {
-            let domain = domain.trim_end_matches('.');
-            domain == "localhost"
-                || domain.rsplit_once('.').is_some_and(|(name, tld)| {
-                    !name.is_empty()
-                        && tld.len() >= 2
-                        && tld.chars().all(|c| c.is_ascii_alphabetic())
-                })
-        }
-        Some(url::Host::Ipv4(_)) => input.matches('.').count() >= 3,
-        Some(url::Host::Ipv6(_)) => true,
-        None => false,
-    };
     let http_url = |candidate: &str| {
         url::Url::parse(candidate)
             .ok()
-            .filter(|url| matches!(url.scheme(), "http" | "https") && names_a_host(url))
+            .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
     };
     let lower = input.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return http_url(input).map(|_| input.to_string());
     }
     // `https:example.com` is a URL the `url` crate completes.
-    if lower.starts_with("http:") || lower.starts_with("https:") {
-        return http_url(input).map(String::from);
+    if let Some(rest) = lower
+        .strip_prefix("https:")
+        .or_else(|| lower.strip_prefix("http:"))
+    {
+        return http_url(input)
+            .filter(|_| names_a_host(rest))
+            .map(String::from);
     }
-    // `localhost:8080/a` and `example.com:8080` are a host and a port;
-    // `tel:911` and `mailto:a@b.com` are a scheme.
-    let has_scheme = input.split_once(':').is_some_and(|(before, after)| {
-        let is_host_and_port = (before == "localhost" || before.contains('.'))
-            && after.starts_with(|c: char| c.is_ascii_digit());
-        !is_host_and_port && !before.contains('/')
-    });
-    if has_scheme || input.starts_with('/') {
+    if !names_a_host(input) {
         return None;
     }
     let candidate = format!("https://{input}");
-    // An email address parses as a host with a user (`https://a@b.com`).
-    http_url(&candidate)
-        .filter(|url| url.username().is_empty() && url.password().is_none())
-        .map(|_| candidate)
+    http_url(&candidate).map(|_| candidate)
+}
+
+/// Whether a scheme-less input starts with a host: a name under a TLD,
+/// `localhost`, or an IP address, with an optional port — not a scheme
+/// (`tel:911`), a path, an email address, or a number (`3.14`).
+fn names_a_host(input: &str) -> bool {
+    let authority = input.split(['/', '?', '#']).next().unwrap_or(input);
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        // A bracketed IPv6 address, with an optional port after it.
+        Some(bracketed) => return bracketed.contains(']'),
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+            Some(_) => return false,
+            None => authority,
+        },
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "localhost" {
+        return true;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    let is_ipv4 = labels.len() == 4 && labels.iter().all(|label| label.parse::<u8>().is_ok());
+    let has_tld = labels.len() >= 2
+        && labels.iter().all(|label| !label.is_empty())
+        && labels
+            .last()
+            .is_some_and(|tld| tld.len() >= 2 && !tld.chars().all(|c| c.is_ascii_digit()));
+    is_ipv4 || has_tld
 }
 
 /// The social platform a host belongs to, or `None` for a non-social host.

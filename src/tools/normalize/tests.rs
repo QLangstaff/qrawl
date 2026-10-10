@@ -1036,3 +1036,78 @@ async fn normalize_html_keeps_jsonld_bytes_and_survives_hostile_markup() {
         );
     }
 }
+
+#[test]
+fn absolute_url_takes_any_host_behind_an_explicit_scheme() {
+    for input in [
+        "https://пример.рф",
+        "http://example.xn--p1ai",
+        "http://intranet/",
+        "http://printer/status",
+        "http://intranet:8080/a",
+        "http://[::1]:8080/a",
+        "HTTPS://Example.com/a",
+        "http://user:pass@example.com/a",
+    ] {
+        assert_eq!(absolute_url(input).as_deref(), Some(input), "{input}");
+    }
+}
+
+#[test]
+fn absolute_url_reads_a_schemeless_host_with_port_query_or_fragment() {
+    for (input, expected) in [
+        ("[::1]:8080/a", "https://[::1]:8080/a"),
+        ("LOCALHOST:8080", "https://LOCALHOST:8080"),
+        ("example.com?q=a:b", "https://example.com?q=a:b"),
+        ("example.com#a:b", "https://example.com#a:b"),
+        ("example.xn--p1ai/a", "https://example.xn--p1ai/a"),
+        ("example.com./a", "https://example.com./a"),
+    ] {
+        assert_eq!(absolute_url(input).as_deref(), Some(expected), "{input}");
+    }
+    for input in ["3.14/v1.2.3", "intranet", "intranet:8080", "page", "1.5"] {
+        assert_eq!(absolute_url(input), None, "{input}");
+    }
+}
+
+#[tokio::test]
+async fn normalize_html_reads_comments_and_scripts_leftmost_first() {
+    let cases = [
+        (
+            r#"<p>a</p><script>var s="<!--";</script><p>keep me</p><!-- c --><p>b</p>"#,
+            "<p>a</p><p>keep me</p><p>b</p>",
+        ),
+        (
+            "<p>a</p><svg><script>x()</script><path/></svg><p>b</p>",
+            "<p>a</p><p>b</p>",
+        ),
+        (
+            r#"<p>a</p><script type="application/ld+jsonp">evil()</script>"#,
+            "<p>a</p>",
+        ),
+        (
+            r#"<p>a</p><script data-type="application/ld+json">evil()</script>"#,
+            "<p>a</p>",
+        ),
+        (
+            "<p>a</p> <script>x()</script> <p>b</p>",
+            "<p>a</p> <p>b</p>",
+        ),
+        ("<p>a</p><script>x()</script ><p>b</p>", "<p>a</p><p>b</p>"),
+        (
+            "<scr<script></script>ipt>alert(1)</script><p>b</p>",
+            "<p>b</p>",
+        ),
+        (
+            r#"<script type = "application/ld+json">{"articleBody":"a <!-- wp --> b"}</script>"#,
+            r#"<script type = "application/ld+json">{"articleBody":"a <!-- wp --> b"}</script>"#,
+        ),
+    ];
+    for (html, expected) in cases {
+        assert_eq!(
+            normalize_html(&html.into()).await.as_str(),
+            expected,
+            "{html}"
+        );
+    }
+}
