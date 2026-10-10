@@ -87,7 +87,15 @@ pub fn normalize_urls(urls: &[String]) -> Vec<String> {
 pub fn dedupe_urls(urls: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     urls.iter()
-        .filter(|url| seen.insert(normalize_url(url)))
+        .filter(|url| !url.trim().is_empty() && seen.insert(normalize_url(url)))
         .cloned()
         .collect()
+}
+
+/// The `http(s)` URL an input names, ready to fetch — with `https://` when it
+/// names no scheme (`example.com/a`) — or `None` when it isn't one (`mailto:`,
+/// `ftp:`, a relative path, an email address). Unlike [`normalize_url`], it
+/// keeps the URL as written.
+pub fn absolute_url(input: &str) -> Option<String> {
+    crate::utils::absolute_url(input)
 }

@@ -23,7 +23,8 @@ pub enum QrawlError {
     /// couldn't be read.
     #[error("HTTP request failed: {0}")]
     Request(String),
-    /// Every fetch profile failed; one error per attempt, in order.
+    /// Every profile of a multi-profile strategy failed; one error per
+    /// attempt, in order.
     #[error("all {} profiles failed: [{}]", .0.len(), .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
     AllProfilesFailed(Vec<QrawlError>),
 }
@@ -31,9 +32,6 @@ pub enum QrawlError {
 impl QrawlError {
     /// Whether another fetch profile could not change the outcome.
     pub(crate) fn is_final(&self) -> bool {
-        matches!(
-            self,
-            Self::InvalidUrl(_) | Self::BlockedDomain(_) | Self::Status(404 | 410)
-        )
+        matches!(self, Self::Status(404 | 410))
     }
 }

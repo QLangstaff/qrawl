@@ -3,8 +3,8 @@
 //! What more than one tool needs. A tool never calls another tool; it calls
 //! this.
 
-use once_cell::sync::Lazy;
 use scraper::Selector;
+use std::sync::LazyLock;
 
 use crate::types::{Html, SocialPlatform};
 
@@ -13,11 +13,11 @@ mod social;
 pub(crate) use social::social_parts;
 
 /// Selector for anchor elements with hrefs.
-pub(crate) static LINK_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("a[href]").expect("valid link selector"));
+pub(crate) static LINK_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("a[href]").expect("valid link selector"));
 
 /// Selector for JSON-LD script tags.
-pub(crate) static JSONLD_SELECTOR: Lazy<Selector> = Lazy::new(|| {
+pub(crate) static JSONLD_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("script[type='application/ld+json']").expect("valid jsonld selector")
 });
 
@@ -44,15 +44,73 @@ pub(crate) fn host_matches(host: &str, domain: &str) -> bool {
 }
 
 /// A host in the form two hosts compare in: lowercased, IDNA-encoded, without
-/// a `www.` prefix (`WWW.Example.COM` → `example.com`).
+/// the root dot of a fully qualified name or a `www.` prefix
+/// (`WWW.Example.COM.` → `example.com`). `www.com` keeps its `www.`: without it
+/// the host would be a bare TLD.
 pub(crate) fn canonical_domain(host: &str) -> String {
-    let lower = host.to_ascii_lowercase();
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
     let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
     let mut apex = idna.as_str();
-    while let Some(stripped) = apex.strip_prefix("www.").filter(|rest| !rest.is_empty()) {
+    while let Some(stripped) = apex.strip_prefix("www.").filter(|rest| rest.contains('.')) {
         apex = stripped;
     }
     apex.to_string()
+}
+
+/// The domain a list entry names, in [`canonical_domain`] form. An entry may
+/// be written as a host, a wildcard (`*.example.com`), a host with a port or
+/// a path, or a whole URL.
+pub(crate) fn listed_domain(entry: &str) -> String {
+    let entry = entry.trim();
+    let host = host_of(entry).unwrap_or_else(|| {
+        let without_wildcard = entry.trim_start_matches("*.");
+        let without_path = without_wildcard
+            .split('/')
+            .next()
+            .unwrap_or(without_wildcard);
+        without_path
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+            .map_or(without_path, |(host, _port)| host)
+            .to_string()
+    });
+    canonical_domain(&host)
+}
+
+/// The `http(s)` URL `input` names — with `https://` when it names no scheme
+/// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `ftp:`, a
+/// relative path, an email address, a bare word).
+pub(crate) fn absolute_url(input: &str) -> Option<String> {
+    let input = input.trim();
+    let http_url = |candidate: &str| {
+        url::Url::parse(candidate)
+            .ok()
+            .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+    };
+    let lower = input.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return http_url(input).map(|_| input.to_string());
+    }
+    // `https:example.com` is a URL the `url` crate completes.
+    if lower.starts_with("http:") || lower.starts_with("https:") {
+        return http_url(input).map(String::from);
+    }
+    // `localhost:8080/a` is a host and a port, not a scheme.
+    let has_scheme = input.split_once(':').is_some_and(|(scheme, rest)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+            && !rest.starts_with(|c: char| c.is_ascii_digit())
+    });
+    if has_scheme || input.starts_with('/') || !(input.contains('.') || input.contains(':')) {
+        return None;
+    }
+    let candidate = format!("https://{input}");
+    // An email address parses as a host with a user (`https://a@b.com`).
+    http_url(&candidate)
+        .filter(|url| url.username().is_empty())
+        .map(|_| candidate)
 }
 
 /// The social platform a host belongs to, or `None` for a non-social host.
@@ -147,14 +205,41 @@ pub(crate) mod embed_keys {
     pub(crate) const PREFIXES: [&str; 2] = ["oembed:", "reddit:"];
 }
 
+/// Elements nested deeper than this are not a page: a recursive walk over such
+/// a document overflows the stack, which aborts the process.
+const MAX_DOM_DEPTH: usize = 512;
+
+fn is_too_deep(document: &scraper::Html) -> bool {
+    let mut depth = 0usize;
+    document.tree.root().traverse().any(|edge| {
+        match edge {
+            ego_tree::iter::Edge::Open(_) => depth += 1,
+            ego_tree::iter::Edge::Close(_) => depth -= 1,
+        }
+        depth > MAX_DOM_DEPTH
+    })
+}
+
 /// Parse `html` and read it with `read`, off the async runtime: building a DOM
-/// is CPU-bound, and a parsed document can't cross an `await`.
+/// is CPU-bound, and a parsed document can't cross an `await`. A document
+/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one.
 pub(crate) async fn with_document<T: Send + 'static>(
     html: &Html,
     read: impl FnOnce(&scraper::Html) -> T + Send + 'static,
 ) -> T {
     let html = html.to_string();
-    tokio::task::spawn_blocking(move || read(&scraper::Html::parse_document(&html)))
-        .await
-        .expect("reading a parsed document panicked")
+    tokio::task::spawn_blocking(move || {
+        let document = scraper::Html::parse_document(&html);
+        if is_too_deep(&document) {
+            log::warn!("document nested deeper than {MAX_DOM_DEPTH} elements read as empty");
+            return read(&scraper::Html::parse_document(""));
+        }
+        read(&document)
+    })
+    .await
+    .expect("reading a parsed document panicked")
 }
+
+/// How long a top-level domain is: `.io` to `.international` and beyond. An
+/// email is found (`extract`) and kept (`normalize`) under the same bound.
+pub(crate) const TLD_LEN: std::ops::RangeInclusive<usize> = 2..=24;

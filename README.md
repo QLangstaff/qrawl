@@ -25,6 +25,8 @@ qrawl url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
   "address": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   "platform": "YouTube",
   "kind": "Video",
+  "handle": null,
+  "id": "dQw4w9WgXcQ",
   "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
   "text": "The official video for “Never Gonna Give You Up” by Rick Astley. …",
   "author": "Rick Astley",
@@ -37,7 +39,7 @@ qrawl url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 }
 ```
 
-`url` takes any link — a blog post, a store page, a TikTok video — and returns one shape, `PageContent`, filled the same way every time. It fetches the page, retrying across browser profiles (Minimal → Windows → iOS) if a site pushes back, plus the item's embed when the platform serves one (Reddit's `.json`, oEmbed for TikTok, YouTube, Pinterest, and Vimeo). It scrapes both into schema.org data, metadata, social links, and body HTML. You map that shape to your own domain. No API key, no headless browser, no config.
+`url` takes any link — a blog post, a store page, a TikTok video — and returns one shape, `PageContent`, filled the same way every time. It fetches the page, retrying across browser profiles (Minimal → Windows → iOS) if a site pushes back, plus the item's embed when the platform serves one (Reddit's `.json`, oEmbed for TikTok, YouTube, Pinterest, and Vimeo). It scrapes the page into schema.org data, metadata, social links, and body HTML, and the embed into more metadata, which wins for the title, author, and image. You map that shape to your own domain. No API key, no headless browser, no config.
 
 ## Compose them
 
@@ -135,7 +137,7 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl url <url>` | any link → `PageContent` |
 | `qrawl urls <url>...` | many links → a `PageContent` each; `--depth` (at most 3), `--limit`, `--allow`, `--block`, `--allow-url`, `--block-url`, `--include-schema`, `--exclude-schema` |
 | `qrawl fetch <url>` | fetch and report the page's size and the URL that served it |
-| `qrawl preview <url>` | the page's preview — title, text, author, image, video |
+| `qrawl preview <url>` | any link → its preview: title, text, author, image, video |
 | `qrawl metadata <input>` | all `<meta>` tags |
 | `qrawl body <input>` | the `<body>` HTML |
 | `qrawl markdown <input>` | the page as Markdown |

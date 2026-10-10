@@ -193,6 +193,8 @@ fn youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
             let id = query_value(url, "v");
             (id.is_some().then_some(SocialKind::Video), id, None)
         }
+        // `/embed/videoseries` is a playlist player, not a video.
+        ["embed", "videoseries", ..] => (None, None, None),
         ["shorts", id, ..] | ["embed", id, ..] | ["live", id, ..] | ["v", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }

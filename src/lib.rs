@@ -6,6 +6,7 @@ pub mod macros;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod errors;
+#[cfg(feature = "cli")]
 pub mod runtime;
 pub mod templates;
 pub mod tools;

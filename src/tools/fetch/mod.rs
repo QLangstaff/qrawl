@@ -14,6 +14,7 @@ pub use types::Fetched;
 
 use crate::errors::QrawlError;
 use crate::types::{get_fetch_strategy, FetchStrategy, Html};
+use crate::utils::absolute_url;
 use utils::check_domain_filter;
 
 /// Fetch a page with the `Fast` strategy: one `Minimal` attempt.
@@ -32,7 +33,7 @@ pub async fn fetch_strategy(url: &str) -> Result<Fetched, QrawlError> {
 }
 
 async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<Fetched, QrawlError> {
-    check_domain_filter(url)?;
+    check_request(url)?;
     let (url, html) = strategies::fetch_html(url, strategy).await?;
     Ok(Fetched {
         url,
@@ -43,6 +44,15 @@ async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<Fetched, Qrawl
 /// Fetch raw bytes (images, PDFs, JSON) with the strategy of the enclosing
 /// [`Context`](crate::types::Context).
 pub async fn fetch_bytes(url: &str, referer: Option<&str>) -> Result<Vec<u8>, QrawlError> {
-    check_domain_filter(url)?;
+    check_request(url)?;
     strategies::fetch_bytes(url, get_fetch_strategy(), referer).await
+}
+
+/// Refuse, before any network, a URL that isn't `http(s)` or that the domain
+/// filter rejects.
+fn check_request(url: &str) -> Result<(), QrawlError> {
+    if absolute_url(url).as_deref() != Some(url.trim()) {
+        return Err(QrawlError::InvalidUrl(url.to_string()));
+    }
+    check_domain_filter(url)
 }

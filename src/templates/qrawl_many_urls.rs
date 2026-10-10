@@ -8,7 +8,7 @@ use crate::tools::normalize::CanonicalUrl;
 use crate::types::{Context, Jsonld};
 
 use super::types::{CrawlOptions, PageContent};
-use super::utils::{crawl, page_content};
+use super::utils::{crawl, page_content, Visited};
 
 /// [`qrawl_any_url`](super::qrawl_any_url) over **many** URLs — concurrent,
 /// best-effort, and optionally crawling their children.
@@ -19,8 +19,10 @@ use super::utils::{crawl, page_content};
 ///
 /// `options` ([`CrawlOptions`]):
 /// - depth 0 (the default): exactly the given URLs. Depth N: also each fetched
-///   page's children (`map_children`), N levels deep. Each page is crawled
-///   once, at the shallowest level that reaches it.
+///   page's children (`map_children`), N levels deep. Each page is returned
+///   once, at the shallowest level that reaches it, however many of the URLs
+///   redirect to it.
+/// - allow/block URLs also apply to the URL a redirect lands on.
 /// - allow/block URLs: filter seeds and children before their fetch.
 /// - include/exclude schemas: filter the *results*. A page counts (toward the
 ///   limit too) only if its structured data includes an include-type (empty =
@@ -78,7 +80,11 @@ pub async fn qrawl_many_urls(
             Some(fetched) if level < depth => map_children(&fetched.html, &fetched.url).await,
             _ => Vec::new(),
         };
-        Some((page, children))
+        Some(Visited {
+            url: page.url.clone(),
+            item: page,
+            children,
+        })
     })
     // The schema filter decides results only: a roundup that doesn't match
     // still yields its matching children.

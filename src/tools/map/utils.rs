@@ -311,7 +311,7 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
             idx += 1;
         }
 
-        // For each multi-element pattern, if it appears 2+ times, add to groups
+        // Each multi-element pattern that repeats `MIN_SIBLING_GROUP_SIZE` times is a group
         for (pattern, start_indices) in multi_pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
                 // Skip homogeneous patterns (handled by single-element detection)
@@ -368,7 +368,6 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 /// Map sibling HTML fragment to URL.
 ///
 /// Finds the first valid HTTP(S) link in each sibling fragment.
-/// Skips excluded domains to avoid returning Pinterest/TikTok/etc share buttons.
 ///
 /// # Performance Note
 /// Parses each sibling HTML fragment individually. This is acceptable because:
@@ -430,7 +429,7 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
     }
 }
 
-/// Map ItemList items to URLs, resolving anchors to real links and filtering by domain.
+/// Map ItemList items to URLs, resolving anchors to real links.
 ///
 /// Handles three cases:
 /// 1. Full external URLs - Return as-is
@@ -460,37 +459,19 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                             return None;
                         }
 
-                        // Case 2: Absolute URL
-                        if let Ok(url) = Url::parse(url_str) {
-                            if is_valid_scheme(&url) {
-                                if let Some(fragment) = url.fragment() {
-                                    // Compare hosts with canonicalization (strips www., lowercases, etc.)
-                                    let hosts_match = match (url.host_str(), base.host_str()) {
-                                        (Some(url_host), Some(base_host)) => {
-                                            canonical_domain(url_host)
-                                                == canonical_domain(base_host)
-                                        }
-                                        _ => false,
-                                    };
-
-                                    if url.scheme() == base.scheme() && hosts_match {
-                                        if let Some(resolved) =
-                                            map_anchor_to_link(fragment, doc, &base)
-                                        {
-                                            return Some(resolved);
-                                        }
-                                        return None;
-                                    }
-                                }
-                                return Some(url.to_string());
+                        // Case 2: a link to an anchor of this same page
+                        let url = resolve_href(url_str, &base)?;
+                        let is_this_page = url.scheme() == base.scheme()
+                            && url.path() == base.path()
+                            && url.host_str().map(canonical_domain)
+                                == base.host_str().map(canonical_domain);
+                        match url.fragment() {
+                            Some(fragment) if is_this_page => {
+                                map_anchor_to_link(fragment, doc, &base)
                             }
+                            // Case 3: any other URL, absolute or relative
+                            _ => Some(url.to_string()),
                         }
-
-                        // Case 3: Relative URL
-                        base.join(url_str)
-                            .ok()
-                            .filter(is_valid_scheme)
-                            .map(|u| u.to_string())
                     })
                     .collect::<Vec<String>>(),
             )

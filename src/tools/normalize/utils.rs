@@ -1,39 +1,43 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use crate::utils::{canonical_domain, host_of_url, social_platform};
+use crate::utils::{absolute_url, canonical_domain, host_of_url, social_platform, TLD_LEN};
 
 // Lazy static regex for whitespace normalization
-static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("valid regex"));
+static WHITESPACE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
 
 // HTML normalization regexes
-static JSONLD_REGEX: Lazy<Regex> = Lazy::new(|| {
+static JSONLD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>.*?</script>"#)
         .expect("valid regex")
 });
 
-static SCRIPT_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex"));
+static SCRIPT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex"));
 
-static STYLE_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("valid regex"));
+static STYLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("valid regex"));
 
-static NOSCRIPT_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").expect("valid regex"));
+static NOSCRIPT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").expect("valid regex"));
 
-static IFRAME_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<iframe[^>]*>.*?</iframe>").expect("valid regex"));
+static IFRAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<iframe[^>]*>.*?</iframe>").expect("valid regex"));
 
-static SVG_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?is)<svg[^>]*>.*?</svg>").expect("valid regex"));
+static SVG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<svg[^>]*>.*?</svg>").expect("valid regex"));
 
-static COMMENT_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid regex"));
+static COMMENT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid regex"));
 
-static JUNK_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
+static START_TAG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[a-zA-Z][^>]*>").expect("valid regex"));
+
+static JUNK_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?ix)
         \s+                                    # Leading whitespace
@@ -58,7 +62,7 @@ static JUNK_ATTR_REGEX: Lazy<Regex> = Lazy::new(|| {
     .expect("valid regex")
 });
 
-static NEWLINE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\\n").expect("valid regex"));
+static NEWLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\n").expect("valid regex"));
 
 /// Tracking / analytics query parameters stripped by `normalize_url` so the
 /// same page reached via different campaigns/referrers canonicalizes identically.
@@ -179,24 +183,8 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
 /// - `https://example.com/page#section` → `https://example.com/page`
 /// - `https://example.com?utm_source=x&id=7` → `https://example.com/?id=7`
 fn normalize_any_url(url: &str) -> String {
-    // `mailto:` and `ftp://` already name a scheme, and a relative path names
-    // no host, so none of them gains an `https://` prefix.
-    let url_lower = url.to_ascii_lowercase();
-    let is_http = url_lower.starts_with("http://") || url_lower.starts_with("https://");
-    // `localhost:8080/a` is a host and a port, not a scheme.
-    let has_scheme = url.split_once(':').is_some_and(|(scheme, rest)| {
-        !scheme.is_empty()
-            && scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
-            && !rest.starts_with(|c: char| c.is_ascii_digit())
-    });
-    let url_with_protocol = if is_http {
-        url.to_string()
-    } else if has_scheme || url.starts_with('/') || !(url.contains('.') || url.contains(':')) {
+    let Some(url_with_protocol) = absolute_url(url) else {
         return url.to_string();
-    } else {
-        format!("https://{}", url)
     };
 
     let mut parsed = match Url::parse(&url_with_protocol) {
@@ -370,10 +358,7 @@ pub(super) fn normalize_email(email: &str) -> String {
 
         // Get TLD (last segment after final dot)
         if let Some(tld) = domain.split('.').next_back() {
-            // TLD must be 2-24 letters — the same bound as `extract`'s email
-            // regex, so a long gTLD (`.photography`, `.international`) survives
-            // both find and normalize instead of being extracted then dropped.
-            if tld.len() < 2 || tld.len() > 24 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+            if !TLD_LEN.contains(&tld.len()) || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
                 return String::new();
             }
 
@@ -428,27 +413,28 @@ pub(super) fn normalize_phone(phone: &str) -> String {
 ///
 /// Implementation for normalize_html. Contains all the messy regex logic.
 pub(super) fn strip_junk(html: &str) -> String {
-    // Extract and protect JSON-LD scripts before removing all scripts
-    let jsonld_scripts: Vec<String> = JSONLD_REGEX
-        .captures_iter(html)
-        .map(|cap| cap.get(0).unwrap().as_str().to_string())
-        .collect();
-
-    // Remove non-content elements (including all scripts)
-    let mut normalized_html = SCRIPT_REGEX.replace_all(html, "").to_string();
-
-    // Restore JSON-LD scripts after removing JavaScript
-    for jsonld in jsonld_scripts {
-        normalized_html = format!("{}{}", normalized_html, jsonld);
-    }
+    // Every script goes except JSON-LD, which is data and stays where it is.
+    let mut normalized_html = SCRIPT_REGEX
+        .replace_all(html, |script: &regex::Captures| {
+            if JSONLD_REGEX.is_match(&script[0]) {
+                script[0].to_string()
+            } else {
+                String::new()
+            }
+        })
+        .to_string();
 
     normalized_html = STYLE_REGEX.replace_all(&normalized_html, "").to_string();
     normalized_html = NOSCRIPT_REGEX.replace_all(&normalized_html, "").to_string();
     normalized_html = IFRAME_REGEX.replace_all(&normalized_html, "").to_string();
     normalized_html = SVG_REGEX.replace_all(&normalized_html, "").to_string();
     normalized_html = COMMENT_REGEX.replace_all(&normalized_html, "").to_string();
-    normalized_html = JUNK_ATTR_REGEX
-        .replace_all(&normalized_html, "")
+    // Attributes are stripped inside start tags only, so text that reads like
+    // one (`role = admin`) is left alone.
+    normalized_html = START_TAG_REGEX
+        .replace_all(&normalized_html, |tag: &regex::Captures| {
+            JUNK_ATTR_REGEX.replace_all(&tag[0], "").to_string()
+        })
         .to_string();
 
     normalized_html

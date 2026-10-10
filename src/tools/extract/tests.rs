@@ -438,3 +438,70 @@ fn a_www_prefix_does_not_change_what_a_short_host_means() {
     assert_eq!(video.kind, Some(SocialKind::Video));
     assert_eq!(video.id.as_deref(), Some("dQw4w9WgXcQ"));
 }
+
+#[test]
+fn is_social_url_true_for_known_platforms() {
+    assert!(is_social("https://tiktok.com/@user/video/123"));
+    assert!(is_social("https://reddit.com/r/rust"));
+    assert!(is_social("https://youtu.be/dQw4w9WgXcQ"));
+    assert!(is_social("https://www.pinterest.co.uk/pin/999"));
+    // Recognized platform, opaque path — still a social URL.
+    assert!(is_social("https://vm.tiktok.com/ZMabcdef"));
+}
+
+#[test]
+fn is_social_url_false_for_web_and_garbage() {
+    assert!(!is_social("https://example.com/foo/bar"));
+    assert!(!is_social("https://www.allrecipes.com/recipe/10813"));
+    assert!(!is_social("http://")); // a URL, but has no host
+    assert!(!is_social("not a url"));
+    assert!(!is_social("mailto:hi@example.com"));
+}
+
+#[test]
+fn pinterest_label_needs_a_public_suffix_after_it() {
+    assert!(is_social("https://www.pinterest.co.uk/pin/1"));
+    assert!(is_social("https://uk.pinterest.com/pin/1"));
+    assert!(!is_social("https://pinterest.evil.com/pin/1"));
+}
+
+#[test]
+fn pinterest_label_before_an_unrelated_domain_is_not_pinterest() {
+    assert!(is_social("https://pinterest.com.au/pin/1"));
+    assert!(is_social("https://pinterest.de/pin/1"));
+    assert!(!is_social("https://pinterest.abc.com/pin/1"));
+    assert!(!is_social("https://pinterest.aws.dev/pin/1"));
+}
+
+#[test]
+fn only_pinterest_country_hosts_are_pinterest() {
+    assert!(is_social("https://pinterest.ca/pin/1"));
+    assert!(is_social("https://www.pinterest.co.kr/pin/1"));
+    assert!(!is_social("https://pinterest.io/pin/1"));
+    assert!(!is_social("https://pinterest.ws/pin/1"));
+}
+
+fn is_social(url: &str) -> bool {
+    extract_social_parts(url).is_some()
+}
+
+#[tokio::test]
+async fn emails_and_phones_come_from_content_not_from_scripts() {
+    let html = r#"<html><body>
+        <script>var owner = "js@tracker.io"; var id=4155551234567;</script>
+        <style>.a::after { content: "css@style.io"; }</style>
+        <p>Write to team@example.com or call 415-555-1234.</p>
+        <a href="MAILTO:Sales@Example.com?subject=hi">Sales</a>
+    </body></html>"#;
+    let emails = extract_emails(&html.into()).await;
+    assert_eq!(emails, ["Sales@Example.com", "team@example.com"]);
+    let phones = extract_phones(&html.into()).await;
+    assert_eq!(phones, ["415-555-1234"]);
+}
+
+#[test]
+fn a_playlist_player_is_not_a_video() {
+    let player =
+        extract_social_parts("https://youtube.com/embed/videoseries?list=PL1").expect("youtube");
+    assert_eq!(player.kind, None);
+}

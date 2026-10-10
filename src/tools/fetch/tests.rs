@@ -254,7 +254,7 @@ async fn host_cap_skipped_when_url_has_no_host() {
 fn reddit_json_url_appends_suffix() {
     assert_eq!(
         reddit_json_url("https://reddit.com/r/rust/comments/abc/title"),
-        "https://reddit.com/r/rust/comments/abc/title.json"
+        "https://reddit.com/r/rust/comments/abc/title.json?raw_json=1"
     );
 }
 
@@ -269,8 +269,7 @@ fn oembed_request_url_per_platform() {
     .expect("tiktok has oembed");
     assert!(tiktok.starts_with("https://www.tiktok.com/oembed?url="));
     assert!(tiktok.contains("format=json"));
-    // Regression guard: the target is rebuilt WITH `www.` — TikTok oEmbed
-    // 400s on a www-less host, which our `canonical` strips.
+    // TikTok oEmbed 400s on a www-less host, so the target carries `www.`.
     assert!(
         tiktok.contains("https%3A%2F%2Fwww.tiktok.com%2F%40u%2Fvideo%2F123"),
         "expected www-qualified, field-rebuilt target, got {tiktok}"
@@ -306,7 +305,7 @@ fn embed_request_url(url: &str) -> Option<String> {
 fn embed_request_for_an_item_addresses_its_platform() {
     assert_eq!(
         embed_request_url("https://reddit.com/r/rust/comments/abc/title").as_deref(),
-        Some("https://reddit.com/r/rust/comments/abc/title.json")
+        Some("https://reddit.com/r/rust/comments/abc/title.json?raw_json=1")
     );
     for (url, endpoint) in [
         (
@@ -358,4 +357,43 @@ fn no_embed_request_for_listings_profiles_shortlinks_and_other_hosts() {
 fn is_url_allowed_blocks_a_fully_qualified_host() {
     let block = vec!["example.com".to_string()];
     assert!(!is_url_allowed("https://example.com./a", &[], &block));
+}
+
+#[test]
+fn a_listed_domain_may_be_written_many_ways() {
+    for listed in [
+        "example.com:8080",
+        "example.com.",
+        " example.com",
+        "*.example.com",
+        "example.com/path",
+        "https://www.example.com/a",
+    ] {
+        let block = vec![listed.to_string()];
+        assert!(
+            !is_url_allowed("https://sub.example.com/x", &[], &block),
+            "{listed}"
+        );
+        assert!(
+            is_url_allowed("https://other.com/x", &[], &block),
+            "{listed}"
+        );
+    }
+}
+
+#[test]
+fn a_www_tld_entry_does_not_list_every_host_of_the_tld() {
+    let block = vec!["www.com".to_string()];
+    assert!(!is_url_allowed("https://www.com/x", &[], &block));
+    assert!(is_url_allowed("https://example.com/x", &[], &block));
+}
+
+#[tokio::test]
+async fn fetch_refuses_what_is_not_an_http_url_before_any_request() {
+    for url in ["not a url", "mailto:a@b.com", "example.com"] {
+        assert_eq!(
+            crate::tools::fetch::fetch_auto(url).await.unwrap_err(),
+            crate::errors::QrawlError::InvalidUrl(url.to_string())
+        );
+    }
 }

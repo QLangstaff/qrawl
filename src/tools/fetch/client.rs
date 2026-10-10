@@ -36,7 +36,7 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
         .map_err(|e| QrawlError::Request(format!("building the client: {}", e)))
 }
 
-/// Follow at most `limit` redirects, and none to a host the domain filter
+/// Follow fewer than `limit` redirects, and none to a host the domain filter
 /// rejects, so a blocked host is never requested.
 fn redirect_policy(limit: usize) -> redirect::Policy {
     redirect::Policy::custom(move |attempt| {

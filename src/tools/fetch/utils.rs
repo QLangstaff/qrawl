@@ -1,6 +1,6 @@
 use crate::errors::QrawlError;
 use crate::types::with_context;
-use crate::utils::{canonical_domain, host_matches, host_of};
+use crate::utils::{canonical_domain, host_matches, host_of, listed_domain};
 
 // ---------------------------------------------------------------------------
 // Domain filtering
@@ -9,8 +9,9 @@ use crate::utils::{canonical_domain, host_matches, host_of};
 /// Whether `url`'s host passes the allow/block lists. An empty list filters
 /// nothing; a blocked host loses even when it's also allowed; a URL with no
 /// host passes only when there's no allowlist. Hosts and listed domains
-/// compare in [`canonical_domain`] form, and a listed URL counts as its host,
-/// so `WWW.Example.com` and `https://example.com/` both list `example.com`.
+/// compare in [`canonical_domain`] form, and an entry is read by
+/// [`listed_domain`], so `WWW.Example.com`, `*.example.com`, and
+/// `https://example.com:8080/a` all list `example.com`.
 pub(super) fn is_url_allowed(
     url: &str,
     allow_domains: &[String],
@@ -24,10 +25,9 @@ pub(super) fn is_url_allowed(
     };
     let host = canonical_domain(&host);
     let matches_any = |domains: &[String]| {
-        domains.iter().any(|listed| {
-            let domain = host_of(listed).unwrap_or_else(|| listed.clone());
-            host_matches(&host, &canonical_domain(&domain))
-        })
+        domains
+            .iter()
+            .any(|listed| host_matches(&host, &listed_domain(listed)))
     };
     !matches_any(block_domains) && (allow_domains.is_empty() || matches_any(allow_domains))
 }

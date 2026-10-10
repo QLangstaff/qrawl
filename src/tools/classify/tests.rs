@@ -3,29 +3,6 @@ use crate::tools::classify::*;
 
 // ----- classify_is_social_url (host predicate) -----
 
-#[test]
-fn is_social_url_true_for_known_platforms() {
-    assert!(classify_is_social_url("https://tiktok.com/@user/video/123"));
-    assert!(classify_is_social_url("https://reddit.com/r/rust"));
-    assert!(classify_is_social_url("https://youtu.be/dQw4w9WgXcQ"));
-    assert!(classify_is_social_url(
-        "https://www.pinterest.co.uk/pin/999"
-    ));
-    // Recognized platform, opaque path — still a social URL.
-    assert!(classify_is_social_url("https://vm.tiktok.com/ZMabcdef"));
-}
-
-#[test]
-fn is_social_url_false_for_web_and_garbage() {
-    assert!(!classify_is_social_url("https://example.com/foo/bar"));
-    assert!(!classify_is_social_url(
-        "https://www.allrecipes.com/recipe/10813"
-    ));
-    assert!(!classify_is_social_url("http://")); // a URL, but has no host
-    assert!(!classify_is_social_url("not a url"));
-    assert!(!classify_is_social_url("mailto:hi@example.com"));
-}
-
 // ----- classify_has_schema_type (membership predicate) -----
 
 #[test]
@@ -59,27 +36,4 @@ fn has_schema_type_false_on_empty_or_typeless() {
     assert!(!classify_has_schema_type(&vec![], "Recipe"));
     let jsonld = vec![serde_json::json!({"name": "no type"})];
     assert!(!classify_has_schema_type(&jsonld, "Recipe"));
-}
-
-#[test]
-fn pinterest_label_needs_a_public_suffix_after_it() {
-    assert!(classify_is_social_url("https://www.pinterest.co.uk/pin/1"));
-    assert!(classify_is_social_url("https://uk.pinterest.com/pin/1"));
-    assert!(!classify_is_social_url("https://pinterest.evil.com/pin/1"));
-}
-
-#[test]
-fn pinterest_label_before_an_unrelated_domain_is_not_pinterest() {
-    assert!(classify_is_social_url("https://pinterest.com.au/pin/1"));
-    assert!(classify_is_social_url("https://pinterest.de/pin/1"));
-    assert!(!classify_is_social_url("https://pinterest.abc.com/pin/1"));
-    assert!(!classify_is_social_url("https://pinterest.aws.dev/pin/1"));
-}
-
-#[test]
-fn only_pinterest_country_hosts_are_pinterest() {
-    assert!(classify_is_social_url("https://pinterest.ca/pin/1"));
-    assert!(classify_is_social_url("https://www.pinterest.co.kr/pin/1"));
-    assert!(!classify_is_social_url("https://pinterest.io/pin/1"));
-    assert!(!classify_is_social_url("https://pinterest.ws/pin/1"));
 }

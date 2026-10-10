@@ -1,10 +1,10 @@
 //! Shared Runtime
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::runtime::{Builder, Runtime};
 
 /// Global multi-thread runtime reused across the crate.
-static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     Builder::new_multi_thread()
         .enable_all()
         .build()

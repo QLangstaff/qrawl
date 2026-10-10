@@ -1,10 +1,5 @@
 use crate::types::Jsonld;
-use crate::utils::{host_of, schema_types, social_platform};
-
-/// Whether `url`'s host is a recognized social platform.
-pub(super) fn is_social_url(url: &str) -> bool {
-    host_of(url).is_some_and(|host| social_platform(&host).is_some())
-}
+use crate::utils::schema_types;
 
 /// Whether any entity in `jsonld` carries `schema_type`. Both sides compare
 /// as short names, ignoring case, so IRIs / CURIEs / bare terms match

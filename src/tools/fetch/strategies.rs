@@ -6,21 +6,22 @@ use crate::errors::QrawlError;
 use crate::types::FetchStrategy;
 use crate::utils::host_of;
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use reqwest::{Client, Response};
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-static CLIENT_CACHE: Lazy<DashMap<FetchProfile, Client>> = Lazy::new(DashMap::new);
+static CLIENT_CACHE: LazyLock<DashMap<FetchProfile, Client>> = LazyLock::new(DashMap::new);
 
 /// The profile that last succeeded per host.
-static HOST_PROFILE_CACHE: Lazy<DashMap<String, FetchProfile>> = Lazy::new(DashMap::new);
+static HOST_PROFILE_CACHE: LazyLock<DashMap<String, FetchProfile>> = LazyLock::new(DashMap::new);
 
 /// Per-host concurrency gate. One permit is acquired per URL and held through
 /// the full profile cascade, so retries don't consume extra slots.
-pub(super) static HOST_SEMAPHORES: Lazy<DashMap<String, Arc<Semaphore>>> = Lazy::new(DashMap::new);
+pub(super) static HOST_SEMAPHORES: LazyLock<DashMap<String, Arc<Semaphore>>> =
+    LazyLock::new(DashMap::new);
 
 /// Max simultaneous in-flight fetches per host, low enough that a burst at one
 /// domain doesn't trip its rate limiter. `Context::concurrency` caps total
@@ -169,7 +170,7 @@ where
                 );
                 return Ok(value);
             }
-            // A 404 or a blocked domain is the same under every profile.
+            // A missing page is missing under every profile.
             Err(e) if e.is_final() => return Err(e),
             Err(e) => {
                 log::debug!("{} via {:?} failed: {}", url, profile, e);
@@ -178,7 +179,10 @@ where
         }
     }
 
-    Err(QrawlError::AllProfilesFailed(errors))
+    match errors.len() {
+        1 => Err(errors.remove(0)),
+        _ => Err(QrawlError::AllProfilesFailed(errors)),
+    }
 }
 
 async fn send(

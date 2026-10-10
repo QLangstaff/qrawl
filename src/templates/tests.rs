@@ -154,7 +154,7 @@ mod local_site {
     use futures_util::StreamExt;
 
     use crate::errors::QrawlError;
-    use crate::templates::utils::{crawl, Target};
+    use crate::templates::utils::{crawl, Target, Visited};
     use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions, PageContent};
     use crate::test_site::{listing_page, Reply, TestSite};
     use crate::tools::fetch::fetch_strategy;
@@ -223,9 +223,13 @@ mod local_site {
         assert!(site.hits() < 30, "{} requests after the limit", site.hits());
     }
 
-    async fn fetch_address(target: Target, _level: usize) -> Option<(String, Vec<String>)> {
+    async fn fetch_address(target: Target, _level: usize) -> Option<Visited<String>> {
         let fetched = fetch_strategy(&target.address).await.ok()?;
-        Some((fetched.url, Vec::new()))
+        Some(Visited {
+            url: target.url,
+            item: fetched.url,
+            children: Vec::new(),
+        })
     }
 
     #[tokio::test]
@@ -543,5 +547,100 @@ mod local_site {
         assert!(page
             .body
             .is_some_and(|body| body.as_str().contains("<article>")));
+    }
+
+    #[tokio::test]
+    async fn urls_that_redirect_to_one_page_return_it_once() {
+        let site = TestSite::serve(|path| match path {
+            "/old" | "/old2" => Reply::Redirect("/new".to_string()),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
+        let seeds = || vec![site.url("/old"), site.url("/new"), site.url("/old2")];
+
+        let pages = qrawl_many_urls(seeds(), CrawlOptions::default(), ctx(1)).await;
+        assert_eq!(paths(&pages, site.port()), set(&["/new"]));
+        assert_eq!(pages.len(), 1);
+
+        let moved = qrawl_any_url(&site.url("/old"), ctx(1))
+            .await
+            .expect("fetches");
+        assert_eq!(
+            moved.url.as_str(),
+            format!("https://127.0.0.1:{}/new", site.port())
+        );
+
+        let blocked = qrawl_many_urls(
+            vec![site.url("/old")],
+            CrawlOptions::default().with_block_urls(vec![site.url("/new")]),
+            ctx(1),
+        )
+        .await;
+        assert!(blocked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_page_nested_too_deep_is_read_as_empty_not_a_crash() {
+        let deep = format!(
+            "<!DOCTYPE html><html><head><title>deep</title></head><body><div class=\"h-card\" itemscope>{}{}{}</div></body></html>",
+            "<div>".repeat(8_000),
+            "Lorem ipsum dolor sit amet. ".repeat(30),
+            "</div>".repeat(8_000),
+        );
+        let site = TestSite::serve(move |_path| Reply::Html(deep.clone())).await;
+
+        let pages = qrawl_many_urls(vec![site.url("/deep")], depth(1), ctx(1)).await;
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].title, None);
+        assert!(pages[0].structured.is_empty());
+        let markdown = crate::tools::transform::transform_markdown(
+            &fetch_strategy(&site.url("/deep"))
+                .await
+                .expect("fetches")
+                .html,
+        )
+        .await;
+        assert!(markdown.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chain_runs_every_step() {
+        use crate::tools::extract::extract_emails;
+        use crate::tools::map::map_children;
+        use crate::tools::normalize::{dedupe_urls, normalize_emails};
+        use crate::types::Html;
+        let site = TestSite::serve(|path| match path {
+            "/" => Reply::Html(listing_page(
+                path,
+                "",
+                &[
+                    "/team".to_string(),
+                    "/team/".to_string(),
+                    "/blog".to_string(),
+                    "/shop".to_string(),
+                ],
+            )),
+            "/team" | "/team/" => Reply::Html(listing_page(
+                path,
+                "",
+                &["mailto:Hello@Example.com".to_string()],
+            )),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
+        let hits_before = site.hits();
+
+        let emails = crate::chain! {
+            vec![site.url("/")], ctx(4) =>
+            all(dedupe_urls) -> fetch -> map(map_children) ->
+            all(dedupe_urls) -> fetch ->
+            filter(|html: Html| async move { html.as_str().contains("mailto:") }) ->
+            extract(extract_emails) -> all(normalize_emails)
+        };
+
+        assert_eq!(emails, ["hello@example.com"]);
+        // The seed, then `/team` once (its `/team/` twin is deduped), `/blog`, `/shop`.
+        assert_eq!(site.hits() - hits_before, 4);
     }
 }

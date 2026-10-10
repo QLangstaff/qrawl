@@ -785,12 +785,11 @@ fn scrape_embed_reddit_permalink_array() {
 }
 
 #[test]
-fn scrape_embed_reddit_subreddit_listing() {
-    // Single listing (not an array): take the first post; empty selftext and
-    // a non-http thumbnail collapse to None.
-    let body = r#"{"kind":"Listing","data":{"children":[
+fn scrape_embed_reddit_empty_fields_are_absent() {
+    // Empty selftext and a non-http thumbnail yield no pair.
+    let body = r#"[{"kind":"Listing","data":{"children":[
         {"kind":"t3","data":{"title":"Top Post","selftext":"","author":"alice","thumbnail":"self"}}
-    ]}}"#;
+    ]}}]"#;
     let r = reddit(body);
     assert_eq!(value(&r, "reddit:title"), Some("Top Post"));
     assert_eq!(value(&r, "reddit:text"), None);
@@ -802,10 +801,10 @@ fn scrape_embed_reddit_subreddit_listing() {
 fn scrape_embed_reddit_splits_video_and_image_honestly() {
     // A hosted video → video_url; an image link-post destination beats the
     // thumbnail → image_url; a non-image article destination has no home → dropped.
-    let video = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+    let video = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Clip","thumbnail":"https://b.thumbs/x.jpg",
         "secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/x/DASH_720.mp4"}}
-    }}]}}"#;
+    }}]}}]"#;
     let r = reddit(video);
     assert_eq!(
         value(&r, "reddit:video"),
@@ -813,10 +812,10 @@ fn scrape_embed_reddit_splits_video_and_image_honestly() {
     );
     assert_eq!(value(&r, "reddit:image"), Some("https://b.thumbs/x.jpg"));
 
-    let image_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+    let image_dest = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Pic","thumbnail":"https://b.thumbs/x.jpg",
         "url_overridden_by_dest":"https://i.redd.it/full.png"
-    }}]}}"#;
+    }}]}}]"#;
     let r = reddit(image_dest);
     assert_eq!(
         value(&r, "reddit:image"),
@@ -824,9 +823,9 @@ fn scrape_embed_reddit_splits_video_and_image_honestly() {
     );
     assert_eq!(value(&r, "reddit:video"), None);
 
-    let article_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+    let article_dest = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Link","url_overridden_by_dest":"https://news.example/story"
-    }}]}}"#;
+    }}]}}]"#;
     let r = reddit(article_dest);
     assert!(
         value(&r, "reddit:image").is_none(),
@@ -895,7 +894,7 @@ fn reddit(body: &str) -> Metadata {
 #[test]
 fn scrape_embed_reddit_link_post_keeps_its_destination() {
     let r = reddit(
-        r#"{"data":{"children":[{"data":{"title":"Link","url_overridden_by_dest":"https://news.example/story"}}]}}"#,
+        r#"[{"data":{"children":[{"data":{"title":"Link","url_overridden_by_dest":"https://news.example/story"}}]}}]"#,
     );
     assert_eq!(value(&r, "reddit:url"), Some("https://news.example/story"));
 }
@@ -906,4 +905,30 @@ async fn scrape_jsonld_reads_an_object_valued_graph() {
     let jsonld = scrape_jsonld(&html.into()).await;
     assert_eq!(jsonld.len(), 1);
     assert_eq!(jsonld[0]["name"], "Soup");
+}
+
+#[tokio::test]
+async fn scrape_metadata_drops_keys_reserved_for_an_embed() {
+    let html = r#"<html><head>
+        <meta name="OEmbed:Title" content="Spoofed">
+        <meta name="reddit:text" content="Spoofed">
+        <meta property="og:title" content="Real">
+    </head><body></body></html>"#;
+    let metadata = scrape_metadata(&html.into()).await;
+    assert_eq!(value(&metadata, "og:title"), Some("Real"));
+    assert!(!metadata.iter().any(|(key, _)| {
+        let key = key.to_ascii_lowercase();
+        key.starts_with("oembed:") || key.starts_with("reddit:")
+    }));
+}
+
+#[tokio::test]
+async fn scrape_jsonld_shortens_native_types() {
+    let html = r#"<html><head><script type="application/ld+json">[
+        {"@type":"https://schema.org/Recipe","name":"a"},
+        {"@type":["schema:Article","http://schema.org/Thing"],"name":"b"}
+    ]</script></head><body></body></html>"#;
+    let jsonld = scrape_jsonld(&html.into()).await;
+    assert_eq!(jsonld[0]["@type"], "Recipe");
+    assert_eq!(jsonld[1]["@type"], serde_json::json!(["Article", "Thing"]));
 }

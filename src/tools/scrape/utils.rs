@@ -1,8 +1,8 @@
-use once_cell::sync::Lazy;
 use scraper::Selector;
+use std::sync::LazyLock;
 
 use crate::types::{Html, Jsonld, Metadata};
-use crate::utils::{schema_types, short_schema_type, JSONLD_SELECTOR};
+use crate::utils::{embed_keys, schema_types, short_schema_type, JSONLD_SELECTOR};
 
 /// Microformats2 items, each in canonical mf2 shape:
 /// `{"type": ["h-card"], "properties": {"name": ["…"], …}, "children": [...]}`.
@@ -13,42 +13,44 @@ type Microformats = Vec<serde_json::Value>;
 
 /// Selector for Microdata items (`itemscope` elements). Top-level items are
 /// filtered in code (an `itemscope` that also has `itemprop` is a nested item).
-static MICRODATA_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("[itemscope]").expect("valid microdata selector"));
+static MICRODATA_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("[itemscope]").expect("valid microdata selector"));
 
 /// Selector for RDFa typed resources (`typeof` elements). Top-level items are
 /// filtered in code (a `typeof` that also has `property` is a nested resource).
-static RDFA_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("[typeof]").expect("valid rdfa selector"));
+static RDFA_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("[typeof]").expect("valid rdfa selector"));
 
 /// Selector for any element with a `class` attribute. Microformats are
 /// class-based (`h-*` roots, `p-*`/`u-*`/`dt-*`/`e-*` properties), so candidates
 /// are matched broadly here and filtered by class token in code.
-static CLASS_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("[class]").expect("valid class selector"));
+static CLASS_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("[class]").expect("valid class selector"));
 
 /// Selector for `<body>` elements.
-static BODY_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("body").expect("valid body selector"));
+static BODY_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("body").expect("valid body selector"));
 
 /// Selector for `<title>` tags.
-static TITLE_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("title").expect("valid title selector"));
+static TITLE_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("title").expect("valid title selector"));
 
 /// Selector for metadata tags with name/property attributes.
-static META_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("meta[name], meta[property]").expect("valid metadata selector"));
+static META_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("meta[name], meta[property]").expect("valid metadata selector")
+});
 
 /// Selector for `<html lang="…">` elements.
-static HTML_LANG_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("html[lang]").expect("valid html lang selector"));
+static HTML_LANG_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("html[lang]").expect("valid html lang selector"));
 
 /// Selector for `<li>` elements (mf2 `e-*` step splitting).
-static LI_SELECTOR: Lazy<Selector> =
-    Lazy::new(|| Selector::parse("li").expect("valid li selector"));
+static LI_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("li").expect("valid li selector"));
 
 /// Selector for `<p>` elements (mf2 `e-*` step splitting).
-static P_SELECTOR: Lazy<Selector> = Lazy::new(|| Selector::parse("p").expect("valid p selector"));
+static P_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("p").expect("valid p selector"));
 
 pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
     let markup = document
@@ -91,7 +93,17 @@ fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
         serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
         serde_json::Value::Object(mut obj) => match obj.remove("@graph") {
             Some(graph) => flatten_jsonld(graph),
-            None => vec![serde_json::Value::Object(obj)],
+            None => {
+                let mut entity = serde_json::Value::Object(obj);
+                // `@type` as short names, like the other encodings.
+                let types = schema_types(&entity);
+                match types.as_slice() {
+                    [] => {}
+                    [one] => entity["@type"] = one.clone().into(),
+                    many => entity["@type"] = many.to_vec().into(),
+                }
+                vec![entity]
+            }
         },
         _ => Vec::new(),
     }
@@ -111,12 +123,17 @@ pub(super) fn scrape_metadata_from_doc(document: &scraper::Html) -> Metadata {
         let key = el
             .value()
             .attr("name")
-            .or_else(|| el.value().attr("property"))
-            .map(|s| s.to_string());
-        let value = el.value().attr("content").map(|s| s.to_string());
-        if let (Some(k), Some(v)) = (key, value) {
-            if !v.trim().is_empty() {
-                tags.push((k, v));
+            .or_else(|| el.value().attr("property"));
+        let value = el.value().attr("content");
+        if let (Some(key), Some(value)) = (key, value) {
+            // The embed's key prefixes are reserved for `scrape_embed`, so a
+            // page can't pose as its embed.
+            let lower = key.to_ascii_lowercase();
+            let is_reserved = embed_keys::PREFIXES
+                .iter()
+                .any(|prefix| lower.starts_with(prefix));
+            if !value.trim().is_empty() && !is_reserved {
+                tags.push((key.to_string(), value.to_string()));
             }
         }
     }

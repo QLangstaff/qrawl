@@ -70,9 +70,10 @@ impl Context {
         self
     }
 
-    /// Run `future` with this context: every fetch inside it uses this
+    /// Run `future` with this context: every fetch it makes uses this
     /// strategy and these domain lists. A fetch outside any scope uses the
-    /// defaults.
+    /// defaults — including one in a task `future` spawns, because the context
+    /// is task-local.
     pub async fn scope<F: Future>(self, future: F) -> F::Output {
         CTX.scope(Arc::new(self), future).await
     }
@@ -88,7 +89,7 @@ pub(crate) fn with_context<T>(read: impl FnOnce(&Context) -> T) -> Option<T> {
     CTX.try_with(|ctx| read(ctx)).ok()
 }
 
-pub fn get_fetch_strategy() -> FetchStrategy {
+pub(crate) fn get_fetch_strategy() -> FetchStrategy {
     with_context(|ctx| ctx.fetch_strategy).unwrap_or(FetchStrategy::Auto)
 }
 
@@ -153,44 +154,6 @@ impl From<String> for Html {
 impl From<&str> for Html {
     fn from(html: &str) -> Self {
         Self(html.to_string())
-    }
-}
-
-/// LLM-ready Markdown — produced by
-/// [`transform_markdown`](crate::tools::transform::transform_markdown).
-///
-/// A *terminal* substrate: once HTML is rendered to Markdown, the
-/// `scrape`/`extract`/`map` tools can no longer operate on it. Follows the same
-/// string-newtype conventions as [`Html`] (construct via `new`; read via
-/// `as_str` / `into_inner`; `AsRef<str>` + `Display`, no `Deref`; transparent
-/// JSON).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct Markdown(String);
-
-impl Markdown {
-    pub fn new(markdown: String) -> Self {
-        Markdown(markdown)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl AsRef<str> for Markdown {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Markdown {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
     }
 }
 

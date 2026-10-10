@@ -67,7 +67,7 @@ enum Commands {
         input: String,
     },
 
-    /// Scrape & Extract a Page's Preview (title, text, author, image, video)
+    /// Any URL → Its Preview (title, text, author, image, video)
     Preview {
         /// URL
         url: String,
@@ -170,11 +170,8 @@ fn is_http_url(input: &str) -> bool {
 
 /// Fetch `url`, over `https` when it names no scheme.
 async fn fetch(url: &str, ctx: Context) -> Fetched {
-    let address = if is_http_url(url) {
-        url.to_string()
-    } else {
-        format!("https://{url}")
-    };
+    let address = tools::normalize::absolute_url(url)
+        .unwrap_or_else(|| fail(format!("not an HTTP URL: {}", url)));
     ctx.scope(tools::fetch::fetch_strategy(&address))
         .await
         .unwrap_or_else(|e| fail(format!("fetching {}: {}", address, e)))
@@ -251,10 +248,10 @@ async fn run_command(command: Commands, ctx: Context) {
             print_json(&tools::scrape::scrape_metadata(&load(&input, ctx).await).await);
         }
 
-        Commands::Preview { url } => {
-            let metadata = tools::scrape::scrape_metadata(&fetch(&url, ctx).await.html).await;
-            print_json(&tools::extract::extract_preview(&metadata));
-        }
+        Commands::Preview { url } => match qrawl_any_url(&url, ctx).await {
+            Ok(page) => print_json(&tools::extract::extract_preview(&page.metadata)),
+            Err(e) => fail(e),
+        },
 
         Commands::Schemas { input } => {
             let jsonld = tools::scrape::scrape_jsonld(&load(&input, ctx).await).await;

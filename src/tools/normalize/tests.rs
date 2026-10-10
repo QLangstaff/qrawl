@@ -907,3 +907,56 @@ fn normalize_url_is_idempotent() {
         "https://example.com/a?redirect=/login/"
     );
 }
+
+#[tokio::test]
+async fn normalize_html_strips_attributes_in_tags_not_in_text() {
+    let html = r#"<p class="x" id="y">Set role = admin and id=5 then style = bold</p><script>var a = 1;</script><script type="application/ld+json">{"name":"x", "text":"a class = b"}</script><p>after</p>"#;
+    let normalized = normalize_html(&html.into()).await;
+    assert_eq!(
+        normalized.as_str(),
+        r#"<p>Set role = admin and id=5 then style = bold</p><script type="application/ld+json">{"name":"x", "text":"a class = b"}</script><p>after</p>"#
+    );
+}
+
+#[test]
+fn absolute_url_completes_what_names_an_http_url_and_refuses_the_rest() {
+    for (input, expected) in [
+        (
+            "http://www.Example.com/a/",
+            Some("http://www.Example.com/a/"),
+        ),
+        ("example.com/a", Some("https://example.com/a")),
+        ("localhost:8080/a", Some("https://localhost:8080/a")),
+        ("https:example.com", Some("https://example.com/")),
+        ("HTTPS:example.com/a", Some("https://example.com/a")),
+        ("mailto:a@b.com", None),
+        ("ftp://example.com/file.txt", None),
+        ("/about.html", None),
+        ("a@b.com", None),
+        ("not a url", None),
+    ] {
+        assert_eq!(absolute_url(input).as_deref(), expected, "{input}");
+    }
+}
+
+#[test]
+fn dedupe_urls_keeps_the_first_address_of_each_page() {
+    let urls = [
+        "http://www.example.com/a/",
+        "https://example.com/a?utm_source=x",
+        "",
+        "https://example.com/b",
+    ]
+    .map(String::from);
+    assert_eq!(
+        dedupe_urls(&urls),
+        ["http://www.example.com/a/", "https://example.com/b"]
+    );
+}
+
+#[test]
+fn canonical_domain_never_reduces_a_host_to_a_tld() {
+    assert_eq!(canonical_domain("www.com"), "www.com");
+    assert_eq!(canonical_domain("WWW.Example.com."), "example.com");
+    assert_eq!(normalize_url("https://www.com/a"), "https://www.com/a");
+}

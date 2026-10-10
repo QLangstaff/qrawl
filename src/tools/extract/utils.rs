@@ -1,19 +1,24 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use scraper::Html;
+use std::sync::LazyLock;
 
-use crate::utils::LINK_SELECTOR;
+use crate::utils::{LINK_SELECTOR, TLD_LEN};
 
 // Lazy static regex patterns
-static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // More strict email pattern that excludes common false positives:
     // - Word boundaries (\b) ensure we match complete emails, not parts of concatenated text
     // - Local part: alphanumeric, dots, underscores, percent, plus, hyphens
     // - Domain: alphanumeric segments separated by dots or hyphens
-    // - TLD: must be letters only (2-24 chars), excludes file extensions like .js, .css, .jpg
-    Regex::new(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,24}\b").expect("valid regex")
+    // - TLD: letters only, `TLD_LEN` of them
+    Regex::new(&format!(
+        r"(?i)\b[a-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{{{},{}}}\b",
+        TLD_LEN.start(),
+        TLD_LEN.end()
+    ))
+    .expect("valid regex")
 });
-static PHONE_REGEX: Lazy<Regex> = Lazy::new(|| {
+static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
 });
 
@@ -22,8 +27,11 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
     let mut results = Vec::new();
     for link in doc.select(&LINK_SELECTOR) {
         if let Some(href) = link.value().attr("href") {
-            if let Some(value) = href.strip_prefix(prefix) {
+            // A scheme is case-insensitive (`MAILTO:`).
+            let scheme = href.get(..prefix.len()).unwrap_or_default();
+            if scheme.eq_ignore_ascii_case(prefix) {
                 // Trim whitespace and remove query parameters
+                let value = &href[prefix.len()..];
                 let normalized = value.split('?').next().unwrap_or(value).trim();
                 if !normalized.is_empty() {
                     results.push(normalized.to_string());
@@ -39,7 +47,17 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
     // Join text nodes with spaces to prevent adjacent elements from creating false patterns
     // e.g., <div>9631</div><a>contact@domain.com</a> becomes "9631 contact@domain.com"
     // instead of "9631contact@domain.com"
-    let text = doc.root_element().text().collect::<Vec<_>>().join(" ");
+    // Script and style text is code, not content.
+    let text = doc
+        .root_element()
+        .descendants()
+        .filter_map(|node| {
+            let text = node.value().as_text()?;
+            let parent = node.parent()?.value().as_element()?.name();
+            (!matches!(parent, "script" | "style")).then_some(&**text)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     regex
         .captures_iter(&text)
         .filter_map(|cap| cap.get(0))

@@ -16,7 +16,9 @@ use crate::types::{Html, Jsonld, Metadata, SocialKind, SocialPlatform};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageContent {
-    /// The page's identity: one value for every address of the same page.
+    /// The page's identity: the canonical form of the URL that served it, so
+    /// every address of the same page — a shortlink, a redirect, a `www.` or
+    /// tracking-parameter variant — yields this one value.
     pub url: CanonicalUrl,
     /// The address that served the page — after redirects — to fetch it again
     /// or resolve its relative links against. The address given, when only the
@@ -24,13 +26,18 @@ pub struct PageContent {
     pub address: String,
     /// The social platform, or `None` for a non-social URL.
     pub platform: Option<SocialPlatform>,
-    /// The kind of social item, or `None` for a non-social URL or an opaque
-    /// social shortlink.
+    /// The kind of social item, or `None` for a non-social URL or one whose
+    /// path names no item.
     pub kind: Option<SocialKind>,
+    /// The account in a social URL: `@user`, `r/sub`, `u/user`, or a profile
+    /// slug.
+    pub handle: Option<String>,
+    /// The item id in a social URL: a post, video, or pin id.
+    pub id: Option<String>,
     pub title: Option<String>,
     /// Body / caption / description.
     pub text: Option<String>,
-    /// The declared author, else the social handle in the URL.
+    /// The author the embed or the page declares.
     pub author: Option<String>,
     /// Hero image or thumbnail.
     pub image_url: Option<String>,
@@ -40,8 +47,9 @@ pub struct PageContent {
     /// merged (`scrape_jsonld`).
     pub structured: Jsonld,
     /// Metadata pairs: the embed's (`scrape_embed`, keyed `oembed:` /
-    /// `reddit:`), then the page's `<meta>` tags (`scrape_metadata`). The
-    /// embed's keys are present exactly when the embed was fetched.
+    /// `reddit:`), then the page's `<meta>` tags (`scrape_metadata`). Only an
+    /// embed supplies the `oembed:` and `reddit:` keys, so their presence says
+    /// the embed was fetched and read.
     pub metadata: Metadata,
     /// Canonical URLs of the social profiles and items the page links to.
     pub socials: Vec<String>,

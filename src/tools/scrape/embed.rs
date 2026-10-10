@@ -85,15 +85,9 @@ fn reddit_comment<'a>(value: &'a Value, id: &str) -> Option<&'a Value> {
         .find(|comment| comment.get("id").and_then(Value::as_str) == Some(id))
 }
 
-/// Reddit `.json` is either `[postListing, commentListing]` (a permalink) or a
-/// single listing (subreddit/user feed). Either way the first child's `data`
-/// is the primary post.
+/// The post of a permalink's `[postListing, commentListing]`.
 fn reddit_first_post(value: &Value) -> Option<&Value> {
-    let listing = if value.is_array() {
-        value.get(0)?
-    } else {
-        value
-    };
+    let listing = value.get(0)?;
     listing
         .get("data")?
         .get("children")?
