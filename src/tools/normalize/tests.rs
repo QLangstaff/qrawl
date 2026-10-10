@@ -1,5 +1,7 @@
 #![cfg(test)]
-use crate::tools::normalize::utils::{decode_html_entities, normalize_email, normalize_phone};
+use crate::tools::normalize::utils::{
+    decode_html_entities, normalize_email, normalize_phone, OPENING_CHUNK_BYTES,
+};
 use crate::tools::normalize::*;
 use crate::utils::canonical_domain;
 
@@ -400,7 +402,7 @@ async fn normalize_html_reads_a_document_from_its_first_tag_alone() {
 #[tokio::test]
 async fn normalize_html_reads_the_first_tag_across_the_pieces_it_feeds_the_tokenizer() {
     // A comment as long as one piece puts what follows it in the next.
-    let comment = format!("<!--{}-->", "x".repeat(4 * 1024 - 7));
+    let comment = format!("<!--{}-->", "x".repeat(OPENING_CHUNK_BYTES - 7));
     for (tail, expected) in [
         // A doctype split across two pieces.
         (
@@ -649,6 +651,11 @@ fn normalize_phones_strips_an_extension_however_it_is_written() {
             "212-555-1212 ext. 5 (sales)".to_string(),
             "212-555-1212 extension 5".to_string(),
             "212-555-1212 X 5".to_string(),
+            "212-555-1212 ext: 5".to_string(),
+            "212-555-1212, ext. 5".to_string(),
+            "212-555-1212 extn 5".to_string(),
+            "212-555-1212 x-5".to_string(),
+            "212-555-1212 ext #5".to_string(),
         ]),
         ["2125551212"]
     );

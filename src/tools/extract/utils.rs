@@ -51,13 +51,12 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
     results
 }
 
-/// Extract values from text content using a regex pattern
-fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
-    // Script and style text is code, not content. Text nodes are joined with
-    // spaces so adjacent elements don't run together: `<div>9631</div>` beside
-    // `<a>contact@domain.com</a>` must not read `9631contact@domain.com`.
-    let text = doc
-        .root_element()
+/// The document's text: its text nodes, joined with spaces. Script and style
+/// text is code, not content. The spaces keep adjacent elements apart:
+/// `<div>9631</div>` beside `<a>contact@domain.com</a>` must not read
+/// `9631contact@domain.com`.
+fn document_text(doc: &Html) -> String {
+    doc.root_element()
         .descendants()
         .filter_map(|node| {
             let text = node.value().as_text()?;
@@ -65,11 +64,29 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
             (!matches!(parent, "script" | "style")).then_some(&**text)
         })
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(" ")
+}
+
+/// Extract values from text content using a regex pattern
+fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
     regex
-        .captures_iter(&text)
-        .filter_map(|cap| cap.get(0))
-        .map(|m| m.as_str().to_string())
+        .find_iter(&document_text(doc))
+        .map(|found| found.as_str().to_string())
+        .collect()
+}
+
+/// The phone numbers `PHONE_REGEX` finds in `text`. A number inside a longer
+/// run of digits is a piece of that run, not a number.
+fn find_phones(text: &str) -> Vec<String> {
+    let is_digit_at = |index: Option<usize>| {
+        index.is_some_and(|index| text.as_bytes().get(index).is_some_and(u8::is_ascii_digit))
+    };
+    PHONE_REGEX
+        .find_iter(text)
+        .filter(|found| {
+            !is_digit_at(found.start().checked_sub(1)) && !is_digit_at(Some(found.end()))
+        })
+        .map(|found| found.as_str().to_string())
         .collect()
 }
 
@@ -130,17 +147,7 @@ fn read_jsonld_telephone(text: &str) -> Vec<String> {
     if ONE_PHONE_REGEX.is_match(value) {
         return vec![value.to_string()];
     }
-    // A number inside a longer run of digits is a piece of that run, not a number.
-    let is_digit_at = |index: Option<usize>| {
-        index.is_some_and(|index| value.as_bytes().get(index).is_some_and(u8::is_ascii_digit))
-    };
-    PHONE_REGEX
-        .find_iter(value)
-        .filter(|found| {
-            !is_digit_at(found.start().checked_sub(1)) && !is_digit_at(Some(found.end()))
-        })
-        .map(|found| found.as_str().to_string())
-        .collect()
+    find_phones(value)
 }
 
 /// Extract all email addresses from HTML document.
@@ -162,7 +169,7 @@ pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
 pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "tel:"),
-        extract_with_regex(doc, &PHONE_REGEX),
+        find_phones(&document_text(doc)),
         extract_from_jsonld(doc, "telephone", read_jsonld_telephone),
     ]
     .concat()

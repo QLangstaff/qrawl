@@ -58,7 +58,7 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// Normalize phone numbers
 ///
 /// - Trim whitespace
-/// - Strip a space-separated extension (e.g. " ext. 123", " x123") and RFC 3966
+/// - Strip an extension (" ext. 123", "x123", ", ext: 123") and RFC 3966
 ///   parameters (`;ext=123`)
 /// - Keep leading `+` for international numbers, and drop a trunk `(0)` after one
 /// - Remove non-digit characters

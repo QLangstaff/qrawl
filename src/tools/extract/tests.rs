@@ -303,6 +303,9 @@ fn system_routes_and_bare_separators_are_not_items() {
         "https://twitter.com/_",
         "https://vimeo.com/-",
         "https://www.pinterest.com/_saved/",
+        "https://pinterest.com/pins/board",
+        "https://pinterest.com/pins/boards",
+        "https://pinterest.com/_saved/board",
         "https://reddit.com/r/_",
         "https://tiktok.com/@",
     ] {
@@ -635,6 +638,12 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
             "212-555-1212"
         ]
     );
+}
+
+#[tokio::test]
+async fn a_number_inside_a_longer_run_of_digits_is_not_a_phone_in_text_either() {
+    let html = "<html><body><p>ref 1234567890123456</p><p>call 212-555-1212</p></body></html>";
+    assert_eq!(extract_phones(&html.into()).await, ["212-555-1212"]);
 }
 
 #[tokio::test]

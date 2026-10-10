@@ -364,11 +364,12 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // starts inside the unit's first instance. Of the two, the unit is the
         // one whose elements keep their tags in every instance: a rotation's
         // last element is the unit's first in most instances, and whatever
-        // follows the listing in the last. Then the one that repeats more: a
-        // rotation can run on into a second listing's elements. When both tie,
-        // the one that starts first. A listing whose first item alone uses
-        // another heading tag, followed by a link under the items' tag, reads
-        // as the rotation: its tags can't tell it from the unit.
+        // follows the listing in the last. Then the one with the longer run of
+        // adjacent instances; a rotation never trades instances for tags, so a
+        // listing whose first heading differs keeps its first item. When both
+        // tie, the one that starts first. A listing whose first item alone
+        // uses another heading tag, followed by a link under the items' tag,
+        // reads as the rotation: its tags can't tell it from the unit.
         let mut kept: Vec<KeptGroup> = Vec::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
@@ -405,13 +406,15 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                                 .all(|&start| children[start + offset].value().name() == tag)
                         })
                         .count();
+                    let adjacent_run = longest_adjacent_run(&non_overlapping, pattern_len);
                     let rotated = kept
                         .iter()
                         .position(|group| group.first < first && first < group.first + pattern_len);
                     let replaces = match rotated {
                         Some(index)
-                            if (kept[index].tag_consistency, kept[index].instances)
-                                < (tag_consistency, non_overlapping.len()) =>
+                            if kept[index].adjacent_run <= adjacent_run
+                                && (kept[index].tag_consistency, kept[index].adjacent_run)
+                                    < (tag_consistency, adjacent_run) =>
                         {
                             Some(index)
                         }
@@ -439,13 +442,13 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                         Some(index) => {
                             all_groups[kept[index].group_index] = group;
                             kept[index].first = first;
-                            kept[index].instances = non_overlapping.len();
+                            kept[index].adjacent_run = adjacent_run;
                             kept[index].tag_consistency = tag_consistency;
                         }
                         None => {
                             kept.push(KeptGroup {
                                 first,
-                                instances: non_overlapping.len(),
+                                adjacent_run,
                                 tag_consistency,
                                 group_index: all_groups.len(),
                             });
@@ -459,13 +462,30 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 }
 
 /// A multi-element group of one parent, as far as telling its rotations apart
-/// needs: where it starts, how often it repeats, how many of its positions
-/// keep one tag across every instance, and where it sits in `all_groups`.
+/// needs: where it starts, its longest run of adjacent instances, how many of
+/// its positions keep one tag across every instance, and where it sits in
+/// `all_groups`.
 struct KeptGroup {
     first: usize,
-    instances: usize,
+    adjacent_run: usize,
     tag_consistency: usize,
     group_index: usize,
+}
+
+/// The most instances in a row, each right after the one before: a listing's
+/// own items. Instances further on, past an ad or in another listing whose
+/// elements happen to continue the pattern, don't make it longer.
+fn longest_adjacent_run(starts: &[usize], pattern_len: usize) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for (index, &start) in starts.iter().enumerate() {
+        run = match index.checked_sub(1) {
+            Some(previous) if starts[previous] + pattern_len == start => run + 1,
+            _ => 1,
+        };
+        longest = longest.max(run);
+    }
+    longest
 }
 
 /// Map sibling HTML fragment to URL.

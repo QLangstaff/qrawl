@@ -442,7 +442,7 @@ impl TokenSink for FirstToken {
 
 /// Markup fed to the tokenizer at a time, so a page is read only as far as
 /// its first tag.
-const OPENING_CHUNK_BYTES: usize = 4 * 1024;
+pub(super) const OPENING_CHUNK_BYTES: usize = 4 * 1024;
 
 /// What `html` opens with, by the parser's own tokenizer, so the two never
 /// disagree on where a comment ends.

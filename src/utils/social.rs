@@ -189,10 +189,8 @@ fn pinterest_parts(segs: &[&str]) -> Parts {
             (Some(SocialKind::Post), Some((*id).to_string()), None)
         }
         // A profile's tabs (`_saved`, `_created`, `pins`) aren't boards.
-        [user, tab] if !is_reserved_pinterest(user) && is_pinterest_tab(tab) => {
-            profile(account(user))
-        }
-        [user, board] if !is_reserved_pinterest(user) && account(board).is_some() => {
+        [user, tab] if !is_pinterest_route(user) && is_pinterest_tab(tab) => profile(account(user)),
+        [user, board] if !is_pinterest_route(user) && account(board).is_some() => {
             match account(user) {
                 Some(user) => (
                     Some(SocialKind::Collection),
@@ -202,7 +200,7 @@ fn pinterest_parts(segs: &[&str]) -> Parts {
                 None => (None, None, None),
             }
         }
-        [user] if !is_reserved_pinterest(user) && !is_pinterest_tab(user) => profile(account(user)),
+        [user] if !is_pinterest_route(user) => profile(account(user)),
         _ => (None, None, None),
     }
 }
@@ -310,6 +308,12 @@ fn is_reserved_instagram(s: &str) -> bool {
 /// or `pins`, `boards`, `followers`, `following`.
 fn is_pinterest_tab(segment: &str) -> bool {
     segment.starts_with('_') || matches!(segment, "pins" | "boards" | "followers" | "following")
+}
+
+/// A first path segment that is Pinterest's own route, not a user's: a
+/// reserved word, or a profile tab standing alone.
+fn is_pinterest_route(segment: &str) -> bool {
+    is_reserved_pinterest(segment) || is_pinterest_tab(segment)
 }
 
 /// A `.php` segment is a script (`login.php`, `share.php`), never a profile.
