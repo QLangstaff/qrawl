@@ -1,8 +1,47 @@
-use crate::selectors::{
-    BODY_SELECTOR, CLASS_SELECTOR, HTML_LANG_SELECTOR, JSONLD_SELECTOR, LI_SELECTOR, META_SELECTOR,
-    MICRODATA_SELECTOR, P_SELECTOR, RDFA_SELECTOR, TITLE_SELECTOR,
-};
+use once_cell::sync::Lazy;
+use scraper::Selector;
+
 use crate::types::{Html, Jsonld, Metadata, Microformats};
+use crate::utils::JSONLD_SELECTOR;
+
+/// Selector for Microdata items (`itemscope` elements). Top-level items are
+/// filtered in code (an `itemscope` that also has `itemprop` is a nested item).
+static MICRODATA_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("[itemscope]").expect("valid microdata selector"));
+
+/// Selector for RDFa typed resources (`typeof` elements). Top-level items are
+/// filtered in code (a `typeof` that also has `property` is a nested resource).
+static RDFA_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("[typeof]").expect("valid rdfa selector"));
+
+/// Selector for any element with a `class` attribute. Microformats are
+/// class-based (`h-*` roots, `p-*`/`u-*`/`dt-*`/`e-*` properties), so candidates
+/// are matched broadly here and filtered by class token in code.
+static CLASS_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("[class]").expect("valid class selector"));
+
+/// Selector for `<body>` elements.
+static BODY_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("body").expect("valid body selector"));
+
+/// Selector for `<title>` tags.
+static TITLE_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("title").expect("valid title selector"));
+
+/// Selector for metadata tags with name/property attributes.
+static META_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("meta[name], meta[property]").expect("valid metadata selector"));
+
+/// Selector for `<html lang="…">` elements.
+static HTML_LANG_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("html[lang]").expect("valid html lang selector"));
+
+/// Selector for `<li>` elements (mf2 `e-*` step splitting).
+static LI_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("li").expect("valid li selector"));
+
+/// Selector for `<p>` elements (mf2 `e-*` step splitting).
+static P_SELECTOR: Lazy<Selector> = Lazy::new(|| Selector::parse("p").expect("valid p selector"));
 
 pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
     let markup = document

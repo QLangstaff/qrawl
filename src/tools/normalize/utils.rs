@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use crate::types::SocialPlatform;
+use crate::utils::{canonical_domain, host_of_url, social_platform};
 
 // Lazy static regex for whitespace normalization
 static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("valid regex"));
@@ -161,29 +161,6 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
         .collect()
 }
 
-/// Canonicalize a domain name for comparison.
-///
-/// Performs:
-/// 1. Convert to lowercase
-/// 2. IDNA/Punycode normalization
-/// 3. Strip www. prefix
-///
-/// Examples:
-/// - `Example.com` → `example.com`
-/// - `WWW.Example.COM` → `example.com`
-/// - `www.GitHub.com` → `github.com`
-pub fn normalize_domain(host: &str) -> String {
-    let lower = host.to_ascii_lowercase();
-    let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
-
-    // Strip www. prefix to normalize domains
-    if idna.starts_with("www.") && idna.len() > 4 {
-        idna[4..].to_string()
-    } else {
-        idna
-    }
-}
-
 /// Canonicalize a URL for comparison.
 ///
 /// Performs:
@@ -230,7 +207,7 @@ pub fn normalize_url(url: &str) -> String {
 
     // 2. Canonicalize domain
     if let Some(host) = parsed.host_str() {
-        let canonical_host = normalize_domain(host);
+        let canonical_host = canonical_domain(host);
         let _ = parsed.set_host(Some(&canonical_host));
     }
 
@@ -260,7 +237,7 @@ pub fn normalize_url(url: &str) -> String {
 /// classify/extract tools and the fetch cache key on.
 ///
 /// Runs [`normalize_url`] for the general canonicalization, then for a
-/// *recognized* social platform ([`SocialPlatform::from_host`]) additionally
+/// *recognized* social platform additionally
 /// strips a mobile host prefix (`m.`/`mobile.`) and the social share / referrer
 /// tokens (`si`, `s`, `feature`, …) that would otherwise split one piece of
 /// content across many look-alike URLs. A non-social host gets only the general
@@ -270,12 +247,12 @@ pub fn normalize_social(url: &str) -> String {
     let Ok(mut parsed) = Url::parse(&normalized) else {
         return normalized;
     };
-    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+    let Some(host) = host_of_url(&parsed) else {
         return normalized;
     };
     // Social rules apply only to recognized platforms (so a plain web page keeps
     // a functional `?s=` / `?ref=` and its `m.` host).
-    if SocialPlatform::from_host(&host).is_none() {
+    if social_platform(&host).is_none() {
         return normalized;
     }
 

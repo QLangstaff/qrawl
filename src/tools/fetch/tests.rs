@@ -1,5 +1,4 @@
 #![cfg(test)]
-use crate::hosts::host_matches;
 use crate::tools::fetch::headers::headers_for_profile;
 use crate::tools::fetch::social::{fetch_social, oembed_request_url, reddit_json_url};
 use crate::tools::fetch::strategies::{
@@ -8,6 +7,7 @@ use crate::tools::fetch::strategies::{
 use crate::tools::fetch::types::FetchProfile;
 use crate::tools::fetch::utils::{is_url_allowed, validate_response};
 use crate::types::{SocialKind, SocialParts, SocialPlatform};
+use crate::utils::host_matches;
 use reqwest::StatusCode;
 use std::time::{Duration, Instant};
 

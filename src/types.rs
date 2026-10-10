@@ -7,8 +7,6 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::hosts::host_matches;
-
 /// Fetch strategy for pipeline `fetch_*` steps.
 ///
 /// - `Auto` (default): Minimal → Windows → iOS fetch strategy cascade.
@@ -366,56 +364,6 @@ pub enum SocialPlatform {
     Twitter,
     LinkedIn,
     Vimeo,
-}
-
-impl SocialPlatform {
-    /// Recognize the social platform a host belongs to, or `None` for a
-    /// non-social host. Subdomain-aware (`old.reddit.com`, `m.facebook.com`,
-    /// `vm.tiktok.com`) and handles the alt short-domains (`youtu.be`, `fb.me`,
-    /// …).
-    pub fn from_host(host: &str) -> Option<SocialPlatform> {
-        const DOMAINS: &[(&str, SocialPlatform)] = &[
-            ("reddit.com", SocialPlatform::Reddit),
-            ("redd.it", SocialPlatform::Reddit),
-            ("tiktok.com", SocialPlatform::TikTok),
-            ("instagram.com", SocialPlatform::Instagram),
-            ("instagr.am", SocialPlatform::Instagram),
-            ("facebook.com", SocialPlatform::Facebook),
-            ("fb.me", SocialPlatform::Facebook),
-            ("fb.com", SocialPlatform::Facebook),
-            ("fb.watch", SocialPlatform::Facebook),
-            ("youtube.com", SocialPlatform::YouTube),
-            ("youtube-nocookie.com", SocialPlatform::YouTube),
-            ("youtu.be", SocialPlatform::YouTube),
-            ("twitter.com", SocialPlatform::Twitter),
-            ("x.com", SocialPlatform::Twitter),
-            ("t.co", SocialPlatform::Twitter),
-            ("linkedin.com", SocialPlatform::LinkedIn),
-            ("lnkd.in", SocialPlatform::LinkedIn),
-            ("vimeo.com", SocialPlatform::Vimeo),
-            ("pinterest.com", SocialPlatform::Pinterest),
-            ("pin.it", SocialPlatform::Pinterest),
-        ];
-        DOMAINS
-            .iter()
-            .find(|(domain, _)| host_matches(host, domain))
-            .map(|(_, platform)| *platform)
-            // Pinterest ships many ccTLDs: a `pinterest` label followed only by
-            // a country suffix (`pinterest.de`, `pinterest.co.uk`,
-            // `pinterest.com.au`), which `pinterest.evil.com` isn't.
-            .or_else(|| {
-                let labels: Vec<&str> = host.split('.').collect();
-                let suffix = &labels[labels.iter().position(|label| *label == "pinterest")? + 1..];
-                let is_country_suffix = match suffix {
-                    [country] => country.len() == 2,
-                    [second_level, country] => {
-                        matches!(*second_level, "co" | "com") && country.len() == 2
-                    }
-                    _ => false,
-                };
-                is_country_suffix.then_some(SocialPlatform::Pinterest)
-            })
-    }
 }
 
 /// The social facts of a URL — its platform, item kind, and identifiers —

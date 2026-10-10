@@ -1,7 +1,7 @@
 //! Normalize Tools
 
 mod tests;
-pub mod utils;
+mod utils;
 
 pub use utils::{normalize_social, normalize_url};
 

@@ -4,11 +4,11 @@ use scraper::Html;
 use serde_json::Value;
 use url::Url;
 
-use crate::selectors::LINK_SELECTOR;
 use crate::tools::normalize::normalize_social;
 use crate::types::{
     CanonicalUrl, ContentSource, PageContent, SocialKind, SocialParts, SocialPlatform,
 };
+use crate::utils::{host_of_url, social_platform, LINK_SELECTOR};
 
 // Lazy static regex patterns
 static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -135,8 +135,8 @@ pub(super) fn extract_social_links(doc: &Html) -> Vec<String> {
 /// ```
 pub fn extract_social_parts(input: &str) -> Option<SocialParts> {
     let url = Url::parse(input).ok()?;
-    let host = url.host_str()?.to_ascii_lowercase();
-    let platform = SocialPlatform::from_host(&host)?;
+    let host = host_of_url(&url)?;
+    let platform = social_platform(&host)?;
 
     let (kind, id, handle) = if is_opaque_shortener(&host) {
         // Platform known, but the path is an opaque short code that needs a

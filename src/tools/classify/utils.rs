@@ -1,11 +1,11 @@
 use serde_json::Value;
 
-use crate::hosts::host_of;
-use crate::types::{Jsonld, SocialPlatform};
+use crate::types::Jsonld;
+use crate::utils::{host_of, social_platform};
 
 /// Whether `url`'s host is a recognized social platform.
 pub(super) fn is_social_url(url: &str) -> bool {
-    host_of(url).is_some_and(|host| SocialPlatform::from_host(&host).is_some())
+    host_of(url).is_some_and(|host| social_platform(&host).is_some())
 }
 
 // ---------------------------------------------------------------------------

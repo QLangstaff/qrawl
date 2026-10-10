@@ -1,9 +1,8 @@
 #![cfg(test)]
-use crate::tools::normalize::utils::{
-    decode_html_entities, normalize_domain, normalize_email, normalize_phone,
-};
+use crate::tools::normalize::utils::{decode_html_entities, normalize_email, normalize_phone};
 use crate::tools::normalize::*;
 use crate::types::CanonicalUrl;
+use crate::utils::canonical_domain;
 
 // Tests for normalize_text()
 
@@ -588,18 +587,18 @@ fn test_decode_html_entities() {
 #[test]
 fn test_normalize_domain() {
     // Basic lowercase
-    assert_eq!(normalize_domain("Example.com"), "example.com");
-    assert_eq!(normalize_domain("GITHUB.COM"), "github.com");
+    assert_eq!(canonical_domain("Example.com"), "example.com");
+    assert_eq!(canonical_domain("GITHUB.COM"), "github.com");
     // Strip www
-    assert_eq!(normalize_domain("www.example.com"), "example.com");
-    assert_eq!(normalize_domain("WWW.EXAMPLE.COM"), "example.com");
+    assert_eq!(canonical_domain("www.example.com"), "example.com");
+    assert_eq!(canonical_domain("WWW.EXAMPLE.COM"), "example.com");
     // Combined
-    assert_eq!(normalize_domain("WWW.GitHub.com"), "github.com");
+    assert_eq!(canonical_domain("WWW.GitHub.com"), "github.com");
     // Don't strip www if it's the whole domain
-    assert_eq!(normalize_domain("www"), "www");
+    assert_eq!(canonical_domain("www"), "www");
     // Subdomains preserved
-    assert_eq!(normalize_domain("api.example.com"), "api.example.com");
-    assert_eq!(normalize_domain("www.api.example.com"), "api.example.com");
+    assert_eq!(canonical_domain("api.example.com"), "api.example.com");
+    assert_eq!(canonical_domain("www.api.example.com"), "api.example.com");
 }
 
 #[test]

@@ -3,8 +3,8 @@
 mod tests;
 mod utils;
 
-use crate::selectors::LINK_SELECTOR;
 use crate::types::Html;
+use crate::utils::LINK_SELECTOR;
 
 /// Map URLs from HTML.
 pub async fn map_page(html: &Html, url: &str) -> Vec<String> {

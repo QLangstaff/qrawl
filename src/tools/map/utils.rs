@@ -1,5 +1,5 @@
-use crate::selectors::{JSONLD_SELECTOR, LINK_SELECTOR};
-use crate::tools::normalize::utils::normalize_domain;
+use crate::utils::canonical_domain;
+use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use url::Url;
@@ -468,8 +468,8 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                                     // Compare hosts with canonicalization (strips www., lowercases, etc.)
                                     let hosts_match = match (url.host_str(), base.host_str()) {
                                         (Some(url_host), Some(base_host)) => {
-                                            normalize_domain(url_host)
-                                                == normalize_domain(base_host)
+                                            canonical_domain(url_host)
+                                                == canonical_domain(base_host)
                                         }
                                         _ => false,
                                     };
