@@ -94,7 +94,7 @@ Small, focused functions — async where they fetch or parse, sync where they do
 | **scrape** | Pull the body, `<meta>` tags, and schema.org data (JSON-LD, Microdata, RDFa, Microformats — merged) out of HTML, and metadata out of an embed |
 | **extract** | Surface structured signal: emails, phones, schema.org types, a preview, a URL's social platform and ids |
 | **map** | Discover URLs from a page: every link, or just the children |
-| **classify** | Answer yes/no: is this URL social, does this page carry a schema.org type |
+| **classify** | Answer yes/no: does this page carry a schema.org type |
 | **normalize** | Canonicalize and dedupe URLs, strip junk HTML, normalize text, dedupe emails / phones |
 | **transform** | Render HTML to Markdown |
 | **batch** | Run any async op across a `Vec` with bounded concurrency |

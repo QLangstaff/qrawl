@@ -960,3 +960,79 @@ fn canonical_domain_never_reduces_a_host_to_a_tld() {
     assert_eq!(canonical_domain("WWW.Example.com."), "example.com");
     assert_eq!(normalize_url("https://www.com/a"), "https://www.com/a");
 }
+
+#[test]
+fn normalize_emails_and_phones_take_any_string_extract_returns() {
+    // A `>` before the `<` is not a display-name bracket; it must not panic.
+    normalize_emails(&[">x<a@b.com".to_string()]);
+    assert_eq!(
+        normalize_emails(&["Jane <jane@Example.com>".to_string()]),
+        ["jane@example.com"]
+    );
+    assert!(normalize_phones(&["İİİ x".to_string()]).is_empty());
+    assert_eq!(
+        normalize_phones(&["555-123-4567 X12".to_string()]),
+        ["5551234567"]
+    );
+}
+
+#[test]
+fn absolute_url_refuses_schemes_and_numbers_that_look_like_hosts() {
+    for input in [
+        "tel:911",
+        "sms:12345",
+        "javascript:1",
+        "http:8080",
+        "3.14",
+        ".",
+        "e.g.",
+        ":pw@example.com",
+    ] {
+        assert_eq!(absolute_url(input), None, "{input}");
+    }
+    assert_eq!(
+        absolute_url("example.com:8080/a").as_deref(),
+        Some("https://example.com:8080/a")
+    );
+    assert_eq!(
+        absolute_url("127.0.0.1:8080").as_deref(),
+        Some("https://127.0.0.1:8080")
+    );
+}
+
+#[tokio::test]
+async fn normalize_html_keeps_jsonld_bytes_and_survives_hostile_markup() {
+    let cases = [
+        // A script that only mentions JSON-LD is a script.
+        (
+            r#"<p>a</p><script>document.write('<script type="application/ld+json">')</script><p>b</p>"#,
+            "<p>a</p><p>b</p>",
+        ),
+        // JSON-LD is kept byte for byte: escapes, HTML inside strings.
+        (
+            r#"<script type="application/ld+json">{"path":"C:\\new","body":"<p class=\"lead big\">x</p>"}</script>"#,
+            r#"<script type="application/ld+json">{"path":"C:\\new","body":"<p class=\"lead big\">x</p>"}</script>"#,
+        ),
+        (
+            r#"<script type=application/ld+json>{"a":1}</script>"#,
+            r#"<script type=application/ld+json>{"a":1}</script>"#,
+        ),
+        // A comment can't open a script.
+        (
+            "<!-- <script> --><p>real text</p><script>x()</script><p>after</p>",
+            "<p>real text</p><p>after</p>",
+        ),
+        // A quoted value keeps its spaces and equals signs.
+        (
+            r#"<a class="x" href="/a?x=1 id=5">go</a>"#,
+            r#"<a href="/a?x=1 id=5">go</a>"#,
+        ),
+    ];
+    for (html, expected) in cases {
+        assert_eq!(
+            normalize_html(&html.into()).await.as_str(),
+            expected,
+            "{html}"
+        );
+    }
+}

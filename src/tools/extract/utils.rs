@@ -47,14 +47,20 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
     // Join text nodes with spaces to prevent adjacent elements from creating false patterns
     // e.g., <div>9631</div><a>contact@domain.com</a> becomes "9631 contact@domain.com"
     // instead of "9631contact@domain.com"
-    // Script and style text is code, not content.
+    // Script and style text is code, not content — except JSON-LD, which is
+    // data.
     let text = doc
         .root_element()
         .descendants()
         .filter_map(|node| {
             let text = node.value().as_text()?;
-            let parent = node.parent()?.value().as_element()?.name();
-            (!matches!(parent, "script" | "style")).then_some(&**text)
+            let parent = node.parent()?.value().as_element()?;
+            let is_code = match parent.name() {
+                "style" => true,
+                "script" => parent.attr("type") != Some("application/ld+json"),
+                _ => false,
+            };
+            (!is_code).then_some(&**text)
         })
         .collect::<Vec<_>>()
         .join(" ");

@@ -643,4 +643,120 @@ mod local_site {
         // The seed, then `/team` once (its `/team/` twin is deduped), `/blog`, `/shop`.
         assert_eq!(site.hits() - hits_before, 4);
     }
+
+    #[tokio::test]
+    async fn a_redirect_yields_the_same_pages_whichever_fetch_finishes_first() {
+        // `/p` lists `/c`; `/s` redirects to `/c`; `/c` lists `/d`.
+        fn site_reply(path: &str) -> Reply {
+            let filler = |name: &str| {
+                (0..3)
+                    .map(|n| format!("/{name}-filler{n}"))
+                    .collect::<Vec<_>>()
+            };
+            match path {
+                "/s" => Reply::Redirect("/c".to_string()),
+                "/p" => Reply::Html(listing_page(
+                    path,
+                    "",
+                    &[vec!["/c".to_string()], filler("p")].concat(),
+                )),
+                "/c" => Reply::Html(listing_page(
+                    path,
+                    "",
+                    &[vec!["/d".to_string()], filler("c")].concat(),
+                )),
+                _ => Reply::Html(listing_page(path, "", &[])),
+            }
+        }
+        let mut results = Vec::new();
+        for seeds in [["/p", "/s"], ["/s", "/p"]] {
+            let site = TestSite::serve(site_reply).await;
+            let seeds = seeds.iter().map(|seed| site.url(seed)).collect();
+            let pages = qrawl_many_urls(seeds, depth(1), ctx(1)).await;
+            results.push(paths(&pages, site.port()));
+        }
+        assert_eq!(results[0], results[1]);
+        assert!(
+            results[0].contains("/c") && results[0].contains("/d"),
+            "{:?}",
+            results[0]
+        );
+        assert_eq!(results[0].iter().filter(|path| *path == "/c").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_onto_a_seed_that_fails_still_yields_the_page() {
+        let site = TestSite::serve(|path| match path {
+            "/old" => Reply::Redirect("/new".to_string()),
+            "/new" => Reply::Html(listing_page(path, "", &[])),
+            _ => Reply::NotFound,
+        })
+        .await;
+
+        let pages = qrawl_many_urls(
+            vec![site.url("/old"), site.url("/new/")],
+            CrawlOptions::default(),
+            ctx(1),
+        )
+        .await;
+
+        assert_eq!(paths(&pages, site.port()), set(&["/new"]));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_redirect_is_blocked_under_the_auto_strategy_too() {
+        let site = TestSite::serve(diamond).await;
+        let target = format!("http://localhost:{}/a", site.port());
+        let redirecting = TestSite::serve(move |_path| Reply::Redirect(target.clone())).await;
+
+        let blocked = qrawl_any_url(
+            &redirecting.url("/go"),
+            Context::auto().with_block_domains(vec!["localhost".to_string()]),
+        )
+        .await;
+
+        assert!(
+            matches!(blocked, Err(QrawlError::BlockedDomain(_))),
+            "{blocked:?}"
+        );
+        assert_eq!(site.hits(), 0);
+        assert_eq!(redirecting.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn every_walker_survives_a_document_at_the_depth_bound() {
+        use crate::tools::map::map_children;
+        use crate::tools::scrape::scrape_all;
+        use crate::tools::transform::transform_markdown;
+        use crate::types::Html;
+        let nested = |open: &str, close: &str, levels: usize| {
+            Html::new(format!(
+                "<html><body>{}text{}</body></html>",
+                open.repeat(levels),
+                close.repeat(levels)
+            ))
+        };
+        // The deepest documents the bound admits.
+        let microformats = nested("<div class=\"h-card p-a\">", "</div>", 500);
+        let microdata = nested("<div itemscope itemprop=\"a\">", "</div>", 500);
+        let tables = nested("<table><tr><td>", "</td></tr></table>", 120);
+
+        for html in [&microformats, &microdata, &tables] {
+            scrape_all(html).await;
+            map_children(html, "https://example.com/").await;
+            transform_markdown(html).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_items_under_several_names_stay_small() {
+        let html = crate::types::Html::new(format!(
+            "<html><body>{}x{}</body></html>",
+            "<div itemscope itemprop=\"a b\" typeof=\"T\" property=\"a b\">".repeat(40),
+            "</div>".repeat(40)
+        ));
+        let jsonld = crate::tools::scrape::scrape_jsonld(&html).await;
+        let size = serde_json::to_string(&jsonld).expect("serializes").len();
+        assert!(size < 1_000_000, "{size} bytes of JSON from a 3 KB page");
+    }
 }

@@ -351,3 +351,38 @@ async fn test_map_children_from_real_website_2() {
         urls.len()
     );
 }
+
+#[tokio::test]
+async fn itemlist_anchor_is_followed_only_on_this_exact_page() {
+    let html = r#"<html><head><script type="application/ld+json">{"@type":"ItemList","itemListElement":[
+        {"@type":"ListItem","url":"https://example.com/list?page=1#crêpes"},
+        {"@type":"ListItem","url":"https://example.com/list?page=2#two"},
+        {"@type":"ListItem","url":"https://example.com/list?page=1#missing"}
+    ]}</script></head><body>
+        <div id="crêpes"><a href="/r1">Crêpes</a></div>
+        <div id="two"><a href="/r2">Two</a></div>
+    </body></html>"#;
+    let urls = map_children(&html.into(), "https://example.com/list?page=1").await;
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/r1",
+            "https://example.com/list?page=2#two",
+            "https://example.com/list?page=1#missing"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn map_children_stays_fast_on_a_thousand_siblings() {
+    let links: Vec<String> = (0..1_200).map(|n| format!("/item{n}")).collect();
+    let html = crate::test_site::listing_page("many", "", &links);
+    let started = std::time::Instant::now();
+    let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+    assert_eq!(urls.len(), 1_200);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}

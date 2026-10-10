@@ -1,4 +1,4 @@
-use crate::utils::{canonical_domain, schema_types};
+use crate::utils::schema_types;
 use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
@@ -18,6 +18,10 @@ const MIN_PATTERN_LEN: usize = 2;
 
 /// Maximum pattern length as a ratio of total children (e.g., 2 = half).
 const MAX_PATTERN_RATIO: usize = 2;
+
+/// Longest run of sibling elements that counts as one repeating item. Without
+/// it, a page of a thousand siblings costs a billion comparisons.
+const MAX_PATTERN_LEN: usize = 8;
 
 /// HTML tag name for main content elements.
 const MAIN_TAG: &str = "main";
@@ -291,9 +295,10 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
     use std::collections::HashMap;
 
     let n = children.len();
+    let structures: Vec<StructurePattern> = children.iter().map(map_structure_pattern).collect();
 
     // Try pattern lengths from MIN_PATTERN_LEN up to n/MAX_PATTERN_RATIO
-    for pattern_len in MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO) {
+    for pattern_len in MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN) {
         if n < pattern_len * MIN_SIBLING_GROUP_SIZE {
             break;
         }
@@ -303,9 +308,7 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // Scan through all possible positions
         let mut idx = 0;
         while idx + pattern_len <= n {
-            let pattern: Vec<StructurePattern> = (0..pattern_len)
-                .map(|offset| map_structure_pattern(&children[idx + offset]))
-                .collect();
+            let pattern = structures[idx..idx + pattern_len].to_vec();
 
             multi_pattern_groups.entry(pattern).or_default().push(idx);
             idx += 1;
@@ -459,19 +462,18 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                             return None;
                         }
 
-                        // Case 2: a link to an anchor of this same page
+                        // Case 2: a link to an anchor of this same page, which
+                        // stands for the link inside that anchor's element
                         let url = resolve_href(url_str, &base)?;
-                        let is_this_page = url.scheme() == base.scheme()
-                            && url.path() == base.path()
-                            && url.host_str().map(canonical_domain)
-                                == base.host_str().map(canonical_domain);
-                        match url.fragment() {
-                            Some(fragment) if is_this_page => {
-                                map_anchor_to_link(fragment, doc, &base)
-                            }
-                            // Case 3: any other URL, absolute or relative
-                            _ => Some(url.to_string()),
-                        }
+                        let before_fragment =
+                            |url: &Url| url[..url::Position::AfterQuery].to_string();
+                        let anchor_link = url
+                            .fragment()
+                            .filter(|_| before_fragment(&url) == before_fragment(&base))
+                            .and_then(|fragment| urlencoding::decode(fragment).ok())
+                            .and_then(|anchor_id| map_anchor_to_link(&anchor_id, doc, &base));
+                        // Case 3: any other URL, absolute or relative
+                        Some(anchor_link.unwrap_or_else(|| url.to_string()))
                     })
                     .collect::<Vec<String>>(),
             )

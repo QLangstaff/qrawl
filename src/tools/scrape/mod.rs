@@ -18,7 +18,7 @@ pub async fn scrape_body(html: &Html) -> Html {
 /// `<script type="application/ld+json">`, Microdata (`itemscope`/`itemtype`/
 /// `itemprop`), RDFa (RDFa Lite: `typeof`/`property`/`resource`), and
 /// Microformats2 (`h-*`) normalized to schema.org — all flattened to the same
-/// shape (`@type` is the short name), in a single parse.
+/// shape (every `@type`, nested ones too, is the short name), in a single parse.
 ///
 /// The encodings are **unified**: an entity encoded twice (same `@type` +
 /// `name`) folds into one, filling only missing props, rather than emitting a

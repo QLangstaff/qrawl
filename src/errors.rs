@@ -32,6 +32,6 @@ pub enum QrawlError {
 impl QrawlError {
     /// Whether another fetch profile could not change the outcome.
     pub(crate) fn is_final(&self) -> bool {
-        matches!(self, Self::Status(404 | 410))
+        matches!(self, Self::BlockedDomain(_) | Self::Status(404 | 410))
     }
 }

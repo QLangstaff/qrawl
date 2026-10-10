@@ -27,20 +27,15 @@ pub fn normalize_text(text: &str) -> String {
 
 /// Normalize HTML
 ///
-/// - Normalize escaped newlines
-/// - Strip junk elements (comments, scripts, styles, etc.)
-/// - Normalize whitespace
+/// - Strip comments, scripts, styles, `<noscript>`, `<iframe>`, `<svg>`
+/// - Strip styling, scripting, and accessibility attributes
+/// - Normalize escaped newlines and whitespace
+/// - Keep JSON-LD scripts in place, unchanged
 pub async fn normalize_html(html: &Html) -> Html {
     let html = html.to_string();
-    let normalized = tokio::task::spawn_blocking(move || {
-        let mut result = html;
-        result = utils::normalize_escaped_newlines(&result);
-        result = utils::strip_junk(&result);
-        result = utils::normalize_whitespace(&result);
-        result
-    })
-    .await
-    .expect("normalize_html: spawn_blocking failed");
+    let normalized = tokio::task::spawn_blocking(move || utils::normalize_markup(&html))
+        .await
+        .expect("normalize_html: spawn_blocking failed");
     Html::new(normalized)
 }
 

@@ -347,9 +347,9 @@ fn is_reserved_twitter(s: &str) -> bool {
     )
 }
 
-/// A query parameter's value, where present.
+/// A query parameter's value, where present and not empty.
 fn query_value(url: &Url, key: &str) -> Option<String> {
     url.query_pairs()
-        .find(|(k, _)| k == key)
+        .find(|(k, v)| k == key && !v.is_empty())
         .map(|(_, v)| v.into_owned())
 }

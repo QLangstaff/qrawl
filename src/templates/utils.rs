@@ -62,16 +62,19 @@ pub(super) async fn page_content(
         Err(e) => (None, Some(e)),
     };
 
-    // normalize: the page is the URL that served it. A shortlink or a moved
-    // page redirects, so its embed is the served URL's.
+    // normalize: the page is the URL that served it. A shortlink redirects
+    // to its item, so the served URL may have an embed the given one lacks;
+    // a consent or login wall has none, so the given URL's embed stands.
     let url = fetched.as_ref().map_or_else(
         || target.url.clone(),
         |fetched| CanonicalUrl::new(&fetched.url),
     );
-    let embed = if url == target.url {
+    let is_same_item =
+        extract_social_parts(url.as_str()) == extract_social_parts(target.url.as_str());
+    let embed = if is_same_item {
         embed
     } else {
-        fetch_embed(url.as_str()).await
+        fetch_embed(url.as_str()).await.or(embed)
     };
 
     // scrape: the embed and the page into the same layers.
@@ -192,8 +195,9 @@ pub(super) struct Visited<T> {
 /// returns what it [`Visited`], or `None` to drop it. Children of the last
 /// level are ignored. Each page is yielded once, at the shallowest level that
 /// reaches it: a level starts only when the one before it has finished, so
-/// the result doesn't depend on which fetch completes first, and a target
-/// that redirects to a page already crawled is dropped. `admit` filters every
+/// the result doesn't depend on which fetch completes first. A target that
+/// redirects yields the page it landed on, at the level of the target, unless
+/// that page was already yielded. `admit` filters every
 /// URL before its visit, and the URL a redirect served after it.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
@@ -215,7 +219,9 @@ where
     let concurrency = ctx.concurrency.get();
     let (tx, rx) = mpsc::channel(concurrency);
     tokio::spawn(ctx.scope(async move {
+        // Every URL ever queued, and every page yielded.
         let mut seen: HashSet<CanonicalUrl> = HashSet::new();
+        let mut yielded: HashSet<CanonicalUrl> = HashSet::new();
         let mut frontier = Vec::new();
         let enqueue =
             |urls: &[String], seen: &mut HashSet<CanonicalUrl>, queue: &mut Vec<Target>| {
@@ -228,6 +234,7 @@ where
         enqueue(&seeds, &mut seen, &mut frontier);
         for level in 0..=depth {
             let mut next = Vec::new();
+            let mut redirected = Vec::new();
             let consumer_is_listening = drive(
                 futures_util::stream::iter(std::mem::take(&mut frontier)),
                 concurrency,
@@ -249,10 +256,11 @@ where
                 },
                 |(given, visited): (CanonicalUrl, Option<Visited<T>>)| {
                     let visited = visited?;
-                    let is_redirect = visited.url != given;
-                    if is_redirect && !(admit(&visited.url) && seen.insert(visited.url.clone())) {
+                    if visited.url != given {
+                        redirected.push(visited);
                         return None;
                     }
+                    yielded.insert(given);
                     enqueue(&visited.children, &mut seen, &mut next);
                     Some((level, visited.item))
                 },
@@ -260,6 +268,20 @@ where
             .await;
             if !consumer_is_listening {
                 return;
+            }
+            // A redirect is settled once its whole level is in, so which page
+            // it yields doesn't depend on which fetch finished first: the page
+            // it landed on, unless that page was already yielded.
+            for visited in redirected {
+                if !admit(&visited.url) || !yielded.insert(visited.url.clone()) {
+                    continue;
+                }
+                seen.insert(visited.url.clone());
+                next.retain(|target| target.url != visited.url);
+                enqueue(&visited.children, &mut seen, &mut next);
+                if tx.send((level, visited.item)).await.is_err() {
+                    return;
+                }
             }
             frontier = next;
         }

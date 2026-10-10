@@ -932,3 +932,17 @@ async fn scrape_jsonld_shortens_native_types() {
     assert_eq!(jsonld[0]["@type"], "Recipe");
     assert_eq!(jsonld[1]["@type"], serde_json::json!(["Article", "Thing"]));
 }
+
+#[tokio::test]
+async fn scrape_jsonld_shortens_nested_types_and_keeps_an_entity_beside_its_graph() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type":"https://schema.org/WebPage","name":"page",
+        "author":{"@type":"https://schema.org/Person","name":"Jane"},
+        "@graph":[{"@type":"schema:Recipe","name":"Soup"}]
+    }</script></head><body></body></html>"#;
+    let jsonld = scrape_jsonld(&html.into()).await;
+    assert_eq!(jsonld.len(), 2);
+    assert_eq!(jsonld[0]["@type"], "WebPage");
+    assert_eq!(jsonld[0]["author"]["@type"], "Person");
+    assert_eq!(jsonld[1]["@type"], "Recipe");
+}

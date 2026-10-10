@@ -63,9 +63,9 @@ pub(crate) fn canonical_domain(host: &str) -> String {
 pub(crate) fn listed_domain(entry: &str) -> String {
     let entry = entry.trim();
     let host = host_of(entry).unwrap_or_else(|| {
-        let without_wildcard = entry.trim_start_matches("*.");
+        let without_wildcard = entry.trim_start_matches("*.").trim_start_matches('.');
         let without_path = without_wildcard
-            .split('/')
+            .split(['/', '?', '#'])
             .next()
             .unwrap_or(without_wildcard);
         without_path
@@ -78,14 +78,30 @@ pub(crate) fn listed_domain(entry: &str) -> String {
 }
 
 /// The `http(s)` URL `input` names — with `https://` when it names no scheme
-/// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `ftp:`, a
-/// relative path, an email address, a bare word).
+/// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `tel:911`,
+/// `ftp:`, a relative path, an email address, a bare word or number).
 pub(crate) fn absolute_url(input: &str) -> Option<String> {
     let input = input.trim();
+    // A host is a name under a TLD, `localhost`, or an IP address — not
+    // `3.14`, which the `url` crate would read as the address 3.0.0.14.
+    let names_a_host = |url: &url::Url| match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.');
+            domain == "localhost"
+                || domain.rsplit_once('.').is_some_and(|(name, tld)| {
+                    !name.is_empty()
+                        && tld.len() >= 2
+                        && tld.chars().all(|c| c.is_ascii_alphabetic())
+                })
+        }
+        Some(url::Host::Ipv4(_)) => input.matches('.').count() >= 3,
+        Some(url::Host::Ipv6(_)) => true,
+        None => false,
+    };
     let http_url = |candidate: &str| {
         url::Url::parse(candidate)
             .ok()
-            .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+            .filter(|url| matches!(url.scheme(), "http" | "https") && names_a_host(url))
     };
     let lower = input.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
@@ -95,21 +111,20 @@ pub(crate) fn absolute_url(input: &str) -> Option<String> {
     if lower.starts_with("http:") || lower.starts_with("https:") {
         return http_url(input).map(String::from);
     }
-    // `localhost:8080/a` is a host and a port, not a scheme.
-    let has_scheme = input.split_once(':').is_some_and(|(scheme, rest)| {
-        !scheme.is_empty()
-            && scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
-            && !rest.starts_with(|c: char| c.is_ascii_digit())
+    // `localhost:8080/a` and `example.com:8080` are a host and a port;
+    // `tel:911` and `mailto:a@b.com` are a scheme.
+    let has_scheme = input.split_once(':').is_some_and(|(before, after)| {
+        let is_host_and_port = (before == "localhost" || before.contains('.'))
+            && after.starts_with(|c: char| c.is_ascii_digit());
+        !is_host_and_port && !before.contains('/')
     });
-    if has_scheme || input.starts_with('/') || !(input.contains('.') || input.contains(':')) {
+    if has_scheme || input.starts_with('/') {
         return None;
     }
     let candidate = format!("https://{input}");
     // An email address parses as a host with a user (`https://a@b.com`).
     http_url(&candidate)
-        .filter(|url| url.username().is_empty())
+        .filter(|url| url.username().is_empty() && url.password().is_none())
         .map(|_| candidate)
 }
 
@@ -205,9 +220,16 @@ pub(crate) mod embed_keys {
     pub(crate) const PREFIXES: [&str; 2] = ["oembed:", "reddit:"];
 }
 
-/// Elements nested deeper than this are not a page: a recursive walk over such
-/// a document overflows the stack, which aborts the process.
+/// Nodes nested deeper than this are not a page. The walkers that read a
+/// document recurse once per level, so the bound and [`READ_STACK_BYTES`]
+/// together keep them from overflowing the stack, which would abort the
+/// process.
 const MAX_DOM_DEPTH: usize = 512;
+
+/// The stack a document is read on: enough for every walker at
+/// [`MAX_DOM_DEPTH`] in a debug build, whatever stack size the caller's
+/// runtime gives its blocking threads.
+const READ_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 fn is_too_deep(document: &scraper::Html) -> bool {
     let mut depth = 0usize;
@@ -229,12 +251,23 @@ pub(crate) async fn with_document<T: Send + 'static>(
 ) -> T {
     let html = html.to_string();
     tokio::task::spawn_blocking(move || {
-        let document = scraper::Html::parse_document(&html);
-        if is_too_deep(&document) {
-            log::warn!("document nested deeper than {MAX_DOM_DEPTH} elements read as empty");
-            return read(&scraper::Html::parse_document(""));
-        }
-        read(&document)
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(READ_STACK_BYTES)
+                .spawn_scoped(scope, move || {
+                    let document = scraper::Html::parse_document(&html);
+                    if is_too_deep(&document) {
+                        log::warn!(
+                            "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"
+                        );
+                        return read(&scraper::Html::parse_document(""));
+                    }
+                    read(&document)
+                })
+                .expect("spawning the document reader")
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
     })
     .await
     .expect("reading a parsed document panicked")

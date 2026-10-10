@@ -397,3 +397,11 @@ async fn fetch_refuses_what_is_not_an_http_url_before_any_request() {
         );
     }
 }
+
+#[test]
+fn reddit_json_url_drops_the_query_and_fragment() {
+    assert_eq!(
+        reddit_json_url("https://reddit.com/r/rust/comments/abc/title/?share=1#frag"),
+        "https://reddit.com/r/rust/comments/abc/title.json?raw_json=1"
+    );
+}

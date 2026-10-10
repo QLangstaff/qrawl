@@ -12,7 +12,7 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
 
 // HTML normalization regexes
 static JSONLD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>.*?</script>"#)
+    Regex::new(r#"(?is)^<script[^>]*type=["']?application/ld\+json["']?[^>]*>"#)
         .expect("valid regex")
 });
 
@@ -37,27 +37,26 @@ static COMMENT_REGEX: LazyLock<Regex> =
 static START_TAG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<[a-zA-Z][^>]*>").expect("valid regex"));
 
-static JUNK_ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+/// One attribute of a start tag: its name, then its value — quoted values
+/// first, so a space or `=` inside one never reads as another attribute.
+static ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\s+([^\s=>/"']+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?"#).expect("valid regex")
+});
+
+/// Attribute names that carry styling, scripting, or accessibility wiring,
+/// not content.
+static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?ix)
-        \s+                                    # Leading whitespace
-        (?:                                    # Attribute name (non-capturing group)
-            class|id|style|                    # Common styling attributes
-            data-[\w-]+|                       # All data-* attributes
-            aria-[\w-]+|                       # All aria-* attributes
-            role|tabindex|                     # Accessibility attributes
-            xmlns(?::[\w-]+)?|                 # XML namespaces
-            version|viewBox|                   # SVG attributes
-            fill|fill-rule|stroke(?:-[\w-]+)?| # SVG styling
-            onclick|onload|on[\w-]+            # Event handlers
-        )
-        \s*=\s*                                # Equals with optional whitespace
-        (?:                                    # Value (non-capturing group)
-            "[^"]*"|                           # Double-quoted value
-            '[^']*'|                           # Single-quoted value
-            [^\s>]+                            # Unquoted value
-        )
-        "#,
+        r"(?ix)^(?:
+            class|id|style|
+            data-[\w-]+|
+            aria-[\w-]+|
+            role|tabindex|
+            xmlns(?::[\w-]+)?|
+            version|viewBox|
+            fill|fill-rule|stroke(?:-[\w-]+)?|
+            on[\w-]+
+        )$",
     )
     .expect("valid regex")
 });
@@ -150,7 +149,7 @@ pub(super) fn normalize_whitespace(text: &str) -> String {
 }
 
 /// Normalize escaped newlines (\\n) to actual newlines (\n).
-pub(super) fn normalize_escaped_newlines(text: &str) -> String {
+fn normalize_escaped_newlines(text: &str) -> String {
     NEWLINE_REGEX.replace_all(text, "\n").to_string()
 }
 
@@ -324,9 +323,9 @@ pub(super) fn normalize_email(email: &str) -> String {
     result = result.trim_end_matches(&[',', ';', '.'][..]).to_string();
 
     // Extract from display name format: "Name" <email@example.com> or Name <email@example.com>
-    if let Some(start) = result.find('<') {
-        if let Some(end) = result.find('>') {
-            result = result[start + 1..end].to_string();
+    if let Some((_, after_open)) = result.split_once('<') {
+        if let Some((address, _)) = after_open.split_once('>') {
+            result = address.to_string();
         }
     }
 
@@ -390,12 +389,10 @@ pub(super) fn normalize_phone(phone: &str) -> String {
     let mut result = phone.trim().to_string();
 
     // Strip extension patterns
-    if let Some(pos) = result
-        .to_lowercase()
-        .find(" ext")
-        .or_else(|| result.to_lowercase().find(" x"))
-    {
-        result = result[..pos].to_string();
+    // ASCII lowercasing keeps byte offsets, so `pos` indexes `result` too.
+    let lower = result.to_ascii_lowercase();
+    if let Some(pos) = lower.find(" ext").or_else(|| lower.find(" x")) {
+        result.truncate(pos);
     }
 
     // Keep international prefix, strip all other non-digits
@@ -409,33 +406,46 @@ pub(super) fn normalize_phone(phone: &str) -> String {
     }
 }
 
-/// Strip junk from HTML (scripts, styles, comments, junk attributes).
-///
-/// Implementation for normalize_html. Contains all the messy regex logic.
-pub(super) fn strip_junk(html: &str) -> String {
-    // Every script goes except JSON-LD, which is data and stays where it is.
-    let mut normalized_html = SCRIPT_REGEX
-        .replace_all(html, |script: &regex::Captures| {
-            if JSONLD_REGEX.is_match(&script[0]) {
-                script[0].to_string()
-            } else {
-                String::new()
-            }
+/// Normalize HTML: drop comments, scripts, styles, and junk attributes, and
+/// collapse whitespace. JSON-LD scripts are data: each stays where it is,
+/// byte for byte.
+pub(super) fn normalize_markup(html: &str) -> String {
+    // Comments go first, so a `<script>` inside one can't pair with a real
+    // `</script>` further down.
+    let html = COMMENT_REGEX.replace_all(html, "");
+    let mut normalized = String::new();
+    let mut rest = 0;
+    for script in SCRIPT_REGEX.find_iter(&html) {
+        normalized.push_str(&strip_junk(&html[rest..script.start()]));
+        if JSONLD_REGEX.is_match(script.as_str()) {
+            normalized.push_str(script.as_str());
+        }
+        rest = script.end();
+    }
+    normalized.push_str(&strip_junk(&html[rest..]));
+    normalized.trim().to_string()
+}
+
+/// Strip junk from script-free HTML and collapse its whitespace.
+fn strip_junk(html: &str) -> String {
+    let mut stripped = normalize_escaped_newlines(html);
+    stripped = STYLE_REGEX.replace_all(&stripped, "").to_string();
+    stripped = NOSCRIPT_REGEX.replace_all(&stripped, "").to_string();
+    stripped = IFRAME_REGEX.replace_all(&stripped, "").to_string();
+    stripped = SVG_REGEX.replace_all(&stripped, "").to_string();
+    stripped = START_TAG_REGEX
+        .replace_all(&stripped, |tag: &regex::Captures| {
+            ATTR_REGEX
+                .replace_all(&tag[0], |attr: &regex::Captures| {
+                    let has_value = attr[0].contains('=');
+                    if has_value && JUNK_ATTR_NAME_REGEX.is_match(&attr[1]) {
+                        String::new()
+                    } else {
+                        attr[0].to_string()
+                    }
+                })
+                .to_string()
         })
         .to_string();
-
-    normalized_html = STYLE_REGEX.replace_all(&normalized_html, "").to_string();
-    normalized_html = NOSCRIPT_REGEX.replace_all(&normalized_html, "").to_string();
-    normalized_html = IFRAME_REGEX.replace_all(&normalized_html, "").to_string();
-    normalized_html = SVG_REGEX.replace_all(&normalized_html, "").to_string();
-    normalized_html = COMMENT_REGEX.replace_all(&normalized_html, "").to_string();
-    // Attributes are stripped inside start tags only, so text that reads like
-    // one (`role = admin`) is left alone.
-    normalized_html = START_TAG_REGEX
-        .replace_all(&normalized_html, |tag: &regex::Captures| {
-            JUNK_ATTR_REGEX.replace_all(&tag[0], "").to_string()
-        })
-        .to_string();
-
-    normalized_html
+    WHITESPACE_REGEX.replace_all(&stripped, " ").to_string()
 }

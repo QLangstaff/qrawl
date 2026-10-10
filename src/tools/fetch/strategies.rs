@@ -170,7 +170,8 @@ where
                 );
                 return Ok(value);
             }
-            // A missing page is missing under every profile.
+            // A missing page is missing under every profile, and a redirect the
+            // domain filter refused stays refused.
             Err(e) if e.is_final() => return Err(e),
             Err(e) => {
                 log::debug!("{} via {:?} failed: {}", url, profile, e);

@@ -68,7 +68,7 @@ pub(super) fn embed_request(url: &str) -> Option<(String, EmbedOf)> {
 /// `{url}.json` — Reddit serves structured JSON for any URL this way.
 /// `raw_json=1` turns off its HTML-escaping of `&`, `<`, and `>`.
 pub(super) fn reddit_json_url(url: &str) -> String {
-    let base = url.split('?').next().unwrap_or(url);
+    let base = url.split(['?', '#']).next().unwrap_or(url);
     let base = base.trim_end_matches('/').trim_end_matches(".json");
     format!("{base}.json?raw_json=1")
 }
