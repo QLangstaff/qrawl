@@ -46,6 +46,12 @@ enum Commands {
         url: String,
     },
 
+    /// Transform Page to Markdown
+    Markdown {
+        /// URL
+        url: String,
+    },
+
     /// Scrape JSON-LD
     Jsonld {
         /// URL
@@ -70,16 +76,74 @@ enum Commands {
         url: String,
     },
 
-    /// Extract & Clean Email Addresses
+    /// Check if a Page Includes a schema.org Type
+    HasSchema {
+        /// URL
+        url: String,
+        /// schema.org type to check for (e.g. Recipe, Product)
+        schema_type: String,
+    },
+
+    /// Crawl a Site, Keep Pages of a schema.org Type
+    Schema {
+        /// URL
+        url: String,
+        /// schema.org type to keep (e.g. Recipe, Product)
+        schema_type: String,
+    },
+
+    /// Extract & Normalize Email Addresses
     Emails {
         /// URL
         url: String,
     },
 
-    /// Extract & Clean Phone Numbers
+    /// Extract & Normalize Phone Numbers
     Phones {
         /// URL
         url: String,
+    },
+
+    /// Extract & Normalize Social Links
+    Socials {
+        /// URL
+        url: String,
+    },
+
+    /// Universal URL Pipeline (classify → side-door or fetch+scrape → one bundle)
+    Url {
+        /// URL
+        url: String,
+    },
+
+    /// Universal Bulk Pipeline (fast, concurrent, best-effort over many URLs)
+    Urls {
+        /// URLs (space-separated)
+        urls: Vec<String>,
+        /// Crawl depth ceiling: 0 = just these URLs, N = follow children up to N levels
+        #[arg(long, default_value_t = 0)]
+        depth: usize,
+        /// Stop after this many matching results (caps a wide/deep crawl)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Prefetch allowlist domain (repeatable); empty = allow all
+        #[arg(long = "allow")]
+        allow_domains: Vec<String>,
+        /// Prefetch blocklist domain (repeatable)
+        #[arg(long = "block")]
+        block_domains: Vec<String>,
+        /// Restrict the crawl to this exact URL (repeatable); empty = allow all
+        #[arg(long = "allow-url")]
+        allow_urls: Vec<String>,
+        /// Exclude this exact URL from the crawl (repeatable)
+        #[arg(long = "block-url")]
+        block_urls: Vec<String>,
+        /// Keep only results with this schema.org type (repeatable); empty = any
+        #[arg(long = "include-schema")]
+        include_schemas: Vec<String>,
+        /// Drop results with this schema.org type (repeatable)
+        #[arg(long = "exclude-schema")]
+        exclude_schemas: Vec<String>,
     },
 }
 
@@ -109,10 +173,12 @@ pub fn fetch_url(url: &str, ctx: Arc<types::Context>) -> String {
             .scope(ctx, async { tools::fetch::fetch_strategy(url).await })
             .await
     });
-    result.unwrap_or_else(|e| {
-        eprintln!("Failed to fetch {}: {}", url, e);
-        std::process::exit(1);
-    })
+    result
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to fetch {}: {}", url, e);
+            std::process::exit(1);
+        })
+        .into_inner()
 }
 
 pub fn print_json<T: serde::Serialize>(value: &T) {
@@ -137,15 +203,13 @@ pub fn run() {
                 std::process::exit(1);
             }
 
-            eprintln!("Fetching {}...", url);
+            eprintln!(
+                "Fetching {}... (set RUST_LOG=qrawl=info for profile/timing)",
+                url
+            );
 
-            match runtime::block_on(tools::fetch::fetch_auto_with_result(&url)) {
-                Ok(result) => {
-                    eprintln!(
-                        "✓ Success\n  Profile: {:?}\n  Attempts: {}\n  Duration: {}ms",
-                        result.profile_used, result.attempts, result.duration_ms
-                    );
-                }
+            match runtime::block_on(tools::fetch::fetch_auto(&url)) {
+                Ok(html) => eprintln!("✓ Fetched {} bytes", html.as_str().len()),
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
@@ -178,6 +242,15 @@ pub fn run() {
             run!(@async ctx_arc.clone(), url, tools::scrape::scrape_body)
         }
 
+        Commands::Markdown { url } => {
+            // Markdown is terminal, LLM-ready text — print it raw, not JSON-quoted.
+            let html = read_input(&url, ctx_arc.clone());
+            let markdown = runtime::block_on(tools::transform::transform_markdown(
+                &types::Html::new(html),
+            ));
+            println!("{}", markdown);
+        }
+
         Commands::Jsonld { url } => {
             run!(@async ctx_arc.clone(), url, tools::scrape::scrape_jsonld)
         }
@@ -186,13 +259,18 @@ pub fn run() {
             run!(@async ctx_arc.clone(), url, tools::scrape::scrape_metadata)
         }
 
-        Commands::Preview { url } => run!(
-            @async ctx_arc.clone(), url,
-            [
-                tools::scrape::scrape_metadata,
-                tools::extract::extract_og_preview
-            ]
-        ),
+        Commands::Preview { url } => {
+            // `extract_open_graph` needs the URL (it carries it into the result), so this
+            // composes by hand rather than via the single-input `run!` form:
+            // fetch → scrape_metadata → extract_open_graph.
+            let canonical = types::CanonicalUrl::new(&url);
+            let html = read_input(&url, ctx_arc.clone());
+            let result = runtime::block_on(async move {
+                let metadata = tools::scrape::scrape_metadata(&types::Html::new(html)).await;
+                tools::extract::extract_open_graph(&canonical, &metadata)
+            });
+            print_json(&result);
+        }
 
         Commands::Schemas { url } => run!(
             @async ctx_arc.clone(), url,
@@ -202,13 +280,83 @@ pub fn run() {
             ]
         ),
 
+        Commands::HasSchema { url, schema_type } => {
+            // Two inputs (URL + type), so this composes by hand rather than via
+            // the single-input `run!` form: fetch → scrape_jsonld → classify.
+            let html = read_input(&url, ctx_arc.clone());
+            let result = runtime::block_on(async move {
+                let jsonld = tools::scrape::scrape_jsonld(&types::Html::new(html)).await;
+                tools::classify::classify_has_schema_type(&jsonld, &schema_type)
+            });
+            print_json(&result);
+        }
+
+        Commands::Schema { url, schema_type } => {
+            let result = runtime::block_on(templates::qrawl_schema(
+                vec![url.to_string()],
+                &schema_type,
+                (*ctx_arc).clone(),
+            ));
+            // Print just the matching page URLs (like `children`).
+            let urls = result.map(|pages| {
+                pages
+                    .into_iter()
+                    .map(|(url, _html)| url)
+                    .collect::<Vec<String>>()
+            });
+            print_json(&urls);
+        }
+
         Commands::Emails { url } => {
             run!(@template url, templates::qrawl_emails, (*ctx_arc).clone())
         }
 
         Commands::Phones { url } => run!(
             @async ctx_arc.clone(), url,
-            [tools::extract::extract_phones, tools::clean::clean_phones]
+            [tools::extract::extract_phones, tools::normalize::normalize_phones]
         ),
+
+        Commands::Socials { url } => {
+            // The universal bulk pipeline fills `PageContent::socials` on every
+            // page; depth 2 mirrors the old seed → children → pages sweep.
+            let mut ctx = (*ctx_arc).clone();
+            ctx.depth = 2;
+            let pages = runtime::block_on(templates::qrawl_many_urls(vec![url], ctx));
+            let all: Vec<String> = pages.into_iter().flat_map(|p| p.socials).collect();
+            print_json(&tools::normalize::normalize_social_urls(&all));
+        }
+
+        Commands::Url { url } => {
+            // `qrawl_any_url` takes the URL string and fetches internally, so
+            // pass it straight through — do NOT pre-fetch it to HTML.
+            let result = runtime::block_on(templates::qrawl_any_url(&url, (*ctx_arc).clone()));
+            print_json(&result);
+        }
+
+        Commands::Urls {
+            urls,
+            depth,
+            limit,
+            allow_domains,
+            block_domains,
+            allow_urls,
+            block_urls,
+            include_schemas,
+            exclude_schemas,
+        } => {
+            // Bulk, concurrent, best-effort: one bundle per matching URL. `--fast`
+            // toggles strategy; depth/results/domains/schemas/urls shape the qrawl.
+            let mut ctx = (*ctx_arc).clone();
+            ctx.depth = depth;
+            ctx.limit = limit;
+            ctx.allow_domains = allow_domains;
+            ctx.block_domains = block_domains;
+            ctx.allow_urls = allow_urls;
+            ctx.block_urls = block_urls;
+            ctx.include_schemas = include_schemas;
+            ctx.exclude_schemas = exclude_schemas;
+            let result = runtime::block_on(templates::qrawl_many_urls(urls, ctx));
+            print_json(&result);
+        }
     }
 }

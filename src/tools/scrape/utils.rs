@@ -2,14 +2,15 @@ use crate::selectors::{
     BODY_SELECTOR, CLASS_SELECTOR, HTML_LANG_SELECTOR, JSONLD_SELECTOR, LI_SELECTOR, META_SELECTOR,
     MICRODATA_SELECTOR, P_SELECTOR, RDFA_SELECTOR, TITLE_SELECTOR,
 };
-use crate::types::{Jsonld, Metadata, Microformats};
+use crate::types::{Html, Jsonld, Metadata, Microformats};
 
-pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> String {
-    document
+pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
+    let markup = document
         .select(&BODY_SELECTOR)
         .next()
         .map(|body| body.html())
-        .unwrap_or_else(|| document.html())
+        .unwrap_or_else(|| document.html());
+    Html::new(markup)
 }
 
 /// The unified schema.org view from a parsed doc: JSON-LD `<script>` tags +
@@ -31,7 +32,7 @@ pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
 }
 
 /// Everything from one parse: body HTML, metadata, and the unified schema view.
-pub(super) fn scrape_from_doc(document: &scraper::Html) -> (String, Metadata, Jsonld) {
+pub(super) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
     (
         scrape_body_from_doc(document),
         scrape_metadata_from_doc(document),
@@ -891,7 +892,10 @@ fn mf_item_to_schema(item: &serde_json::Value) -> Option<serde_json::Value> {
     let props = item.get("properties")?.as_object()?;
 
     let mut obj = serde_json::Map::new();
-    obj.insert("@type".to_string(), serde_json::Value::String(schema_type.to_string()));
+    obj.insert(
+        "@type".to_string(),
+        serde_json::Value::String(schema_type.to_string()),
+    );
     for (mf_key, values) in props {
         let Some(schema_key) = mf_prop_to_schema(h_type, mf_key) else {
             continue;

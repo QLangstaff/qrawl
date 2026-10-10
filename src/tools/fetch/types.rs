@@ -1,21 +1,27 @@
 use serde::{Deserialize, Serialize};
 
-pub use super::profile::FetchProfile;
-
-/// Fetch Result
+/// Fetch Profiles
 ///
-/// Contains the fetched HTML and metadata about the fetch operation:
-/// - Which profile succeeded
-/// - How long the operation took
-/// - How many attempts before success
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FetchResult {
-    /// The fetched HTML content
-    pub html: String,
-    /// The profile that succeeded
-    pub profile_used: FetchProfile,
-    /// Total duration in milliseconds
-    pub duration_ms: u64,
-    /// Number of attempts before success
-    pub attempts: usize,
+/// Each profile represents a platform with its natural default browser so User-Agent and headers are always consistent:
+/// - `Windows` → Chrome (most popular on Windows)
+/// - `MacOS` → Safari (native browser)
+/// - `IOS` → Safari (only real browser on iPhone)
+/// - `Android` → Chrome (most popular on Android)
+/// - `Minimal` → Basic Mozilla (no platform-specific headers)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FetchProfile {
+    /// Minimal (just User-Agent)
+    Minimal,
+
+    /// Chrome on Windows (most popular desktop platform)
+    Windows,
+
+    /// Safari on macOS
+    MacOS,
+
+    /// Safari on iPhone (most popular mobile browser)
+    IOS,
+
+    /// Chrome on Android
+    Android,
 }

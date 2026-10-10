@@ -4,7 +4,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Fetch strategy for pipeline `fetch_*` steps.
 ///
@@ -16,9 +15,6 @@ pub enum FetchStrategy {
     Fast,
 }
 
-/// Default fetch timeout.
-pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Default concurrency.
 pub const DEFAULT_CONCURRENCY: usize = 1000;
 
@@ -26,10 +22,10 @@ pub const DEFAULT_CONCURRENCY: usize = 1000;
 #[derive(Debug, Clone)]
 pub struct Context {
     pub fetch_strategy: FetchStrategy,
-    pub fetch_timeout: Duration,
     pub concurrency: usize,
     pub depth: usize,
-    pub limit: usize,
+    /// Max results to return. `None` = unbounded.
+    pub limit: Option<usize>,
     /// Allow domains pre-fetch. Empty = allow all.
     pub allow_domains: Vec<String>,
     /// Block domains pre-fetch. Empty = block none.
@@ -45,14 +41,13 @@ pub struct Context {
 }
 
 impl Context {
-    /// Context with the Minimal→Windows→iOS fetch strategy cascade.
-    pub fn auto() -> Self {
+    /// Base context: all defaults, `fetch_strategy` chosen by the caller.
+    fn with_strategy(fetch_strategy: FetchStrategy) -> Self {
         Self {
-            fetch_strategy: FetchStrategy::Auto,
-            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+            fetch_strategy,
             concurrency: DEFAULT_CONCURRENCY,
             depth: 0,
-            limit: 0,
+            limit: None,
             allow_domains: Vec::new(),
             block_domains: Vec::new(),
             allow_urls: Vec::new(),
@@ -62,21 +57,14 @@ impl Context {
         }
     }
 
-    /// Context with the Minimal fetch strategy only.
-    pub fn fast() -> Self {
-        Self {
-            fetch_strategy: FetchStrategy::Fast,
-            ..Self::auto()
-        }
+    /// Context with the Minimal→Windows→iOS fetch strategy cascade.
+    pub fn auto() -> Self {
+        Self::with_strategy(FetchStrategy::Auto)
     }
 
-    /// Override the per-request fetch timeout. Applied to each profile attempt
-    /// via reqwest's `RequestBuilder::timeout`. Bulk workloads typically set
-    /// this aggressively (e.g., 5s) to cap tail latency; single-URL workflows
-    /// leave it at the default to give slow sites a chance.
-    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
-        self.fetch_timeout = timeout;
-        self
+    /// Context with the Minimal fetch strategy only.
+    pub fn fast() -> Self {
+        Self::with_strategy(FetchStrategy::Fast)
     }
 
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
@@ -89,37 +77,37 @@ impl Context {
         self
     }
 
-    pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = limit;
+    pub fn with_limit(mut self, limit: impl Into<Option<usize>>) -> Self {
+        self.limit = limit.into();
         self
     }
 
-    pub fn with_allow_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn with_domains(mut self, domains: Vec<String>) -> Self {
         self.allow_domains = domains;
         self
     }
 
-    pub fn with_block_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn without_domains(mut self, domains: Vec<String>) -> Self {
         self.block_domains = domains;
         self
     }
 
-    pub fn with_allow_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn with_urls(mut self, urls: Vec<String>) -> Self {
         self.allow_urls = urls;
         self
     }
 
-    pub fn with_block_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn without_urls(mut self, urls: Vec<String>) -> Self {
         self.block_urls = urls;
         self
     }
 
-    pub fn with_include_schemas(mut self, schemas: Vec<String>) -> Self {
+    pub fn with_schemas(mut self, schemas: Vec<String>) -> Self {
         self.include_schemas = schemas;
         self
     }
 
-    pub fn with_exclude_schemas(mut self, schemas: Vec<String>) -> Self {
+    pub fn without_schemas(mut self, schemas: Vec<String>) -> Self {
         self.exclude_schemas = schemas;
         self
     }
@@ -162,10 +150,10 @@ pub fn get_fetch_strategy() -> FetchStrategy {
         .unwrap_or(FetchStrategy::Auto)
 }
 
-pub fn get_fetch_timeout() -> Duration {
-    CTX.try_with(|ctx| ctx.fetch_timeout)
+pub fn get_concurrency() -> usize {
+    CTX.try_with(|ctx| ctx.concurrency)
         .ok()
-        .unwrap_or(DEFAULT_FETCH_TIMEOUT)
+        .unwrap_or(DEFAULT_CONCURRENCY)
 }
 
 /// Raw HTML content — the substrate every page-scraping tool consumes.
@@ -279,7 +267,7 @@ pub type Metadata = Vec<(String, String)>;
 /// properties — so it is kept distinct from the native encodings. To consume
 /// it as schema.org (normalized and merged with the native encodings), use
 /// `scrape_jsonld`, which folds mf2 in.
-pub type Microformats = Vec<Value>;
+pub(crate) type Microformats = Vec<Value>;
 
 /// A URL in qrawl's one canonical form — the social-aware canonicalization that
 /// every pipeline, the classify/extract tools, and the fetch cache all key on.
@@ -339,5 +327,232 @@ impl<'de> Deserialize<'de> for CanonicalUrl {
         D: Deserializer<'de>,
     {
         Ok(Self::new(&String::deserialize(deserializer)?))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Social vocabulary
+//
+// Data shapes for URL classification. `classify_is_social_url` /
+// `extract_social_parts` answer "is this social?" and extract a social URL's
+// `SocialParts`. The verbs live in their tools; this is just the vocabulary,
+// alongside `Jsonld`/`Metadata`/`Context`.
+// ---------------------------------------------------------------------------
+
+/// The social platform a URL belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SocialPlatform {
+    Reddit,
+    TikTok,
+    Instagram,
+    Facebook,
+    Pinterest,
+    YouTube,
+    Twitter,
+    LinkedIn,
+    Vimeo,
+}
+
+impl SocialPlatform {
+    /// Recognize the social platform a host belongs to, or `None` for a
+    /// non-social host. Subdomain-aware (`old.reddit.com`, `m.facebook.com`,
+    /// `vm.tiktok.com`) and handles the alt short-domains (`youtu.be`, `fb.me`,
+    /// …). Lives on the type so `classify` and `normalize_social` share one
+    /// host→platform table without depending on each other.
+    pub fn from_host(host: &str) -> Option<SocialPlatform> {
+        // Alt domains that aren't subdomains of the primary (so the subdomain
+        // check below can't catch them).
+        match host {
+            "youtu.be" => return Some(Self::YouTube),
+            "instagr.am" => return Some(Self::Instagram),
+            "redd.it" => return Some(Self::Reddit),
+            "fb.me" | "fb.com" | "fb.watch" => return Some(Self::Facebook),
+            "pin.it" => return Some(Self::Pinterest),
+            "t.co" => return Some(Self::Twitter),
+            "lnkd.in" => return Some(Self::LinkedIn),
+            _ => {}
+        }
+
+        // `host == domain` or a subdomain of it (`old.reddit.com`, `m.facebook.com`).
+        let host_matches = |domain: &str| {
+            host == domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        };
+
+        if host_matches("reddit.com") {
+            Some(Self::Reddit)
+        } else if host_matches("tiktok.com") {
+            Some(Self::TikTok)
+        } else if host_matches("instagram.com") {
+            Some(Self::Instagram)
+        } else if host_matches("facebook.com") {
+            Some(Self::Facebook)
+        } else if host_matches("youtube.com") || host_matches("youtube-nocookie.com") {
+            Some(Self::YouTube)
+        } else if host_matches("twitter.com") || host_matches("x.com") {
+            Some(Self::Twitter)
+        } else if host_matches("linkedin.com") {
+            Some(Self::LinkedIn)
+        } else if host_matches("vimeo.com") {
+            Some(Self::Vimeo)
+        } else if host.split('.').any(|label| label == "pinterest") {
+            // Pinterest ships many ccTLDs (`pinterest.co.uk`, `uk.pinterest.com`).
+            Some(Self::Pinterest)
+        } else {
+            None
+        }
+    }
+}
+
+/// The social facts of a URL — its platform, item kind, and identifiers —
+/// extracted by [`extract_social_parts`](crate::tools::extract::extract_social_parts).
+/// The URL string itself is a [`CanonicalUrl`], threaded alongside this by the
+/// pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialParts {
+    pub platform: SocialPlatform,
+    /// The item kind, or `None` when the platform is recognized but the URL
+    /// shape is opaque (e.g. an unexpanded short link).
+    pub kind: Option<SocialKind>,
+    /// Post / video / pin id, where the URL carries one.
+    pub id: Option<String>,
+    /// Account identifier: `@user` (TikTok/IG/X/YouTube), `r/sub` or `u/user`
+    /// (Reddit), or a profile/board/company slug.
+    pub handle: Option<String>,
+}
+
+/// The kind of social item a URL points at — the classifier paired with
+/// [`SocialPlatform`] in [`SocialParts`].
+///
+/// Platform-independent *within* the social domain (a `Video` is a `Video`
+/// whether it's TikTok, YouTube, or Vimeo) and aligned with schema.org /
+/// ActivityStreams vocabulary. A caller that wants a branded label (e.g.
+/// "Subreddit") derives it from `(platform, kind)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SocialKind {
+    /// An entity page — a person, account, or channel (TikTok `@user`, Reddit
+    /// `u/user`, a YouTube channel, a web author page).
+    Profile,
+    /// A single text or link post.
+    Post,
+    /// A single video. (Instagram reels classify here too.)
+    Video,
+    /// A single image.
+    Photo,
+    /// A reply within a thread.
+    Comment,
+    /// A collection / listing of items — a subreddit, a Pinterest board, a
+    /// channel feed, a web index page (schema.org `CollectionPage`,
+    /// ActivityStreams `Collection`).
+    Collection,
+}
+
+/// Provenance of the content fields in a [`PageContent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ContentSource {
+    RedditJson,
+    Oembed,
+    OpenGraph,
+    /// The page itself was fetched and scraped (structured data + body) — the
+    /// spine of [`qrawl_any_url`](crate::templates::qrawl_any_url) for any
+    /// non-social URL.
+    Html,
+    /// No side door produced anything — fields come only from the share payload.
+    SharePayloadOnly,
+}
+
+/// Everything qrawl could pull from a single URL — qrawl's one content shape,
+/// produced by [`qrawl_any_url`](crate::templates::qrawl_any_url) /
+/// [`qrawl_many_urls`](crate::templates::qrawl_many_urls) /
+/// [`qrawl_share`](crate::templates::qrawl_share). Domain-agnostic: it carries
+/// generic web signals and leaves domain mapping — turning a schema.org
+/// `Recipe` into the caller's recipe type, say — to the caller.
+///
+/// [`source`](PageContent::source) tells you which path produced it: a social
+/// side door fills only the content fields (`title` … `video_url`), leaving
+/// the page extras (`structured`/`metadata`/`socials`/`body`) empty; the page
+/// path ([`ContentSource::Html`]) fills both.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageContent {
+    /// Canonical URL.
+    pub url: CanonicalUrl,
+    /// The social platform, or `None` for a non-social (web) URL.
+    pub platform: Option<SocialPlatform>,
+    /// The item kind, or `None` for a web URL or an opaque social shortlink.
+    pub kind: Option<SocialKind>,
+    /// Which path produced the content.
+    pub source: ContentSource,
+    pub title: Option<String>,
+    /// Body / caption / short description.
+    pub text: Option<String>,
+    pub author: Option<String>,
+    /// Hero image / thumbnail (`og:image` or a side-door thumbnail).
+    pub image_url: Option<String>,
+    /// Playable video URL discovered by a side door (an oEmbed thumbnail is
+    /// `image_url`, not this; this is e.g. a Reddit hosted video or `og:video`).
+    pub video_url: Option<String>,
+    /// schema.org entities — the merged `scrape_jsonld` view (JSON-LD +
+    /// Microdata + RDFa + Microformats2, deduped). Empty on the social side-door
+    /// paths; JSON-LD-only on the lean bulk path.
+    pub structured: Jsonld,
+    /// Raw `<meta>` tags (Open Graph / Twitter Card / standard). Empty on the
+    /// social side-door paths.
+    pub metadata: Metadata,
+    /// Social profile/content links found on the page
+    /// ([`extract_social_urls`](crate::tools::extract::extract_social_urls),
+    /// canonical + deduped). Empty on the social side-door paths (no page HTML
+    /// to scan).
+    pub socials: Vec<String>,
+    /// The page `<body>` as [`Html`] (`scrape_body`). Transform to Markdown
+    /// terminally (`transform_markdown`) when LLM-ready text is wanted. `None` on
+    /// side-door paths and the lean bulk path.
+    pub body: Option<Html>,
+}
+
+impl PageContent {
+    /// An empty bundle for `url` tagged with the path that produced it — the
+    /// seed every extractor fills via struct update syntax.
+    pub fn new(url: CanonicalUrl, source: ContentSource) -> Self {
+        Self {
+            url,
+            platform: None,
+            kind: None,
+            source,
+            title: None,
+            text: None,
+            author: None,
+            image_url: None,
+            video_url: None,
+            structured: Vec::new(),
+            metadata: Vec::new(),
+            socials: Vec::new(),
+            body: None,
+        }
+    }
+
+    /// True if at least one content field was extracted — used to decide
+    /// whether a payload result is worth keeping or the caller falls through
+    /// to the next path. `url` is always present, so it doesn't count.
+    pub fn has_content(&self) -> bool {
+        self.title.is_some()
+            || self.text.is_some()
+            || self.image_url.is_some()
+            || self.video_url.is_some()
+    }
+
+    /// Thread a URL's social facts through: `platform`/`kind` come from the
+    /// classification, and a missing `author` falls back to the classified
+    /// handle.
+    pub fn with_social(mut self, social: Option<&SocialParts>) -> Self {
+        self.platform = social.map(|s| s.platform);
+        self.kind = social.and_then(|s| s.kind);
+        if self.author.is_none() {
+            self.author = social.and_then(|s| s.handle.clone());
+        }
+        self
     }
 }

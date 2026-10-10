@@ -1,169 +1,122 @@
 //! Shared Macros
 
-/// Chain Tools
+/// Compose tools into one crawl. `chain! { urls, ctx => a -> b -> c }` threads a
+/// collection through each step, fanning per-item work out with bounded
+/// concurrency and feeding each step's output into the next. Each `a -> b` is
+/// type-checked by the compiler (feeding a URL list where pages are expected
+/// won't compile). Runs inside a fresh `CTX` + `FETCH_CACHE` scope; evaluates to
+/// the final step's value — use it inside an `async fn`.
+///
+/// The step vocabulary is **open**: every combinator takes *any* tool — a
+/// built-in, or your own function/closure with the matching signature — so you
+/// can build your own pipelines, not just arrange blessed names. The tool paths
+/// resolve in *your* scope, so bring them into scope with `use`.
+///
+/// | step | tool signature | flows |
+/// |------|----------------|-------|
+/// | `all(f)` | `fn(&[String]) -> Vec<String>` | urls → urls (whole list) |
+/// | `fetch` | — (the built-in I/O primitive) | urls → pages |
+/// | `map(f)` | `async fn(&Html, &str) -> Vec<String>` | pages → urls |
+/// | `extract(f)` | `async fn(&Html) -> Vec<String>` | pages → list |
+/// | `filter(p)` | `async fn(Html) -> bool` | pages → pages |
+///
+/// A "page" is a `(String, Html)` — its source URL and body. `map`/`extract`/
+/// `filter` fan their tool out across the pages with bounded concurrency; a
+/// capturing closure is cloned per page, so it must be `Clone + Send + Sync`.
+///
+/// ```ignore
+/// use qrawl::tools::normalize::{normalize_emails, normalize_urls};
+/// use qrawl::tools::extract::extract_emails;
+/// use qrawl::tools::map::map_children;
+///
+/// let emails = chain! {
+///     urls, ctx =>
+///     all(normalize_urls) -> fetch -> map(map_children) ->
+///     all(normalize_urls) -> fetch -> extract(extract_emails) -> all(normalize_emails)
+/// };
+/// ```
 #[macro_export]
 macro_rules! chain {
-    // Base case: no more stages, return items
-    (@process $items:expr, $ctx:expr $(,)?) => { $items };
-
-    // Helper: List dedupe functions (&[String] -> Vec<String>, operates on whole list)
-    (@process_list_dedupe $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
-        let data: Vec<String> = $items.iter().map(|(_, d)| d.clone()).collect();
-        let cleaned = $fn(&data);
-        let items: Vec<(String, String)> = cleaned.into_iter().map(|d| (d.clone(), d)).collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
+    ($urls:expr, $ctx:expr => $($rest:tt)+) => {{
+        let ctx_arc = ::std::sync::Arc::new($ctx);
+        let cache = $crate::types::fetch_cache_new();
+        $crate::types::CTX
+            .scope(ctx_arc, async move {
+                $crate::types::FETCH_CACHE
+                    .scope(cache, async move { $crate::chain!(@run $urls, $($rest)+) })
+                    .await
+            })
+            .await
     }};
 
-    // Helper: Per-URL list clean (Vec<(url, Vec<String>)> -> Vec<(url, Vec<String>)>)
-    (@process_per_url_list $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
-        let mut cleaned_items = Vec::new();
-        for (url, list) in $items {
-            let cleaned = $fn(&list);
-            cleaned_items.push((url, cleaned));
-        }
-        let items: Vec<(String, Vec<String>)> = cleaned_items;
-        $crate::chain!(@process items, $ctx $(, $rest)*)
+    // Thread the collection through each step, left to right. A step is either a
+    // combinator `name(tool)` or the bare `fetch` primitive.
+    (@run $items:expr, $comb:ident ( $arg:expr ) -> $($rest:tt)+) => {{
+        let items = $crate::chain!(@op $items, $comb($arg));
+        $crate::chain!(@run items, $($rest)+)
     }};
-
-    // Helper: Flatten and clean globally (Vec<(url, Vec<String>)> -> Vec<(url, String)>)
-    // Takes extracted lists (e.g., emails, phones), flattens all into one list,
-    // applies clean function globally, returns deduplicated flat tuples
-    (@process_flatten_and_clean $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
-        let data: Vec<String> = $items.into_iter()
-            .flat_map(|(_, list): (String, Vec<String>)| list)
-            .collect();
-        let cleaned = $fn(&data);
-        let items: Vec<(String, String)> = cleaned.into_iter().map(|d| (d.clone(), d)).collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
+    (@run $items:expr, $step:ident -> $($rest:tt)+) => {{
+        let items = $crate::chain!(@op $items, $step);
+        $crate::chain!(@run items, $($rest)+)
     }};
+    (@run $items:expr, $comb:ident ( $arg:expr )) => {
+        $crate::chain!(@op $items, $comb($arg))
+    };
+    (@run $items:expr, $step:ident) => { $crate::chain!(@op $items, $step) };
 
-    // Helper: Extract functions (Vec<(url, String)> -> Vec<(url, Vec<String>)>)
-    (@process_extract $items:expr, $ctx:expr, $fn:expr $(, $rest:ident)*) => {{
-        let concurrency = $ctx.concurrency;
-        let items: Vec<(String, Vec<String>)> = $crate::tools::batch::batch(
-            $items,
-            concurrency,
-            |(url, data): (String, String)| async move {
-                let result = $fn(&data).await;
-                Some((url, result))
-            }
-        ).await
+    // The one I/O primitive: fetch each URL, drop failures, pair with its body.
+    (@op $items:expr, fetch) => {
+        $crate::tools::batch::batch($items, $crate::types::get_concurrency(), |url: String| async move {
+            $crate::tools::fetch::fetch_strategy(&url).await.ok().map(|html| (url, html))
+        })
+        .await
         .into_iter()
         .flatten()
-        .collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
-    }};
+        .collect::<Vec<(String, $crate::types::Html)>>()
+    };
 
-    // Dispatch: clean_urls
-    (@process $items:expr, $ctx:expr, clean_urls $(, $rest:ident)*) => {{
-        $crate::chain!(@process_list_dedupe $items, $ctx, $crate::tools::clean::clean_urls $(, $rest)*)
-    }};
+    // Whole-collection transform (normalize/dedupe): `fn(&[String]) -> Vec<String>`.
+    (@op $items:expr, all($tool:expr)) => { $tool(&$items) };
 
-    // Dispatch: clean_emails (flattens and deduplicates globally)
-    (@process $items:expr, $ctx:expr, clean_emails $(, $rest:ident)*) => {{
-        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_emails $(, $rest)*)
-    }};
-
-    // Dispatch: clean_phones (flattens and deduplicates globally)
-    (@process $items:expr, $ctx:expr, clean_phones $(, $rest:ident)*) => {{
-        $crate::chain!(@process_flatten_and_clean $items, $ctx, $crate::tools::clean::clean_phones $(, $rest)*)
-    }};
-
-    // Dispatch: extract_emails
-    (@process $items:expr, $ctx:expr, extract_emails $(, $rest:ident)*) => {{
-        $crate::chain!(@process_extract $items, $ctx, $crate::tools::extract::extract_emails $(, $rest)*)
-    }};
-
-    // Dispatch: extract_phones
-    (@process $items:expr, $ctx:expr, extract_phones $(, $rest:ident)*) => {{
-        $crate::chain!(@process_extract $items, $ctx, $crate::tools::extract::extract_phones $(, $rest)*)
-    }};
-
-    // map_children: batched per-item, needs URL from tuple, flattens Vec<String> results
-    (@process $items:expr, $ctx:expr, map_children $(, $rest:ident)*) => {{
-        let concurrency = $ctx.concurrency;
-        let items: Vec<(String, String)> = $crate::tools::batch::batch(
-            $items,
-            concurrency,
-            |(url, html): (String, String)| async move {
-                let children = $crate::tools::map::map_children(&html, &url).await;
-                children.into_iter()
-                    .map(|child| (child.clone(), child))
-                    .collect::<Vec<(String, String)>>()
-            }
-        ).await
+    // Pages → urls, fanned: `async fn(&Html, &str) -> Vec<String>` (needs the url).
+    (@op $items:expr, map($tool:expr)) => {{
+        let tool = $tool;
+        $crate::tools::batch::batch($items, $crate::types::get_concurrency(), move |(url, html): (String, $crate::types::Html)| {
+            let tool = tool.clone();
+            async move { tool(&html, &url).await }
+        })
+        .await
         .into_iter()
         .flatten()
-        .collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
+        .collect::<Vec<String>>()
     }};
 
-    // map_page: batched per-item, needs URL from tuple, flattens Vec<String> results
-    (@process $items:expr, $ctx:expr, map_page $(, $rest:ident)*) => {{
-        let concurrency = $ctx.concurrency;
-        let items: Vec<(String, String)> = $crate::tools::batch::batch(
-            $items,
-            concurrency,
-            |(url, html): (String, String)| async move {
-                let links = $crate::tools::map::map_page(&html, &url).await;
-                links.into_iter()
-                    .map(|link| (link.clone(), link))
-                    .collect::<Vec<(String, String)>>()
-            }
-        ).await
+    // Pages → flat list, fanned: `async fn(&Html) -> Vec<String>`.
+    (@op $items:expr, extract($tool:expr)) => {{
+        let tool = $tool;
+        $crate::tools::batch::batch($items, $crate::types::get_concurrency(), move |(_url, html): (String, $crate::types::Html)| {
+            let tool = tool.clone();
+            async move { tool(&html).await }
+        })
+        .await
         .into_iter()
         .flatten()
-        .collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
+        .collect::<Vec<String>>()
     }};
 
-    // clean_html: per-item batched, returns String (infallible)
-    (@process $items:expr, $ctx:expr, clean_html $(, $rest:ident)*) => {{
-        let concurrency = $ctx.concurrency;
-        let items: Vec<(String, String)> = $crate::tools::batch::batch(
-            $items,
-            concurrency,
-            |(url, data): (String, String)| async move {
-                let result = $crate::tools::clean::clean_html(&data).await;
-                Some((url, result))
-            }
-        ).await
+    // Pages → pages, keep those the async predicate accepts: `async fn(Html) -> bool`.
+    // The predicate takes the body by value (its future owns it), so a capturing
+    // closure sidesteps the borrow-across-await lifetime that `&Html` would impose.
+    (@op $items:expr, filter($pred:expr)) => {{
+        let pred = $pred;
+        $crate::tools::batch::batch($items, $crate::types::get_concurrency(), move |(url, html): (String, $crate::types::Html)| {
+            let pred = pred.clone();
+            async move { if pred(html.clone()).await { Some((url, html)) } else { None } }
+        })
+        .await
         .into_iter()
         .flatten()
-        .collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
-    }};
-
-    // Default: per-item batched function returning Result (fetch_*, etc.)
-    (@process $items:expr, $ctx:expr, $fn:ident $(, $rest:ident)*) => {{
-        let concurrency = $ctx.concurrency;
-        let items: Vec<(String, String)> = $crate::tools::batch::batch(
-            $items,
-            concurrency,
-            |(url, data): (String, String)| async move {
-                $fn(&data).await.ok().map(|result| (url, result))
-            }
-        ).await
-        .into_iter()
-        .flatten()
-        .collect();
-        $crate::chain!(@process items, $ctx $(, $rest)*)
-    }};
-
-    // Entry point: initialize tuples and start processing
-    ($urls:expr, $ctx:expr => $first:ident $(-> $rest:ident)*) => {{
-        async move {
-            use std::sync::Arc;
-            let ctx = Arc::new($ctx);
-            let items: Vec<(String, String)> = $urls.into_iter().map(|u| (u.clone(), u)).collect();
-            let fetch_cache = $crate::types::fetch_cache_new();
-
-            $crate::types::CTX.scope(ctx.clone(), async move {
-                $crate::types::FETCH_CACHE.scope(fetch_cache, async move {
-                    $crate::chain!(@process items, ctx, $first $(, $rest)*)
-                }).await
-            }).await
-        }
+        .collect::<Vec<(String, $crate::types::Html)>>()
     }};
 }
 
@@ -203,7 +156,7 @@ macro_rules! run {
     (@async $ctx:expr, $input:expr, [$first:expr, $second:expr] $(,)?) => {{
         let data = $crate::cli::read_input(&$input, $ctx);
         let result = $crate::runtime::block_on(async move {
-            let intermediate = $first(&data).await;
+            let intermediate = $first(&$crate::types::Html::new(data)).await;
             $second(&intermediate)  // Second is sync
         });
         $crate::cli::print_json(&result);
@@ -211,7 +164,7 @@ macro_rules! run {
     // For String input with async processor
     (@async $ctx:expr, $input:expr, $processor:expr $(, $arg:expr)* $(,)?) => {{
         let data = $crate::cli::read_input(&$input, $ctx);
-        let result = $crate::runtime::block_on($processor(&data $(, $arg)*));
+        let result = $crate::runtime::block_on($processor(&$crate::types::Html::new(data) $(, $arg)*));
         $crate::cli::print_json(&result);
     }};
 }

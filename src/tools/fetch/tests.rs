@@ -1,9 +1,10 @@
 #![cfg(test)]
 use crate::tools::fetch::headers::headers_for_profile;
-use crate::tools::fetch::profile::FetchProfile;
+use crate::tools::fetch::social::{fetch_social, oembed_request_url, reddit_json_url};
 use crate::tools::fetch::strategies::{acquire_host_permit, HOST_SEMAPHORES, PER_HOST_CONCURRENCY};
-use crate::tools::fetch::utils::validate_response;
-use crate::tools::fetch::{host_matches, is_host_allowed};
+use crate::tools::fetch::types::FetchProfile;
+use crate::tools::fetch::utils::{host_matches, is_host_allowed, validate_response};
+use crate::types::{SocialKind, SocialParts, SocialPlatform};
 use reqwest::StatusCode;
 use std::time::{Duration, Instant};
 
@@ -220,4 +221,127 @@ async fn host_cap_serializes_excess_callers() {
 async fn host_cap_skipped_when_url_has_no_host() {
     let permit = acquire_host_permit(None).await;
     assert!(permit.is_none(), "no-host URLs should bypass the cap");
+}
+
+// ===== Side-door request builders (fetch/social.rs) =====
+
+#[test]
+fn reddit_json_url_appends_suffix() {
+    assert_eq!(
+        reddit_json_url("https://reddit.com/r/rust/comments/abc/title"),
+        "https://reddit.com/r/rust/comments/abc/title.json"
+    );
+}
+
+#[test]
+fn oembed_request_url_per_platform() {
+    let tiktok = oembed_request_url(&SocialParts {
+        platform: SocialPlatform::TikTok,
+        kind: Some(SocialKind::Video),
+        id: Some("123".to_string()),
+        handle: Some("@u".to_string()),
+    })
+    .expect("tiktok has oembed");
+    assert!(tiktok.starts_with("https://www.tiktok.com/oembed?url="));
+    assert!(tiktok.contains("format=json"));
+    // Regression guard: the target is rebuilt WITH `www.` — TikTok oEmbed
+    // 400s on a www-less host, which our `canonical` strips.
+    assert!(
+        tiktok.contains("https%3A%2F%2Fwww.tiktok.com%2F%40u%2Fvideo%2F123"),
+        "expected www-qualified, field-rebuilt target, got {tiktok}"
+    );
+
+    // Rebuilt from the id (`youtu.be/<id>` → `www.youtube.com/watch?v=<id>`).
+    let yt = oembed_request_url(&SocialParts {
+        platform: SocialPlatform::YouTube,
+        kind: Some(SocialKind::Video),
+        id: Some("dQw4w9WgXcQ".to_string()),
+        handle: None,
+    })
+    .expect("yt oembed");
+    assert!(yt.contains("https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ"));
+
+    // No unauthenticated oEmbed endpoint.
+    assert!(oembed_request_url(&SocialParts {
+        platform: SocialPlatform::Instagram,
+        kind: None,
+        id: None,
+        handle: None,
+    })
+    .is_none());
+}
+
+// ===== Side-door routing (fetch/social.rs) =====
+//
+// `fetch_social` returns `None` before any network for URLs with no dedicated
+// door, so the no-door routes test offline. The positive routes (Reddit
+// `.json`, oEmbed) hit the network and are exercised by the live url tests.
+// Routing reads only `platform` + `kind`, so the parts are built as literals —
+// the fetch tool never depends on the extract tool, tests included.
+
+use crate::types::CanonicalUrl;
+
+/// `fetch_social` for a URL expected to have no dedicated door — must return
+/// `None` without touching the network.
+async fn no_door(platform: SocialPlatform, kind: Option<SocialKind>, url: &str) -> bool {
+    let social = SocialParts {
+        platform,
+        kind,
+        id: None,
+        handle: None,
+    };
+    fetch_social(&social, &CanonicalUrl::new(url)).await.is_none()
+}
+
+#[tokio::test]
+async fn fetch_social_no_door_for_profiles_and_boards() {
+    // Profiles/feeds have no oEmbed; the caller fetches the page.
+    assert!(
+        no_door(
+            SocialPlatform::TikTok,
+            Some(SocialKind::Profile),
+            "https://tiktok.com/@u"
+        )
+        .await
+    );
+    assert!(
+        no_door(
+            SocialPlatform::YouTube,
+            Some(SocialKind::Profile),
+            "https://youtube.com/@MrBeast"
+        )
+        .await
+    );
+    // oEmbed only serves individual pins, so a board has no door.
+    assert!(
+        no_door(
+            SocialPlatform::Pinterest,
+            Some(SocialKind::Collection),
+            "https://pinterest.com/someuser/recipes"
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn fetch_social_no_door_for_doorless_platforms() {
+    // Instagram has no public oEmbed/JSON door, so even a recognized post has
+    // no door. (A non-social URL never reaches routing: it has no
+    // `SocialParts`, so the callers scrape it directly.)
+    assert!(
+        no_door(
+            SocialPlatform::Instagram,
+            Some(SocialKind::Post),
+            "https://instagram.com/p/Cabc"
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn fetch_social_no_door_for_none_kind_shortlink() {
+    // An opaque TikTok shortener classifies with `kind: None` — the path is
+    // a short code, not an addressable item. It must fall through to the page
+    // fetch, NOT oEmbed (which needs an id/handle the shortlink lacks).
+    assert!(no_door(SocialPlatform::TikTok, None, "https://vm.tiktok.com/ZMabc123").await);
 }

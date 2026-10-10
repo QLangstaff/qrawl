@@ -1,4 +1,4 @@
-use super::profile::FetchProfile;
+use super::types::FetchProfile;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
 /// Build complete header map for the given profile, including User-Agent.

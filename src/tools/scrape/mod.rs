@@ -5,8 +5,10 @@ use crate::types::{Html, Jsonld, Metadata};
 mod tests;
 mod utils;
 
-/// Scrape body content from HTML.
-pub async fn scrape_body(html: &Html) -> String {
+/// Scrape the page body as [`Html`] — the `<body>` subtree. A scrape leaf: it
+/// yields HTML, so it composes into [`transform_markdown`](crate::tools::transform::transform_markdown)
+/// for LLM-ready Markdown.
+pub async fn scrape_body(html: &Html) -> Html {
     let html = html.to_string();
     tokio::task::spawn_blocking(move || {
         utils::scrape_body_from_doc(&scraper::Html::parse_document(&html))
@@ -46,12 +48,12 @@ pub async fn scrape_metadata(html: &Html) -> Metadata {
     .expect("scrape_metadata: spawn_blocking failed")
 }
 
-/// Scrape everything from a single parse: body HTML, Open Graph metadata, and
-/// the unified schema.org view ([`scrape_jsonld`]) — returned as
+/// Scrape everything from a single parse: body [`Html`], Open Graph metadata,
+/// and the unified schema.org view ([`scrape_jsonld`]) — returned as
 /// `(body, metadata, schema)`. Prefer this over calling `scrape_body` +
 /// `scrape_metadata` + `scrape_jsonld` separately (which would parse three
 /// times).
-pub async fn scrape_all(html: &Html) -> (String, Metadata, Jsonld) {
+pub async fn scrape_all(html: &Html) -> (Html, Metadata, Jsonld) {
     let html = html.to_string();
     tokio::task::spawn_blocking(move || {
         utils::scrape_from_doc(&scraper::Html::parse_document(&html))

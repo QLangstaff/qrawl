@@ -1,17 +1,28 @@
 use super::client::build_client_for_profile;
 use super::headers::headers_for_profile;
-use super::profile::FetchProfile;
-use super::types::*;
+use super::types::FetchProfile;
 use super::utils::*;
 use crate::errors::QrawlError;
-use crate::types::get_fetch_timeout;
+use crate::types::{get_fetch_strategy, FetchStrategy};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Per-attempt fetch timeout, derived from the active strategy: `Fast` fails
+/// fast (single Minimal attempt), `Auto` is patient across its profile cascade.
+const FAST_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+const AUTO_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn fetch_timeout() -> Duration {
+    match get_fetch_strategy() {
+        FetchStrategy::Fast => FAST_FETCH_TIMEOUT,
+        FetchStrategy::Auto => AUTO_FETCH_TIMEOUT,
+    }
+}
 
 static CLIENT_CACHE: Lazy<Arc<DashMap<FetchProfile, Client>>> =
     Lazy::new(|| Arc::new(DashMap::new()));
@@ -63,8 +74,9 @@ pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemap
     sema.acquire_owned().await.ok()
 }
 
-/// Fast: Minimal
-pub(super) async fn fetch_fast_with_client(url: &str) -> Result<FetchResult, QrawlError> {
+/// Fast: Minimal. Logs the profile/timing (`RUST_LOG=qrawl=info`) rather than
+/// returning them — the stats are observability, not part of the value.
+pub(super) async fn fetch_fast(url: &str) -> Result<String, QrawlError> {
     let host = host_from_url(url);
     let _permit = acquire_host_permit(host.as_deref()).await;
 
@@ -72,19 +84,19 @@ pub(super) async fn fetch_fast_with_client(url: &str) -> Result<FetchResult, Qra
     let client = get_or_build_client(profile, Some(&CLIENT_CACHE))?;
     let start = Instant::now();
 
-    match fetch_with_client(&client, url, profile).await {
-        Ok(html) => Ok(FetchResult {
-            html,
-            profile_used: profile,
-            duration_ms: start.elapsed().as_millis() as u64,
-            attempts: 1,
-        }),
-        Err(e) => Err(e),
-    }
+    let html = fetch_with_client(&client, url, profile).await?;
+    log::info!(
+        "fetched {} via {:?} in {}ms (1 attempt)",
+        url,
+        profile,
+        start.elapsed().as_millis()
+    );
+    Ok(html)
 }
 
-/// Auto: Minimal → Windows → IOS
-pub(super) async fn fetch_auto_with_client(url: &str) -> Result<FetchResult, QrawlError> {
+/// Auto: Minimal → Windows → IOS. Logs the winning profile/attempts/timing
+/// (`RUST_LOG=qrawl=info`) rather than returning them.
+pub(super) async fn fetch_auto(url: &str) -> Result<String, QrawlError> {
     let start = Instant::now();
     let mut all_errors = Vec::new();
 
@@ -104,12 +116,14 @@ pub(super) async fn fetch_auto_with_client(url: &str) -> Result<FetchResult, Qra
                 if let Some(ref h) = host {
                     HOST_PROFILE_CACHE.insert(h.clone(), *profile);
                 }
-                return Ok(FetchResult {
-                    html,
-                    profile_used: *profile,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    attempts: offset + 1,
-                });
+                log::info!(
+                    "fetched {} via {:?} in {}ms ({} attempts)",
+                    url,
+                    profile,
+                    start.elapsed().as_millis(),
+                    offset + 1
+                );
+                return Ok(html);
             }
             Err(e) => {
                 all_errors.push(format!("{:?}: {}", profile, e));
@@ -152,12 +166,11 @@ async fn fetch_with_client_and_referer(
 
     HTTP_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
-    // Send request with per-request timeout (reads from Context::fetch_timeout
-    // if in scope, else DEFAULT_FETCH_TIMEOUT).
+    // Per-attempt timeout derived from the active fetch strategy.
     let response = client
         .get(url)
         .headers(headers)
-        .timeout(get_fetch_timeout())
+        .timeout(fetch_timeout())
         .send()
         .await
         .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
@@ -198,7 +211,7 @@ async fn fetch_bytes_with_client_and_referer(
     let response = client
         .get(url)
         .headers(headers)
-        .timeout(get_fetch_timeout())
+        .timeout(fetch_timeout())
         .send()
         .await
         .map_err(|e| QrawlError::new(format!("HTTP request failed: {}", e)))?;
@@ -217,7 +230,7 @@ async fn fetch_bytes_with_client_and_referer(
 }
 
 /// Fast bytes: single Minimal-profile attempt.
-pub(super) async fn fetch_bytes_fast_with_client(
+pub(super) async fn fetch_bytes_fast(
     url: &str,
     referer: Option<&str>,
 ) -> Result<Vec<u8>, QrawlError> {
@@ -231,7 +244,7 @@ pub(super) async fn fetch_bytes_fast_with_client(
 
 /// Auto bytes: same Minimal → Windows → iOS cascade as HTML fetch, with host
 /// profile cache and no inter-attempt sleep.
-pub(super) async fn fetch_bytes_auto_with_client(
+pub(super) async fn fetch_bytes_auto(
     url: &str,
     referer: Option<&str>,
 ) -> Result<Vec<u8>, QrawlError> {

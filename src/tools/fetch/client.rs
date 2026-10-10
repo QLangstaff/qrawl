@@ -1,4 +1,4 @@
-use super::profile::FetchProfile;
+use super::types::FetchProfile;
 use crate::errors::QrawlError;
 use reqwest::{redirect, Client};
 use std::time::Duration;
@@ -10,7 +10,7 @@ const POOL_MAX_IDLE_PER_HOST: usize = 16;
 
 /// Build a reqwest client optimized for the given profile.
 ///
-/// No default timeout is set here: every request applies its own timeout via `RequestBuilder::timeout(get_fetch_timeout())` so callers can override per `Context::with_fetch_timeout(...)` without rebuilding the client.
+/// No default timeout is set here: every request applies its own per-attempt timeout via `RequestBuilder::timeout(...)`, derived from the active `FetchStrategy`, without rebuilding the client.
 pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
     let builder = Client::builder()
         .cookie_store(true)

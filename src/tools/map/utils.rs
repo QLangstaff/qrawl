@@ -512,12 +512,8 @@ fn map_anchor_to_link(anchor_id: &str, doc: &Html, base: &Url) -> Option<String>
     select_primary_link_in_element(&element, base)
 }
 
-fn has_meaningful_text(text: &str) -> bool {
-    !text.trim().is_empty()
-}
-
 fn is_heading_link(link: &ElementRef, text: &str) -> bool {
-    if !has_meaningful_text(text) {
+    if text.trim().is_empty() {
         return false;
     }
 
@@ -535,8 +531,8 @@ fn is_heading_link(link: &ElementRef, text: &str) -> bool {
     for descendant in link.descendants() {
         if let Some(elem) = ElementRef::wrap(descendant) {
             match elem.value().name() {
-                "h1" | "h2" | "h3" | "h4" => return true,
-                "strong" | "b" if has_meaningful_text(text) => return true,
+                // `text` is already known non-blank (checked at entry).
+                "h1" | "h2" | "h3" | "h4" | "strong" | "b" => return true,
                 _ => {}
             }
         }
@@ -564,7 +560,7 @@ fn is_utility_text(text: &str) -> bool {
     )
 }
 
-fn normalize_text(text: &str) -> String {
+fn match_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -576,7 +572,7 @@ fn collect_heading_texts(element: &ElementRef) -> Vec<String> {
         .descendants()
         .filter_map(ElementRef::wrap)
         .filter(|el| matches!(el.value().name(), "h1" | "h2" | "h3" | "h4"))
-        .map(|el| normalize_text(&el.text().collect::<String>()))
+        .map(|el| match_text(&el.text().collect::<String>()))
         .filter(|text| !text.is_empty())
         .collect()
 }
@@ -624,17 +620,17 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
             fallback = Some(url.to_string());
         }
 
-        let text_raw = link.text().collect::<String>();
-        let text_norm = normalize_text(&text_raw);
+        let link_text = link.text().collect::<String>();
+        let link_match_text = match_text(&link_text);
         let is_heading =
-            is_heading_link(&link, &text_raw) || link_matches_heading(&text_norm, &headings);
-        let is_meaningful = has_meaningful_text(&text_raw) && !is_utility_text(&text_raw);
+            is_heading_link(&link, &link_text) || link_matches_heading(&link_match_text, &headings);
+        let has_content = !link_text.trim().is_empty() && !is_utility_text(&link_text);
 
         if is_heading {
-            heading_links.push((url.to_string(), text_norm.clone()));
+            heading_links.push((url.to_string(), link_match_text.clone()));
         }
 
-        if primary_text.is_none() && is_meaningful {
+        if primary_text.is_none() && has_content {
             primary_text = Some(url.to_string());
         }
     }

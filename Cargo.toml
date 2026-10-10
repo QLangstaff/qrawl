@@ -1,6 +1,6 @@
 [package]
 name = "qrawl"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "Rust toolkit to crawl web data for AI agents"
@@ -23,6 +23,7 @@ reqwest = { version = "0.11", features = ["blocking", "cookies", "brotli", "gzip
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 scraper = "0.19"
+htmd = "0.5"
 idna = "0.5"
 regex = "1.10"
 futures-util = "0.3"
@@ -31,3 +32,6 @@ urlencoding = "2.1"
 html-escape = "0.2"
 unicode-normalization = "0.1"
 once_cell = "1.19"
+thiserror = "2.0"
+log = "0.4"
+env_logger = "0.11"

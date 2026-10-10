@@ -1,5 +1,4 @@
 #![cfg(test)]
-use crate::tools::extract::extract_schema_types;
 use crate::tools::scrape::*;
 
 /// Parse raw mf2 items directly (the parser `scrape_jsonld` folds in via
@@ -105,8 +104,8 @@ async fn microdata_anonymous_item_has_no_type() {
     assert!(items[0].get("@type").is_none());
     assert_eq!(items[0]["name"], "Anon");
 
-    // extract_schema_types skips it (no @type).
-    assert!(extract_schema_types(&items).is_empty());
+    // No @type on the item.
+    assert!(items.iter().all(|i| i.get("@type").is_none()));
 }
 
 #[tokio::test]
@@ -124,13 +123,13 @@ async fn microdata_id_from_itemid() {
 }
 
 #[tokio::test]
-async fn microdata_feeds_extract_schema_types() {
+async fn microdata_yields_short_types() {
     let html = r#"
             <div itemscope itemtype="https://schema.org/Recipe"><span itemprop="name">R</span></div>
             <div itemscope itemtype="https://schema.org/Product"><span itemprop="name">P</span></div>
         "#;
     let items = scrape_jsonld(&html.into()).await;
-    let mut types = extract_schema_types(&items);
+    let mut types: Vec<&str> = items.iter().filter_map(|i| i["@type"].as_str()).collect();
     types.sort();
     assert_eq!(types, vec!["Product", "Recipe"]);
 }
@@ -224,11 +223,11 @@ async fn rdfa_short_type_handles_curie_and_iri() {
 }
 
 #[tokio::test]
-async fn rdfa_id_from_resource_and_feeds_extract_schema_types() {
+async fn rdfa_id_from_resource_and_short_type() {
     let html = r#"<div typeof="https://schema.org/Article" resource="https://ex.com/a"><span property="headline">H</span></div>"#;
     let items = scrape_jsonld(&html.into()).await;
     assert_eq!(items[0]["@id"], "https://ex.com/a");
-    assert_eq!(extract_schema_types(&items), vec!["Article"]);
+    assert_eq!(items[0]["@type"], "Article");
 }
 
 #[tokio::test]
@@ -267,10 +266,6 @@ async fn jsonld_merges_all_three_native_encodings() {
     assert_eq!(items[0]["@type"], "Article");
     assert_eq!(items[1]["@type"], "Recipe");
     assert_eq!(items[2]["@type"], "Product");
-
-    let mut types = extract_schema_types(&items);
-    types.sort();
-    assert_eq!(types, vec!["Article", "Product", "Recipe"]);
 }
 
 #[tokio::test]
@@ -423,10 +418,7 @@ async fn scrape_jsonld_folds_in_microformats() {
     // `scrape_jsonld` is the full unified view: the JSON-LD Article AND the
     // h-card (normalized to Person) both surface.
     let schema = scrape_jsonld(&html.into()).await;
-    let types: Vec<&str> = schema
-        .iter()
-        .filter_map(|v| v["@type"].as_str())
-        .collect();
+    let types: Vec<&str> = schema.iter().filter_map(|v| v["@type"].as_str()).collect();
     assert!(types.contains(&"Article"), "JSON-LD present: {types:?}");
     assert!(types.contains(&"Person"), "mf2 folded in: {types:?}");
     // Raw mf2 is still parseable directly (no public tool exposes it).
@@ -436,10 +428,7 @@ async fn scrape_jsonld_folds_in_microformats() {
 
 #[tokio::test]
 async fn mf2_empty_when_absent() {
-    assert!(
-        raw_mf2("<div class='just-css'>hi</div>")
-            .is_empty()
-    );
+    assert!(raw_mf2("<div class='just-css'>hi</div>").is_empty());
 }
 
 // ===== Microformats1 backcompat (mf1 → mf2) =====
@@ -745,7 +734,11 @@ async fn scrape_jsonld_merges_native_and_mf2() {
         "#;
     let schema = scrape_jsonld(&html.into()).await;
     let recipes: Vec<_> = schema.iter().filter(|v| v["@type"] == "Recipe").collect();
-    assert_eq!(recipes.len(), 1, "double-encoded Recipe merged: {schema:#?}");
+    assert_eq!(
+        recipes.len(),
+        1,
+        "double-encoded Recipe merged: {schema:#?}"
+    );
     let r = recipes[0];
     assert_eq!(r["name"], "Cheesecake Bars");
     assert!(
