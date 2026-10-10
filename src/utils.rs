@@ -85,20 +85,21 @@ pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
         .iter()
         .find(|(domain, _)| host_matches(host, domain))
         .map(|(_, platform)| *platform)
-        // Pinterest ships many ccTLDs: a `pinterest` label followed only by
-        // a country suffix (`pinterest.de`, `pinterest.co.uk`,
-        // `pinterest.com.au`), which `pinterest.evil.com` isn't.
+        // Pinterest's country hosts, each verified to redirect to
+        // `<country>.pinterest.com`. A `pinterest` label alone proves nothing:
+        // `pinterest.io` and `pinterest.evil.com` aren't Pinterest.
         .or_else(|| {
-            let labels: Vec<&str> = host.split('.').collect();
-            let suffix = &labels[labels.iter().position(|label| *label == "pinterest")? + 1..];
-            let is_country_suffix = match suffix {
-                [country] => country.len() == 2,
-                [second_level, country] => {
-                    matches!(*second_level, "co" | "com") && country.len() == 2
-                }
-                _ => false,
-            };
-            is_country_suffix.then_some(SocialPlatform::Pinterest)
+            const COUNTRY_SUFFIXES: [&str; 28] = [
+                "at", "be", "ca", "ch", "cl", "co.in", "co.kr", "co.nz", "co.uk", "com.au",
+                "com.mx", "de", "dk", "es", "fr", "id", "ie", "in", "it", "jp", "kr", "mx", "nl",
+                "nz", "ph", "pt", "ru", "se",
+            ];
+            let suffix = host
+                .strip_prefix("pinterest.")
+                .or_else(|| host.split_once(".pinterest.").map(|(_, suffix)| suffix))?;
+            COUNTRY_SUFFIXES
+                .contains(&suffix)
+                .then_some(SocialPlatform::Pinterest)
         })
 }
 

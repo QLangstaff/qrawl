@@ -75,3 +75,11 @@ fn pinterest_label_before_an_unrelated_domain_is_not_pinterest() {
     assert!(!classify_is_social_url("https://pinterest.abc.com/pin/1"));
     assert!(!classify_is_social_url("https://pinterest.aws.dev/pin/1"));
 }
+
+#[test]
+fn only_pinterest_country_hosts_are_pinterest() {
+    assert!(classify_is_social_url("https://pinterest.ca/pin/1"));
+    assert!(classify_is_social_url("https://www.pinterest.co.kr/pin/1"));
+    assert!(!classify_is_social_url("https://pinterest.io/pin/1"));
+    assert!(!classify_is_social_url("https://pinterest.ws/pin/1"));
+}
