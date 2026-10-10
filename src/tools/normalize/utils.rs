@@ -4,6 +4,11 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::{
+    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
+
 use crate::utils::{absolute_url, canonical_domain, host_of_url, social_platform, TLD_LEN};
 
 // Lazy static regex for whitespace normalization
@@ -11,21 +16,6 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
 
 // HTML normalization
-
-/// What may come before markup's first tag: a byte order mark, whitespace,
-/// comments (`<!-->` is an empty one), and an XML prolog.
-const BEFORE_FIRST_TAG: &str = r"^\x{FEFF}?\s*(?:(?:<!--(?:-?>|.*?-->)|<\?[^>]*>)\s*)*";
-
-/// Markup that is a whole document, not a fragment: its first tag is a
-/// doctype or `<html>`.
-static DOCUMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(r"(?is){BEFORE_FIRST_TAG}(?:<!doctype|<html[\s>])")).expect("valid regex")
-});
-
-/// A fragment's first tag.
-static FIRST_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(r"(?is){BEFORE_FIRST_TAG}<([a-z][a-z0-9]*)")).expect("valid regex")
-});
 
 static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -375,8 +365,13 @@ pub(super) fn normalize_phone(phone: &str) -> String {
         result.truncate(pos);
     }
 
-    // Keep international prefix, strip all other non-digits
+    // Keep international prefix, strip all other non-digits. After a country
+    // code, a `(0)` is the trunk prefix a caller inside the country dials, not
+    // part of the number.
     let has_plus = result.starts_with('+');
+    if has_plus {
+        result = result.replace("(0)", "");
+    }
     let digits: String = result.chars().filter(|c| c.is_ascii_digit()).collect();
 
     if has_plus {
@@ -404,18 +399,75 @@ fn is_jsonld_script(element: &scraper::node::Element) -> bool {
         })
 }
 
+/// What markup opens with, past a byte order mark, whitespace, comments, and
+/// bogus comments like an XML prolog.
+enum Opening {
+    Doctype,
+    StartTag(String),
+    /// Text, or an end tag.
+    Other,
+}
+
+/// A token sink that keeps the first token that opens the markup.
+struct FirstToken(Option<Opening>);
+
+impl TokenSink for FirstToken {
+    type Handle = ();
+
+    fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+        if self.0.is_none() {
+            self.0 = match token {
+                Token::DoctypeToken(_) => Some(Opening::Doctype),
+                Token::TagToken(tag) if tag.kind == TagKind::StartTag => {
+                    Some(Opening::StartTag(tag.name.to_string()))
+                }
+                Token::CharacterTokens(text) if text.trim().is_empty() => None,
+                Token::CommentToken(_) | Token::ParseError(_) | Token::EOFToken => None,
+                Token::TagToken(_) | Token::CharacterTokens(_) | Token::NullCharacterToken => {
+                    Some(Opening::Other)
+                }
+            };
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+/// Markup fed to the tokenizer at a time, so a page is read only as far as
+/// its first tag.
+const OPENING_CHUNK_BYTES: usize = 4 * 1024;
+
+/// What `html` opens with, by the parser's own tokenizer, so the two never
+/// disagree on where a comment ends.
+fn opening(html: &str) -> Opening {
+    let mut tokenizer = Tokenizer::new(FirstToken(None), TokenizerOpts::default());
+    let mut queue = BufferQueue::default();
+    let mut rest = html;
+    while !rest.is_empty() && tokenizer.sink.0.is_none() {
+        let mut end = OPENING_CHUNK_BYTES.min(rest.len());
+        while !rest.is_char_boundary(end) {
+            end += 1;
+        }
+        let (piece, tail) = rest.split_at(end);
+        queue.push_back(StrTendril::from(piece));
+        let _ = tokenizer.feed(&mut queue);
+        rest = tail;
+    }
+    tokenizer.end();
+    tokenizer.sink.0.unwrap_or(Opening::Other)
+}
+
 /// The element a fragment's first tag belongs in, which decides how the
 /// parser reads it: a `<tr>` outside a table is dropped, its cells' text run
 /// together.
-fn fragment_context(html: &str) -> &'static str {
-    let first_tag = FIRST_TAG_REGEX
-        .captures(html)
-        .map(|found| found[1].to_ascii_lowercase());
-    match first_tag.as_deref() {
-        Some("td" | "th") => "tr",
-        Some("tr") => "tbody",
-        Some("thead" | "tbody" | "tfoot" | "caption" | "colgroup") => "table",
-        Some("col") => "colgroup",
+fn fragment_context(opening: &Opening) -> &'static str {
+    let Opening::StartTag(name) = opening else {
+        return "body";
+    };
+    match name.as_str() {
+        "td" | "th" => "tr",
+        "tr" => "tbody",
+        "thead" | "tbody" | "tfoot" | "caption" | "colgroup" => "table",
+        "col" => "colgroup",
         _ => "body",
     }
 }
@@ -444,11 +496,16 @@ pub(super) fn normalize_markup(html: &str) -> String {
     use scraper::node::Node;
 
     // A fragment (`<p>a</p>`) stays a fragment: no `<html>` is added to it.
-    let is_document = DOCUMENT_REGEX.is_match(html);
+    let opening = opening(html);
+    let is_document = match &opening {
+        Opening::Doctype => true,
+        Opening::StartTag(name) => name == "html",
+        Opening::Other => false,
+    };
     let parsed = if is_document {
         scraper::Html::parse_document(html)
     } else {
-        parse_fragment_in(html, fragment_context(html))
+        parse_fragment_in(html, fragment_context(&opening))
     };
     let root = if is_document {
         parsed.tree.root()

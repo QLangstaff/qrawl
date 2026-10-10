@@ -21,11 +21,11 @@ static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
 });
-/// One phone number as written, in any country's format: 5 to 15 digits with
-/// the punctuation that groups them, then an extension (` ext. 12`, ` x12`)
+/// One phone number as written, in any country's format: 5 to 15 digits, one
+/// grouping character between any two, then an extension (` ext. 12`, ` x12`)
 /// or RFC 3966 parameters (`;ext=12`) if any.
 static ONE_PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\+?(?:[\s().\-/]*\d){5,15}[\s().\-/]*(?:;.*|(?:ext\.?|x)\s*\d+)?$")
+    Regex::new(r"(?i)^\+?(?:\(?\d\)?[\s.\-]?){5,15}(?:;.*|(?:ext\.?|x)\s*\d+)?$")
         .expect("valid regex")
 });
 
@@ -128,8 +128,15 @@ fn read_jsonld_telephone(text: &str) -> Vec<String> {
     if ONE_PHONE_REGEX.is_match(value) {
         return vec![value.to_string()];
     }
+    // A number inside a longer run of digits is a piece of that run, not a number.
+    let is_digit_at = |index: Option<usize>| {
+        index.is_some_and(|index| value.as_bytes().get(index).is_some_and(u8::is_ascii_digit))
+    };
     PHONE_REGEX
         .find_iter(value)
+        .filter(|found| {
+            !is_digit_at(found.start().checked_sub(1)) && !is_digit_at(Some(found.end()))
+        })
         .map(|found| found.as_str().to_string())
         .collect()
 }

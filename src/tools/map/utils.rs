@@ -24,6 +24,12 @@ const MAX_PATTERN_RATIO: usize = 2;
 /// stays cheap.
 const MAX_PATTERN_LEN: usize = 64;
 const MAX_PATTERN_CANDIDATES: usize = 8;
+/// A candidate unit length has at least one in this many of the repeats the
+/// most repeated length has. A unit's length is where most of a listing's
+/// structures repeat; a length only a few repeat at is the cycle of something
+/// between the items (an ad after every third item), which would outrank the
+/// unit by covering the items and the ads.
+const MIN_UNIT_REPEATS_SHARE: usize = 4;
 
 /// HTML tag name for main content elements.
 const MAIN_TAG: &str = "main";
@@ -34,7 +40,8 @@ const JUNK_TAGS: &[&str] = &["script", "style", "iframe", "noscript"];
 /// HTML tags that indicate navigation/non-main-content (should be deprioritized).
 const NAV_TAGS: &[&str] = &["nav", "footer", "aside", "header"];
 
-/// Structure pattern for sibling detection.
+/// Structure pattern for sibling detection: an element's child tag names, so
+/// a list of `<h2>` and `<h3>` items is one list.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct StructurePattern {
     pub tags: Vec<String>,
@@ -52,10 +59,6 @@ struct SiblingGroup {
     in_navigation: bool,
     /// Number of elements in the repeating pattern (higher = richer pattern).
     pattern_len: usize,
-    /// Where the first sibling stands among its parent's children. A unit
-    /// rotated by one (`div, p, p, h2` for `h2, div, p, p`) ties the unit on
-    /// every score and starts one later.
-    first_index: usize,
     /// The actual HTML fragments of the siblings.
     siblings: Vec<String>,
 }
@@ -121,7 +124,6 @@ pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
 /// 3. **Coverage** - pattern_len × quantity (richer patterns preferred)
 /// 4. **Quantity** - More siblings preferred
 /// 5. **Pattern length** - Longer patterns preferred (richer structure)
-/// 6. **First index** - The group that starts earliest, so a unit beats its rotations
 ///
 #[cfg(test)]
 pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
@@ -140,12 +142,11 @@ pub(super) fn map_body_siblings_from_doc(doc: &Html) -> Vec<String> {
     // Select best group using scoring hierarchy
     let selected = all_sibling_groups.into_iter().max_by_key(|group| {
         (
-            !group.in_navigation,                 // Exclude navigation/footer first
-            group.in_main,                        // Prefer <main> content
-            group.coverage(),                     // Prefer richer patterns (pattern_len × quantity)
-            group.quantity(),                     // Prefer more siblings
-            group.pattern_len,                    // Prefer longer patterns
-            std::cmp::Reverse(group.first_index), // Prefer the unit to its rotations
+            !group.in_navigation, // Exclude navigation/footer first
+            group.in_main,        // Prefer <main> content
+            group.coverage(),     // Prefer richer patterns (pattern_len × quantity)
+            group.quantity(),     // Prefer more siblings
+            group.pattern_len,    // Prefer longer patterns
         )
     });
 
@@ -277,7 +278,6 @@ fn map_sibling_groups_recursive<'a>(
                         in_main: is_inside_tag(first_child, MAIN_TAG),
                         in_navigation: NAV_TAGS.iter().any(|tag| is_inside_tag(first_child, tag)),
                         pattern_len: SINGLE_ELEMENT_PATTERN_LEN,
-                        first_index: indices[0],
                         siblings,
                     });
                 }
@@ -333,6 +333,12 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                 && n >= len * MIN_SIBLING_GROUP_SIZE
         })
         .collect();
+    let top_repeats = candidates
+        .iter()
+        .map(|(_, repeats)| *repeats)
+        .max()
+        .unwrap_or(0);
+    candidates.retain(|(_, repeats)| repeats * MIN_UNIT_REPEATS_SHARE >= top_repeats);
     candidates.sort_by_key(|(len, repeats)| (std::cmp::Reverse(*repeats), *len));
     candidates.truncate(MAX_PATTERN_CANDIDATES);
 
@@ -353,6 +359,14 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // the same way.
         let mut pattern_groups: Vec<_> = multi_pattern_groups.into_iter().collect();
         pattern_groups.sort_by_key(|(_, start_indices)| start_indices[0]);
+        // Each group kept, to tell a rotation of it: the same unit read from
+        // its second element on (`div, p, p, h2` for `h2, div, p, p`), which
+        // starts inside the unit's first instance and repeats as often. Of the
+        // two, the unit is the one whose elements keep their tags in every
+        // instance: a rotation's last element is the unit's first in most
+        // instances, and whatever follows the listing in the last. When both
+        // do, the one that starts first.
+        let mut kept: Vec<KeptGroup> = Vec::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
                 // Skip homogeneous patterns (handled by single-element detection)
@@ -379,6 +393,25 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                 }
 
                 if non_overlapping.len() >= MIN_SIBLING_GROUP_SIZE {
+                    let first = non_overlapping[0];
+                    let tag_consistency = (0..pattern_len)
+                        .filter(|&offset| {
+                            let tag = children[first + offset].value().name();
+                            non_overlapping
+                                .iter()
+                                .all(|&start| children[start + offset].value().name() == tag)
+                        })
+                        .count();
+                    let rotated = kept.iter().position(|group| {
+                        group.instances == non_overlapping.len()
+                            && group.first < first
+                            && first < group.first + pattern_len
+                    });
+                    let replaces = match rotated {
+                        Some(index) if kept[index].tag_consistency < tag_consistency => Some(index),
+                        Some(_) => continue,
+                        None => None,
+                    };
                     let siblings: Vec<String> = non_overlapping
                         .iter()
                         .map(|&start_idx| {
@@ -389,22 +422,43 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                         })
                         .collect();
 
-                    if siblings.len() >= MIN_SIBLING_GROUP_SIZE {
-                        let first_child = &children[non_overlapping[0]];
-                        all_groups.push(SiblingGroup {
-                            in_main: is_inside_tag(first_child, MAIN_TAG),
-                            in_navigation: NAV_TAGS
-                                .iter()
-                                .any(|tag| is_inside_tag(first_child, tag)),
-                            pattern_len,
-                            first_index: non_overlapping[0],
-                            siblings,
-                        });
+                    let first_child = &children[first];
+                    let group = SiblingGroup {
+                        in_main: is_inside_tag(first_child, MAIN_TAG),
+                        in_navigation: NAV_TAGS.iter().any(|tag| is_inside_tag(first_child, tag)),
+                        pattern_len,
+                        siblings,
+                    };
+                    match replaces {
+                        Some(index) => {
+                            all_groups[kept[index].group_index] = group;
+                            kept[index].first = first;
+                            kept[index].tag_consistency = tag_consistency;
+                        }
+                        None => {
+                            kept.push(KeptGroup {
+                                first,
+                                instances: non_overlapping.len(),
+                                tag_consistency,
+                                group_index: all_groups.len(),
+                            });
+                            all_groups.push(group);
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// A multi-element group of one parent, as far as telling its rotations apart
+/// needs: where it starts, how often it repeats, how many of its positions
+/// keep one tag across every instance, and where it sits in `all_groups`.
+struct KeptGroup {
+    first: usize,
+    instances: usize,
+    tag_consistency: usize,
+    group_index: usize,
 }
 
 /// Map sibling HTML fragment to URL.

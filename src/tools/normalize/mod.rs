@@ -60,7 +60,7 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// - Trim whitespace
 /// - Strip a space-separated extension (e.g. " ext. 123", " x123") and RFC 3966
 ///   parameters (`;ext=123`)
-/// - Keep leading `+` for international numbers
+/// - Keep leading `+` for international numbers, and drop a trunk `(0)` after one
 /// - Remove non-digit characters
 /// - Deduplicate
 pub fn normalize_phones(phones: &[String]) -> Vec<String> {

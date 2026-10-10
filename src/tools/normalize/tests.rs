@@ -332,13 +332,21 @@ async fn normalize_html_keeps_attributes_in_source_order_with_their_prefixes() {
             r#"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#,
             "<math><mi>x</mi></math>",
         ),
-        // A stray `<` or quote in a tag makes no attribute.
-        (r#"<a href="x"<b>y</a>"#, r#"<a href="x">y</a>"#),
     ] {
         for _ in 0..8 {
             assert_eq!(normalize_html(&html.into()).await.as_str(), expected);
         }
     }
+}
+
+#[tokio::test]
+async fn normalize_html_drops_an_attribute_a_stray_character_named() {
+    assert_eq!(
+        normalize_html(&r#"<a href="x"<b>y</a>"#.into())
+            .await
+            .as_str(),
+        r#"<a href="x">y</a>"#
+    );
 }
 
 #[tokio::test]
@@ -370,6 +378,15 @@ async fn normalize_html_reads_a_document_from_its_first_tag_alone() {
         (
             "<!DOCTYPE><html><body><p>x</p></body></html>",
             "<!DOCTYPE><html><head></head><body><p>x</p></body></html>",
+        ),
+        // Comments the tokenizer closes at `--!>`, and bogus comments.
+        (
+            "<!-- a --!><html><body><p>x</p></body></html>",
+            "<html><head></head><body><p>x</p></body></html>",
+        ),
+        (
+            "<!x></ x><![CDATA[x]]><html><body><p>x</p></body></html>",
+            "<html><head></head><body><p>x</p></body></html>",
         ),
     ] {
         assert_eq!(
@@ -600,10 +617,13 @@ fn test_normalize_phones_deduplication() {
 }
 
 #[test]
-fn normalize_phones_drops_rfc_3966_parameters() {
+fn normalize_phones_drops_rfc_3966_parameters_and_a_trunk_zero() {
     assert_eq!(
-        normalize_phones(&["+1-212-555-1212;ext=12".to_string()]),
-        ["+12125551212"]
+        normalize_phones(&[
+            "+1-212-555-1212;ext=12".to_string(),
+            "+44 (0)20 7946 0958".to_string()
+        ]),
+        ["+12125551212", "+442079460958"]
     );
 }
 

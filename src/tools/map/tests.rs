@@ -442,6 +442,27 @@ async fn map_children_finds_the_unit_through_ads_and_two_item_lengths() {
 }
 
 #[tokio::test]
+async fn map_children_finds_the_unit_behind_a_stray_link_before_it() {
+    // The stray `<a>` and the unit's `<x1>` are both childless, so a unit read
+    // from its second element on would start at the stray and tie the unit.
+    let items: String = (0..3)
+        .map(|n| format!("<div><a href=\"/item{n}\">Item {n}</a></div><x1>t</x1><x2>t</x2>"))
+        .collect();
+    let html = format!(
+        "<html><body><main><a href=\"/promo\">Spring sale on everything</a>{items}</main></body></html>"
+    );
+    let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/item0",
+            "https://example.com/item1",
+            "https://example.com/item2"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn map_children_finds_units_of_distinct_siblings_then_filler() {
     // Two distinctive siblings, then paragraphs: every short distance matches
     // inside the paragraphs, and only the unit's length matches the whole.

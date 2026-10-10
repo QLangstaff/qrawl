@@ -1038,6 +1038,23 @@ async fn a_nested_microformat_as_a_property_at_every_level_is_bounded() {
         "{:?}",
         started.elapsed()
     );
+    // The outermost `value`, the one the schema view reads, is kept.
+    let jsonld = scrape_jsonld(&html.as_str().into()).await;
+    assert_eq!(
+        jsonld[0]["author"].as_str().map(str::len),
+        Some(text.trim().len())
+    );
+}
+
+#[tokio::test]
+async fn a_nested_author_keeps_its_name_when_the_budget_is_spent() {
+    let html = format!(
+        "<html><body><div class=\"h-entry\"><span class=\"p-name\">Post</span>{}x{}<div class=\"h-card p-author\"><span class=\"p-name\">Jane Doe</span></div></div></body></html>",
+        "<div class=\"h-card p-a p-b\">".repeat(60),
+        "</div>".repeat(60)
+    );
+    let jsonld = scrape_jsonld(&html.as_str().into()).await;
+    assert_eq!(jsonld[0]["author"], "Jane Doe");
 }
 
 #[tokio::test]

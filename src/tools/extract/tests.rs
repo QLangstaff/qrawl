@@ -297,10 +297,29 @@ fn pinterest_and_facebook_system_routes_are_not_items() {
         "https://pinterest.com/_/_/",
         "https://facebook.com/checkpoint/",
         "https://www.facebook.com/login.php",
+        "https://www.facebook.com/profile.php",
+        "https://facebook.com/_/",
+        "https://instagram.com/_/",
+        "https://twitter.com/_",
+        "https://vimeo.com/-",
     ] {
         let s = social(url);
         assert_eq!(s.kind, None, "{url}");
         assert_eq!(s.handle, None, "{url}");
+    }
+}
+
+#[test]
+fn pinterest_profile_tabs_are_the_profile() {
+    for url in [
+        "https://www.pinterest.com/someuser/_saved/",
+        "https://www.pinterest.com/someuser/_created/",
+        "https://www.pinterest.com/someuser/pins/",
+    ] {
+        let s = social(url);
+        assert_eq!(s.kind, Some(SocialKind::Profile), "{url}");
+        assert_eq!(s.handle.as_deref(), Some("someuser"), "{url}");
+        assert_eq!(s.id, None, "{url}");
     }
 }
 
@@ -584,7 +603,8 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
         "telephone":[
             "tel:+1-212-555-1212;ext=12",
             "+1-212-555-1313 (sales), +1-212-555-1414 (support)",
-            "12", 12, 12.5, "TEL:TEL:555", "<b>555</b>", "call us"
+            "212-555-1212 (24/7)",
+            "12", 12, 12.5, "TEL:TEL:555", "<b>555</b>", "call us", "1234567890123456"
         ]
     }</script></head><body></body></html>"#;
     let mut phones = extract_phones(&html.into()).await;
@@ -594,7 +614,8 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
         [
             "+1-212-555-1212;ext=12",
             "+1-212-555-1313",
-            "+1-212-555-1414"
+            "+1-212-555-1414",
+            "212-555-1212"
         ]
     );
 }

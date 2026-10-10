@@ -739,24 +739,23 @@ fn collect_mf(
         let prop_classes = property_classes(&child, vocab);
 
         if is_mf_root(&child) {
-            let nested = parse_mf_item(&child);
             if prop_classes.is_empty() {
                 // Nested root with no property class → a child microformat.
-                children.push(nested);
+                children.push(parse_mf_item(&child));
             } else {
                 // Nested root that is also a property → its parsed object is the
                 // property value, with an implied `value`. That `value` repeats
                 // the nested item's own text: a copy, left out when the budget
-                // can't cover it.
-                let nested_value = if has_copy_budget() {
-                    let value = serde_json::Value::String(mf_nested_value(&child, &nested));
-                    if spend_copy_budget(&value) {
-                        with_value(nested, value)
-                    } else {
-                        nested
-                    }
-                } else {
-                    nested
+                // can't cover it. It's charged before the item is parsed, so
+                // this level, the one the schema view reads, is covered before
+                // the levels inside it.
+                let value = has_copy_budget()
+                    .then(|| serde_json::Value::String(mf_implied_value(&child)))
+                    .filter(spend_copy_budget);
+                let nested = parse_mf_item(&child);
+                let nested_value = match value {
+                    Some(value) => with_value(nested, value),
+                    None => nested,
                 };
                 let names: Vec<&str> = prop_classes.iter().map(|(_, name)| name.as_str()).collect();
                 insert_under_names(properties, &names.join(" "), nested_value, push_mf_prop);
@@ -810,15 +809,34 @@ fn with_value(mut item: serde_json::Value, value: serde_json::Value) -> serde_js
 
 /// Implied `value` for a nested root used as a property: its first `name`, else
 /// the element's normalized text.
-fn mf_nested_value(el: &scraper::ElementRef, nested: &serde_json::Value) -> String {
-    nested
-        .get("properties")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_array())
-        .and_then(|a| a.first())
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| mf_text(el))
+fn mf_implied_value(root: &scraper::ElementRef) -> String {
+    let (_, vocab) = root_types_and_vocab(root);
+    first_name_element(root, vocab)
+        .map(|name| mf_p_value(&name))
+        .unwrap_or_else(|| mf_text(root))
+}
+
+/// The element carrying a root's first `name` property, outside any nested
+/// root, in document order.
+fn first_name_element<'a>(
+    el: &scraper::ElementRef<'a>,
+    vocab: Option<Mf1Vocab>,
+) -> Option<scraper::ElementRef<'a>> {
+    for child in el.children().filter_map(scraper::ElementRef::wrap) {
+        if is_mf_root(&child) {
+            continue;
+        }
+        let is_name = property_classes(&child, vocab)
+            .iter()
+            .any(|(kind, name)| matches!(kind, PropKind::P) && name == "name");
+        if is_name {
+            return Some(child);
+        }
+        if let Some(found) = first_name_element(&child, vocab) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn mf_property_value(el: &scraper::ElementRef, kind: PropKind) -> serde_json::Value {
@@ -1106,7 +1124,7 @@ fn schema_prop_is_empty(v: &serde_json::Value) -> bool {
 // ---------------------------------------------------------------------------
 // Microformats2 → schema.org normalization
 //
-// `scrape_microformats_from_doc` yields canonical mf2 items
+// `microformat_items` yields canonical mf2 items
 // (`{type:["h-recipe"], properties:{name:[...], ingredient:[...]}, …}`) — a
 // DISTINCT vocabulary from schema.org. This maps the common `h-*` types and
 // their prefix-stripped properties into the same schema.org-shaped `Jsonld` that
@@ -1254,9 +1272,17 @@ fn convert_mf_values(values: &[serde_json::Value], split_blocks: bool) -> serde_
                     } else if let Some(block) = blocks.into_iter().next() {
                         out.push(serde_json::Value::String(block));
                     }
-                } else if let Some(value) = o.get("value").and_then(serde_json::Value::as_str) {
-                    // Nested-root property (e.g. an h-card used as `author`): use
-                    // its implied `value`.
+                } else if let Some(value) = o
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| {
+                        v.pointer("/properties/name/0")
+                            .and_then(serde_json::Value::as_str)
+                    })
+                {
+                    // Nested-root property (e.g. an h-card used as `author`): its
+                    // implied `value`, or its `name` when the budget left the
+                    // `value` out.
                     push_nonempty(&mut out, value);
                 }
             }
