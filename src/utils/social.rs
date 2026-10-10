@@ -71,33 +71,54 @@ fn is_opaque_shortener(host: &str) -> bool {
 // before `.to_string()`.
 type Parts = (Option<SocialKind>, Option<String>, Option<String>);
 
+/// The account a path segment names, or `None` for a bare separator like `_`,
+/// which is a route prefix. Every handle is built from one.
+fn account(segment: &str) -> Option<String> {
+    segment
+        .chars()
+        .any(char::is_alphanumeric)
+        .then(|| segment.to_string())
+}
+
+/// A profile, when `handle` names an account.
+fn profile(handle: Option<String>) -> Parts {
+    (
+        handle.is_some().then_some(SocialKind::Profile),
+        None,
+        handle,
+    )
+}
+
 fn reddit_parts(segs: &[&str]) -> Parts {
     match segs {
         // /r/{sub}/comments/{post}/{slug}/{comment}
         ["r", sub, "comments", _post, _slug, comment, ..] => (
             Some(SocialKind::Comment),
             Some((*comment).to_string()),
-            Some(format!("r/{}", sub)),
+            account(sub).map(|sub| format!("r/{sub}")),
         ),
         // /r/{sub}/comments/{post}[/slug]
         ["r", sub, "comments", post, ..] => (
             Some(SocialKind::Post),
             Some((*post).to_string()),
-            Some(format!("r/{}", sub)),
+            account(sub).map(|sub| format!("r/{sub}")),
         ),
         // /comments/{post} (subreddit omitted)
         ["comments", post, ..] | ["gallery", post, ..] => {
             (Some(SocialKind::Post), Some((*post).to_string()), None)
         }
         // /r/{sub}/s/{code} — modern share link (opaque, needs expansion)
-        ["r", sub, "s", ..] => (None, None, Some(format!("r/{}", sub))),
-        ["r", sub] => (
-            Some(SocialKind::Collection),
-            None,
-            Some(format!("r/{}", sub)),
-        ),
-        ["user", name, ..] | ["u", name, ..] if names_an_account(name) => {
-            (Some(SocialKind::Profile), None, Some(format!("u/{}", name)))
+        ["r", sub, "s", ..] => (None, None, account(sub).map(|sub| format!("r/{sub}"))),
+        ["r", sub] => {
+            let handle = account(sub).map(|sub| format!("r/{sub}"));
+            (
+                handle.is_some().then_some(SocialKind::Collection),
+                None,
+                handle,
+            )
+        }
+        ["user", name, ..] | ["u", name, ..] => {
+            profile(account(name).map(|name| format!("u/{name}")))
         }
         _ => (None, None, None),
     }
@@ -108,16 +129,14 @@ fn tiktok_parts(segs: &[&str]) -> Parts {
         [user, "video", id, ..] if user.starts_with('@') => (
             Some(SocialKind::Video),
             Some((*id).to_string()),
-            Some((*user).to_string()),
+            account(user),
         ),
         [user, "photo", id, ..] if user.starts_with('@') => (
             Some(SocialKind::Photo),
             Some((*id).to_string()),
-            Some((*user).to_string()),
+            account(user),
         ),
-        [user] if user.starts_with('@') && names_an_account(user) => {
-            (Some(SocialKind::Profile), None, Some((*user).to_string()))
-        }
+        [user] if user.starts_with('@') => profile(account(user)),
         _ => (None, None, None),
     }
 }
@@ -128,8 +147,8 @@ fn instagram_parts(segs: &[&str]) -> Parts {
         ["reel", id, ..] | ["reels", id, ..] | ["tv", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
-        [user] if names_an_account(user) && !is_reserved_instagram(user) => {
-            (Some(SocialKind::Profile), None, Some(format!("@{}", user)))
+        [user] if !is_reserved_instagram(user) => {
+            profile(account(user).map(|user| format!("@{user}")))
         }
         _ => (None, None, None),
     }
@@ -145,7 +164,7 @@ fn facebook_parts(segs: &[&str], url: &Url) -> Parts {
         [user, "posts", id, ..] => (
             Some(SocialKind::Post),
             Some((*id).to_string()),
-            Some((*user).to_string()),
+            account(user),
         ),
         ["story.php", ..] | ["permalink.php", ..] => (
             Some(SocialKind::Post),
@@ -159,9 +178,7 @@ fn facebook_parts(segs: &[&str], url: &Url) -> Parts {
             Some(id) => (Some(SocialKind::Profile), Some(id), None),
             None => (None, None, None),
         },
-        [user] if names_an_account(user) && !is_reserved_facebook(user) => {
-            (Some(SocialKind::Profile), None, Some((*user).to_string()))
-        }
+        [user] if !is_reserved_facebook(user) => profile(account(user)),
         _ => (None, None, None),
     }
 }
@@ -172,25 +189,20 @@ fn pinterest_parts(segs: &[&str]) -> Parts {
             (Some(SocialKind::Post), Some((*id).to_string()), None)
         }
         // A profile's tabs (`_saved`, `_created`, `pins`) aren't boards.
-        [user, tab]
-            if names_an_account(user) && !is_reserved_pinterest(user) && is_pinterest_tab(tab) =>
-        {
-            (Some(SocialKind::Profile), None, Some((*user).to_string()))
+        [user, tab] if !is_reserved_pinterest(user) && is_pinterest_tab(tab) => {
+            profile(account(user))
         }
-        [user, board]
-            if names_an_account(user)
-                && !is_reserved_pinterest(user)
-                && names_an_account(board) =>
-        {
-            (
-                Some(SocialKind::Collection),
-                Some((*board).to_string()),
-                Some((*user).to_string()),
-            )
+        [user, board] if !is_reserved_pinterest(user) && account(board).is_some() => {
+            match account(user) {
+                Some(user) => (
+                    Some(SocialKind::Collection),
+                    Some((*board).to_string()),
+                    Some(user),
+                ),
+                None => (None, None, None),
+            }
         }
-        [user] if names_an_account(user) && !is_reserved_pinterest(user) => {
-            (Some(SocialKind::Profile), None, Some((*user).to_string()))
-        }
+        [user] if !is_reserved_pinterest(user) && !is_pinterest_tab(user) => profile(account(user)),
         _ => (None, None, None),
     }
 }
@@ -213,13 +225,8 @@ fn youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
         ["shorts", id, ..] | ["embed", id, ..] | ["live", id, ..] | ["v", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
-        ["channel", id, ..] => (Some(SocialKind::Profile), None, Some((*id).to_string())),
-        ["c", name, ..] | ["user", name, ..] if names_an_account(name) => {
-            (Some(SocialKind::Profile), None, Some((*name).to_string()))
-        }
-        [handle, ..] if handle.starts_with('@') && names_an_account(handle) => {
-            (Some(SocialKind::Profile), None, Some((*handle).to_string()))
-        }
+        ["channel", id, ..] | ["c", id, ..] | ["user", id, ..] => profile(account(id)),
+        [handle, ..] if handle.starts_with('@') => profile(account(handle)),
         _ => (None, None, None),
     }
 }
@@ -230,10 +237,12 @@ fn twitter_parts(segs: &[&str]) -> Parts {
         [user, "status", id, ..] => (
             Some(SocialKind::Post),
             Some((*id).to_string()),
-            (*user != "i").then(|| format!("@{}", user)),
+            account(user)
+                .filter(|user| user != "i")
+                .map(|user| format!("@{user}")),
         ),
-        [user] if names_an_account(user) && !is_reserved_twitter(user) => {
-            (Some(SocialKind::Profile), None, Some(format!("@{}", user)))
+        [user] if !is_reserved_twitter(user) => {
+            profile(account(user).map(|user| format!("@{user}")))
         }
         _ => (None, None, None),
     }
@@ -241,9 +250,7 @@ fn twitter_parts(segs: &[&str]) -> Parts {
 
 fn linkedin_parts(segs: &[&str]) -> Parts {
     match segs {
-        ["in", slug, ..] | ["company", slug, ..] if names_an_account(slug) => {
-            (Some(SocialKind::Profile), None, Some((*slug).to_string()))
-        }
+        ["in", slug, ..] | ["company", slug, ..] => profile(account(slug)),
         ["posts", slug, ..] | ["pulse", slug, ..] => {
             (Some(SocialKind::Post), Some((*slug).to_string()), None)
         }
@@ -257,9 +264,7 @@ fn vimeo_parts(segs: &[&str]) -> Parts {
         [id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
-        [user] if names_an_account(user) && !is_reserved_vimeo(user) => {
-            (Some(SocialKind::Profile), None, Some((*user).to_string()))
-        }
+        [user] if !is_reserved_vimeo(user) => profile(account(user)),
         _ => (None, None, None),
     }
 }
@@ -301,12 +306,8 @@ fn is_reserved_instagram(s: &str) -> bool {
     )
 }
 
-/// A path segment that can be an account's: not a route prefix like `_`.
-fn names_an_account(segment: &str) -> bool {
-    segment.chars().any(char::is_alphanumeric)
-}
-
-/// A Pinterest profile's tab: `_saved`, `_created`, `pins`, `boards`.
+/// A Pinterest profile's tab: a `_`-prefixed segment (`_saved`, `_created`),
+/// or `pins`, `boards`, `followers`, `following`.
 fn is_pinterest_tab(segment: &str) -> bool {
     segment.starts_with('_') || matches!(segment, "pins" | "boards" | "followers" | "following")
 }

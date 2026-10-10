@@ -289,7 +289,7 @@ fn pinterest_pin_board_profile() {
 }
 
 #[test]
-fn pinterest_and_facebook_system_routes_are_not_items() {
+fn system_routes_and_bare_separators_are_not_items() {
     for url in [
         "https://www.pinterest.com/login/",
         "https://pinterest.com/explore/",
@@ -302,9 +302,26 @@ fn pinterest_and_facebook_system_routes_are_not_items() {
         "https://instagram.com/_/",
         "https://twitter.com/_",
         "https://vimeo.com/-",
+        "https://www.pinterest.com/_saved/",
+        "https://reddit.com/r/_",
+        "https://tiktok.com/@",
     ] {
         let s = social(url);
         assert_eq!(s.kind, None, "{url}");
+        assert_eq!(s.handle, None, "{url}");
+    }
+}
+
+#[test]
+fn an_item_under_a_bare_separator_has_no_handle() {
+    for (url, kind) in [
+        ("https://tiktok.com/@/video/1", SocialKind::Video),
+        ("https://twitter.com/_/status/1", SocialKind::Post),
+        ("https://facebook.com/_/posts/1", SocialKind::Post),
+    ] {
+        let s = social(url);
+        assert_eq!(s.kind, Some(kind), "{url}");
+        assert_eq!(s.id.as_deref(), Some("1"), "{url}");
         assert_eq!(s.handle, None, "{url}");
     }
 }
@@ -624,13 +641,15 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
 async fn jsonld_telephones_keep_every_countrys_format() {
     let html = r#"<html><head><script type="application/ld+json">{
         "@type":"LocalBusiness",
-        "telephone":["+33 1 42 86 82 00","+49 30 901820","+61 2 9374 4000","+91 98765 43210","+442079460958"]
+        "telephone":["+33 1 42 86 82 00","+49 30 901820","+61 2 9374 4000","+91 98765 43210","+442079460958","(212) 555 - 1212","+31 (0)20 - 123 4567"]
     }</script></head><body></body></html>"#;
     let mut phones = extract_phones(&html.into()).await;
     phones.sort();
     assert_eq!(
         phones,
         [
+            "(212) 555 - 1212",
+            "+31 (0)20 - 123 4567",
             "+33 1 42 86 82 00",
             "+442079460958",
             "+49 30 901820",

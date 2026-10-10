@@ -2,7 +2,7 @@ use regex::Regex;
 use scraper::Html;
 use std::sync::LazyLock;
 
-use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR, TLD_LEN};
+use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR, PHONE_EXTENSION, TLD_LEN};
 
 // Lazy static regex patterns
 static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -21,12 +21,14 @@ static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
 });
-/// One phone number as written, in any country's format: 5 to 15 digits, one
-/// grouping character between any two, then an extension (` ext. 12`, ` x12`)
+/// One phone number as written, in any country's format: 5 to 15 digits, up to
+/// three grouping characters between any two (`555 - 1212`), then an extension
 /// or RFC 3966 parameters (`;ext=12`) if any.
 static ONE_PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\+?(?:\(?\d\)?[\s.\-]?){5,15}(?:;.*|(?:ext\.?|x)\s*\d+)?$")
-        .expect("valid regex")
+    Regex::new(&format!(
+        r"(?i)^\+?(?:\(?\d\)?[\s.\-]{{0,3}}){{5,15}}(?:;.*|{PHONE_EXTENSION})?$"
+    ))
+    .expect("valid regex")
 });
 
 /// Extract values from links with a specific href prefix (e.g., "mailto:", "tel:")

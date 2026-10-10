@@ -398,6 +398,31 @@ async fn normalize_html_reads_a_document_from_its_first_tag_alone() {
 }
 
 #[tokio::test]
+async fn normalize_html_reads_the_first_tag_across_the_pieces_it_feeds_the_tokenizer() {
+    // A comment as long as one piece puts what follows it in the next.
+    let comment = format!("<!--{}-->", "x".repeat(4 * 1024 - 7));
+    for (tail, expected) in [
+        // A doctype split across two pieces.
+        (
+            "<!DOCTYPE html><html><body><p>x</p></body></html>",
+            "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>",
+        ),
+        // A byte order mark that isn't at the start is text.
+        (
+            "\u{feff}<html><body><p>x</p></body></html>",
+            "\u{feff}<p>x</p>",
+        ),
+    ] {
+        let html = format!("{comment}{tail}");
+        assert_eq!(
+            normalize_html(&html.into()).await.as_str(),
+            expected,
+            "{tail}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn normalize_html_keeps_a_table_fragments_structure() {
     for html in [
         "<tr><td>a</td><td>b</td></tr>",
@@ -614,6 +639,19 @@ fn test_normalize_phones_deduplication() {
     let output = normalize_phones(&input);
     assert_eq!(output.len(), 1);
     assert_eq!(output[0], "5551234567");
+}
+
+#[test]
+fn normalize_phones_strips_an_extension_however_it_is_written() {
+    assert_eq!(
+        normalize_phones(&[
+            "212-555-1212x5".to_string(),
+            "212-555-1212 ext. 5 (sales)".to_string(),
+            "212-555-1212 extension 5".to_string(),
+            "212-555-1212 X 5".to_string(),
+        ]),
+        ["2125551212"]
+    );
 }
 
 #[test]

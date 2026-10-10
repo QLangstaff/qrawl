@@ -1053,6 +1053,10 @@ async fn a_nested_author_keeps_its_name_when_the_budget_is_spent() {
         "<div class=\"h-card p-a p-b\">".repeat(60),
         "</div>".repeat(60)
     );
+    // The budget was spent: the author's implied `value` was left out.
+    assert!(raw_mf2(&html)[0]["properties"]["author"][0]
+        .get("value")
+        .is_none());
     let jsonld = scrape_jsonld(&html.as_str().into()).await;
     assert_eq!(jsonld[0]["author"], "Jane Doe");
 }

@@ -361,11 +361,14 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         pattern_groups.sort_by_key(|(_, start_indices)| start_indices[0]);
         // Each group kept, to tell a rotation of it: the same unit read from
         // its second element on (`div, p, p, h2` for `h2, div, p, p`), which
-        // starts inside the unit's first instance and repeats as often. Of the
-        // two, the unit is the one whose elements keep their tags in every
-        // instance: a rotation's last element is the unit's first in most
-        // instances, and whatever follows the listing in the last. When both
-        // do, the one that starts first.
+        // starts inside the unit's first instance. Of the two, the unit is the
+        // one whose elements keep their tags in every instance: a rotation's
+        // last element is the unit's first in most instances, and whatever
+        // follows the listing in the last. Then the one that repeats more: a
+        // rotation can run on into a second listing's elements. When both tie,
+        // the one that starts first. A listing whose first item alone uses
+        // another heading tag, followed by a link under the items' tag, reads
+        // as the rotation: its tags can't tell it from the unit.
         let mut kept: Vec<KeptGroup> = Vec::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
@@ -402,13 +405,16 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                                 .all(|&start| children[start + offset].value().name() == tag)
                         })
                         .count();
-                    let rotated = kept.iter().position(|group| {
-                        group.instances == non_overlapping.len()
-                            && group.first < first
-                            && first < group.first + pattern_len
-                    });
+                    let rotated = kept
+                        .iter()
+                        .position(|group| group.first < first && first < group.first + pattern_len);
                     let replaces = match rotated {
-                        Some(index) if kept[index].tag_consistency < tag_consistency => Some(index),
+                        Some(index)
+                            if (kept[index].tag_consistency, kept[index].instances)
+                                < (tag_consistency, non_overlapping.len()) =>
+                        {
+                            Some(index)
+                        }
                         Some(_) => continue,
                         None => None,
                     };
@@ -433,6 +439,7 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                         Some(index) => {
                             all_groups[kept[index].group_index] = group;
                             kept[index].first = first;
+                            kept[index].instances = non_overlapping.len();
                             kept[index].tag_consistency = tag_consistency;
                         }
                         None => {

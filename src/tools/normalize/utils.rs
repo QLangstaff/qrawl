@@ -9,11 +9,17 @@ use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 
-use crate::utils::{absolute_url, canonical_domain, host_of_url, social_platform, TLD_LEN};
+use crate::utils::{
+    absolute_url, canonical_domain, host_of_url, social_platform, PHONE_EXTENSION, TLD_LEN,
+};
 
 // Lazy static regex for whitespace normalization
 static WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
+
+/// A phone number's extension after its last digit, which is kept.
+static PHONE_EXTENSION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)\d{PHONE_EXTENSION}")).expect("valid regex"));
 
 // HTML normalization
 
@@ -347,9 +353,10 @@ pub(super) fn normalize_email(email: &str) -> String {
 ///
 /// Performs:
 /// 1. Trim whitespace
-/// 2. Strip a space-separated extension (` ext. 123`, ` x123`, ` extension 123`)
-/// 3. Keep international prefix (+) if present
-/// 4. Strip all other non-digit characters except leading +
+/// 2. Cut RFC 3966 parameters (`;ext=123`, `;phone-context=…`)
+/// 3. Strip an extension (` ext. 123`, `x123`, ` extension 123`)
+/// 4. Keep international prefix (+) if present, and drop a trunk `(0)` after it
+/// 5. Strip all other non-digit characters except leading +
 pub(super) fn normalize_phone(phone: &str) -> String {
     let mut result = phone.trim().to_string();
 
@@ -358,11 +365,9 @@ pub(super) fn normalize_phone(phone: &str) -> String {
         result.truncate(pos);
     }
 
-    // Strip extension patterns
-    // ASCII lowercasing keeps byte offsets, so `pos` indexes `result` too.
-    let lower = result.to_ascii_lowercase();
-    if let Some(pos) = lower.find(" ext").or_else(|| lower.find(" x")) {
-        result.truncate(pos);
+    // The match starts at the number's last digit, which stays.
+    if let Some(extension) = PHONE_EXTENSION_REGEX.find(&result) {
+        result.truncate(extension.start() + 1);
     }
 
     // Keep international prefix, strip all other non-digits. After a country
@@ -421,7 +426,10 @@ impl TokenSink for FirstToken {
                 Token::TagToken(tag) if tag.kind == TagKind::StartTag => {
                     Some(Opening::StartTag(tag.name.to_string()))
                 }
-                Token::CharacterTokens(text) if text.trim().is_empty() => None,
+                // Whitespace as the parser defines it: ASCII only.
+                Token::CharacterTokens(text) if text.bytes().all(|b| b.is_ascii_whitespace()) => {
+                    None
+                }
                 Token::CommentToken(_) | Token::ParseError(_) | Token::EOFToken => None,
                 Token::TagToken(_) | Token::CharacterTokens(_) | Token::NullCharacterToken => {
                     Some(Opening::Other)
@@ -439,9 +447,15 @@ const OPENING_CHUNK_BYTES: usize = 4 * 1024;
 /// What `html` opens with, by the parser's own tokenizer, so the two never
 /// disagree on where a comment ends.
 fn opening(html: &str) -> Opening {
-    let mut tokenizer = Tokenizer::new(FirstToken(None), TokenizerOpts::default());
+    // The parser drops one byte order mark, at the start. The tokenizer's own
+    // option would drop one at the start of every piece fed to it.
+    let options = TokenizerOpts {
+        discard_bom: false,
+        ..TokenizerOpts::default()
+    };
+    let mut tokenizer = Tokenizer::new(FirstToken(None), options);
     let mut queue = BufferQueue::default();
-    let mut rest = html;
+    let mut rest = html.strip_prefix('\u{feff}').unwrap_or(html);
     while !rest.is_empty() && tokenizer.sink.0.is_none() {
         let mut end = OPENING_CHUNK_BYTES.min(rest.len());
         while !rest.is_char_boundary(end) {
