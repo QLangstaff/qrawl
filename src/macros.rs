@@ -46,9 +46,10 @@
 /// ```
 #[macro_export]
 macro_rules! chain {
-    ($urls:expr, $ctx:expr => $($rest:tt)+) => {
-        $ctx.scope(async move { $crate::chain!(@run $urls, $($rest)+) }).await
-    };
+    ($urls:expr, $ctx:expr => $($rest:tt)+) => {{
+        let urls = $urls;
+        $ctx.scope(async move { $crate::chain!(@run urls, $($rest)+) }).await
+    }};
 
     // Thread the collection through each step, left to right. A step is either a
     // combinator `name(tool)` or the bare `fetch` primitive.

@@ -89,12 +89,10 @@ pub(super) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Json
 fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
         serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
-        serde_json::Value::Object(mut obj) => {
-            if let Some(serde_json::Value::Array(arr)) = obj.remove("@graph") {
-                return arr.into_iter().flat_map(flatten_jsonld).collect();
-            }
-            vec![serde_json::Value::Object(obj)]
-        }
+        serde_json::Value::Object(mut obj) => match obj.remove("@graph") {
+            Some(graph) => flatten_jsonld(graph),
+            None => vec![serde_json::Value::Object(obj)],
+        },
         _ => Vec::new(),
     }
 }
@@ -415,8 +413,7 @@ fn rdfa_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
 //   - property classes whose name carries no letter (`p-4`, `p-2` padding) are
 //     ignored.
 //
-// Deferred (documented limitations): mf1 backcompat (`vcard`/`hentry`/… → mf2),
-// implied `name`/`url`/`photo` properties, `rel`-based properties (rel=me/tag),
+// Not supported: implied `name`/`url`/`photo` properties, `rel`-based properties (rel=me/tag),
 // base-URL resolution, and the full p-/u- value-class patterns.
 // ---------------------------------------------------------------------------
 

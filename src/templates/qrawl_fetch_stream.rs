@@ -2,7 +2,7 @@ use futures_util::stream::Stream;
 
 use crate::types::{Context, Html};
 
-use super::utils::{fetch_stream, spawn_crawl};
+use super::utils::fetch_stream;
 
 /// Streaming fetch over an input URL stream.
 ///
@@ -20,6 +20,5 @@ pub fn qrawl_fetch_stream<S>(
 where
     S: Stream<Item = String> + Send + 'static,
 {
-    let concurrency = ctx.concurrency.get();
-    spawn_crawl(ctx, fetch_stream(urls, concurrency))
+    fetch_stream(ctx, urls)
 }

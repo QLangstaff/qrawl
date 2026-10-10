@@ -10,9 +10,9 @@ use crate::types::{Html, Jsonld, Metadata, SocialKind, SocialPlatform};
 /// domain mapping — turning a schema.org `Recipe` or a video caption into the
 /// caller's recipe type, say — to the caller.
 ///
-/// Every field is filled the same way for every URL: from the page, plus the
-/// platform's embed when the URL has one. A field is empty only when the URL
-/// offered nothing for it.
+/// Every field is filled by the same steps for every URL: from the page, plus
+/// the platform's embed when the URL has one. When only one of the two could
+/// be fetched, the fields the other would fill are empty.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageContent {

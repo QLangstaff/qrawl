@@ -13,15 +13,19 @@ use crate::types::{Embed, SocialKind, SocialParts, SocialPlatform};
 use crate::utils::social_parts;
 
 use super::fetch_bytes;
+use super::utils::check_domain_filter;
 
 /// Fetch the embed of the item at `url`: Reddit's `.json` for a post or
 /// comment, oEmbed for an individual TikTok/YouTube/Pinterest/Vimeo item.
 /// `None` — before any network — for every URL with no embed: a non-social
 /// URL, a profile, subreddit, board, or feed (whose payload would describe one
-/// of its items), an opaque shortlink, and Instagram/Facebook/X/LinkedIn, which
-/// serve none without a token. Also `None` when the request fails (logged at
-/// debug).
+/// of its items), an opaque shortlink, Instagram/Facebook/X/LinkedIn, which
+/// serve none without a token, and a URL the domain filter rejects. Also `None`
+/// when the request fails (logged at debug).
 pub async fn fetch_embed(url: &str) -> Option<Embed> {
+    // The embed is served by another host (`youtu.be` → `www.youtube.com`), so
+    // the item's own URL has to pass the filter too.
+    check_domain_filter(url).ok()?;
     let (request, embed) = embed_request(url)?;
     match fetch_bytes(&request, None).await {
         Ok(bytes) => Some(embed(String::from_utf8_lossy(&bytes).into_owned())),

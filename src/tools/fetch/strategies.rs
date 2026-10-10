@@ -1,7 +1,7 @@
 use super::client::build_client_for_profile;
 use super::headers::headers_for_profile;
 use super::types::FetchProfile;
-use super::utils::{check_domain_filter, check_status, validate_response};
+use super::utils::{check_status, validate_response};
 use crate::errors::QrawlError;
 use crate::types::FetchStrategy;
 use crate::utils::host_of;
@@ -138,11 +138,7 @@ where
     let mut errors = Vec::new();
     for (attempt, profile) in profiles.iter().enumerate() {
         let result = match send(url, *profile, referer, attempt_timeout(strategy)).await {
-            // A redirect can land on a host the request's own URL didn't name.
-            Ok(response) => match check_domain_filter(response.url().as_str()) {
-                Ok(()) => read(response).await,
-                Err(e) => Err(e),
-            },
+            Ok(response) => read(response).await,
             Err(e) => Err(e),
         };
         match result {

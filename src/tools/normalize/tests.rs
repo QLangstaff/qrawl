@@ -886,3 +886,24 @@ fn normalize_url_keeps_percent_encoded_query_values_on_a_social_host() {
         "https://youtube.com/results?search_query=a%26b"
     );
 }
+
+#[test]
+fn normalize_url_is_idempotent() {
+    for input in [
+        "https://example.com/?/",
+        "https://example.com/?next=/",
+        "https://example.com/a/?redirect=/login/",
+        "https://m.m.facebook.com/zuck",
+        "https://m.www.facebook.com/zuck",
+        "https://mobile.m.twitter.com/jack",
+        "https://www.www.example.com/a",
+        "HTTP://WWW.Example.com//a//?b=2&a=1#frag",
+    ] {
+        let once = normalize_url(input);
+        assert_eq!(normalize_url(&once), once, "{input}");
+    }
+    assert_eq!(
+        normalize_url("https://example.com/a/?redirect=/login/"),
+        "https://example.com/a?redirect=/login/"
+    );
+}

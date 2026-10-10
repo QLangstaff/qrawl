@@ -105,8 +105,9 @@ Drop-in compositions of the tools for the common jobs. They're tiny — [read th
 | `qrawl_any_url` | any link | one `PageContent` (the `url` command above) |
 | `qrawl_many_urls` | many links | a `PageContent` per page, optionally crawled `depth` levels deep and filtered by domain, URL, or schema.org type |
 | `qrawl_children` | parent URLs | the fetched HTML of each child page |
-| `qrawl_children_stream`, `qrawl_discover_children`, `qrawl_fetch_stream` | parent URLs | the same crawl as streams, to filter or stop early |
-| `qrawl_emails` | site URLs | the deduped emails on the pages two links from each URL |
+| `qrawl_children_stream` | parent URLs | the same crawl as a stream, to stop early |
+| `qrawl_discover_children`, `qrawl_fetch_stream` | parent URLs; a URL stream | the crawl in two halves, to filter the child URLs before fetching them |
+| `qrawl_emails` | site URLs | the deduped emails on each URL, its children, and the pages they link to |
 
 ```rust,no_run
 use qrawl::templates::{qrawl_many_urls, PageContent};
@@ -146,8 +147,8 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl page <url>` | every link on the page |
 | `qrawl children <url>` | child URLs under the page that fetch |
 | `qrawl schema <url> <type>` | the page and its children that carry a schema.org type |
-| `qrawl emails <url>` | deduped emails on the pages two links from the URL |
-| `qrawl socials <url>` | crawl the site, return deduped social links |
+| `qrawl emails <url>` | deduped emails on the URL, its children, and the pages they link to |
+| `qrawl socials <url>` | deduped social links on the URL and the pages two levels of children from it |
 
 ## License
 

@@ -46,7 +46,6 @@ pub fn extract_preview(metadata: &Metadata) -> Preview {
             "reddit:author",
             "author",
             "article:author",
-            "og:site_name",
         ]),
         image_url: find(&[
             "reddit:image",

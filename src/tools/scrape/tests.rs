@@ -902,3 +902,11 @@ fn scrape_embed_reddit_link_post_keeps_its_destination() {
     );
     assert_eq!(value(&r, "reddit:url"), Some("https://news.example/story"));
 }
+
+#[tokio::test]
+async fn scrape_jsonld_reads_an_object_valued_graph() {
+    let html = r#"<html><head><script type="application/ld+json">{"@context":"https://schema.org","@graph":{"@type":"Recipe","name":"Soup"}}</script></head><body></body></html>"#;
+    let jsonld = scrape_jsonld(&html.into()).await;
+    assert_eq!(jsonld.len(), 1);
+    assert_eq!(jsonld[0]["name"], "Soup");
+}

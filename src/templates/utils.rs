@@ -1,6 +1,6 @@
 //! Shared building blocks for the `qrawl_*` templates.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 
 use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
@@ -60,14 +60,14 @@ pub(super) async fn page_content(
     // fetch: the page, and the platform's embed when the URL has one.
     let (html, embed) =
         futures_util::future::join(fetch_strategy(&target.address), fetch_embed(url)).await;
-    let html = match (html, &embed) {
-        (Ok(html), _) => Some(html),
-        (Err(_), Some(_)) => None,
-        (Err(e), None) => return Err(e),
-    };
 
     // scrape: the embed and the page into the same layers.
     let embed_metadata = embed.map_or_else(Vec::new, |embed| scrape_embed(&embed, url));
+    let html = match html {
+        Ok(html) => Some(html),
+        Err(e) if embed_metadata.is_empty() => return Err(e),
+        Err(_) => None,
+    };
     let (body, page_metadata, structured) = match &html {
         Some(html) => scrape_all(html).await,
         None => (Html::new(String::new()), Vec::new(), Vec::new()),
@@ -104,47 +104,75 @@ pub(super) async fn page_content(
     Ok((page, html))
 }
 
-/// Fetch each URL as it arrives and yield the `(url, html)` pairs that succeed,
-/// in completion order.
-pub(super) fn fetch_stream<S>(
-    urls: S,
+/// Run `work` over `source`, at most `concurrency` at once, and send what
+/// `finish` keeps of each result to `tx`, in completion order. Returns `false`
+/// when the consumer is gone.
+///
+/// Work in flight keeps being polled while the consumer is slow — a fetch that
+/// isn't polled times out — and no new work starts while `concurrency` results
+/// wait, so at most `2 * concurrency` results are ever held.
+async fn drive<S, Work, Fut, Finish, T>(
+    source: S,
     concurrency: usize,
+    tx: &mpsc::Sender<T>,
+    work: Work,
+    mut finish: Finish,
+) -> bool
+where
+    S: Stream,
+    Work: Fn(S::Item) -> Fut,
+    Fut: Future,
+    Finish: FnMut(Fut::Output) -> Option<T>,
+{
+    let mut source = Box::pin(source.fuse());
+    let mut in_flight = FuturesUnordered::new();
+    let mut ready = VecDeque::new();
+    loop {
+        if source.is_done() && in_flight.is_empty() && ready.is_empty() {
+            return true;
+        }
+        let can_start =
+            !source.is_done() && in_flight.len() < concurrency && ready.len() < concurrency;
+        tokio::select! {
+            permit = tx.reserve(), if !ready.is_empty() => match permit {
+                Ok(permit) => permit.send(ready.pop_front().expect("ready is not empty")),
+                Err(_) => return false,
+            },
+            item = source.next(), if can_start => in_flight.extend(item.map(&work)),
+            output = in_flight.next(), if !in_flight.is_empty() => {
+                ready.extend(output.and_then(&mut finish));
+            }
+            _ = tx.closed() => return false,
+        }
+    }
+}
+
+/// Fetch each URL of `urls` as one crawl ([`Context::scope`]) on its own task,
+/// and yield the `(url, html)` pairs that succeed, in completion order.
+pub(super) fn fetch_stream<S>(
+    ctx: Context,
+    urls: S,
 ) -> impl Stream<Item = (String, Html)> + Send + 'static
 where
     S: Stream<Item = String> + Send + 'static,
 {
-    urls.map(|url| async move {
-        fetch_strategy(&url)
-            .await
-            .map_err(|e| log::debug!("fetch failed {}: {}", url, e))
-            .ok()
-            .map(|html| (url, html))
-    })
-    .buffer_unordered(concurrency)
-    .filter_map(|fetched| async move { fetched })
-}
-
-/// Run `stream` as one crawl ([`Context::scope`]) on its own task, and yield
-/// its items through a channel that holds `ctx.concurrency` of them, so a slow
-/// consumer stalls the crawl and a dropped consumer ends it.
-pub(super) fn spawn_crawl<T, S>(ctx: Context, stream: S) -> impl Stream<Item = T> + Send + 'static
-where
-    T: Send + 'static,
-    S: Stream<Item = T> + Send + 'static,
-{
-    let (tx, rx) = mpsc::channel(ctx.concurrency.get());
+    let concurrency = ctx.concurrency.get();
+    let (tx, rx) = mpsc::channel(concurrency);
     tokio::spawn(ctx.scope(async move {
-        let mut stream = Box::pin(stream);
-        loop {
-            let item = tokio::select! {
-                _ = tx.closed() => break,
-                item = stream.next() => item,
-            };
-            let Some(item) = item else { break };
-            if tx.send(item).await.is_err() {
-                break;
-            }
-        }
+        drive(
+            urls,
+            concurrency,
+            &tx,
+            |url| async move {
+                fetch_strategy(&url)
+                    .await
+                    .map_err(|e| log::debug!("fetch failed {}: {}", url, e))
+                    .ok()
+                    .map(|html| (url, html))
+            },
+            |fetched| fetched,
+        )
+        .await;
     }));
     receiver_stream(rx)
 }
@@ -168,8 +196,8 @@ fn receiver_stream<T: Send + 'static>(
 /// completes first. `admit` filters every URL before its visit.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
-/// a level shares one pool of `ctx.concurrency`, and dropping the stream stops
-/// the crawl at once.
+/// a level shares one pool of `ctx.concurrency` ([`drive`]), and dropping the
+/// stream stops the crawl at once.
 pub(super) fn crawl<T, Admit, Visit, Fut>(
     ctx: Context,
     seeds: Vec<String>,
@@ -180,7 +208,7 @@ pub(super) fn crawl<T, Admit, Visit, Fut>(
 where
     T: Send + 'static,
     Admit: Fn(&CanonicalUrl) -> bool + Send + Sync + 'static,
-    Visit: Fn(Target, usize) -> Fut + Send + 'static,
+    Visit: Fn(Target, usize) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Option<(T, Vec<String>)>> + Send + 'static,
 {
     let concurrency = ctx.concurrency.get();
@@ -195,35 +223,30 @@ where
         };
         let mut frontier = admit_new(&seeds);
         for level in 0..=depth {
-            let mut waiting = std::mem::take(&mut frontier).into_iter();
-            let mut in_flight = FuturesUnordered::new();
-            loop {
-                while in_flight.len() < concurrency {
-                    match waiting.next() {
-                        Some(target) => in_flight.push(visit(target, level)),
-                        None => break,
-                    }
-                }
-                let visited = tokio::select! {
-                    _ = tx.closed() => return,
-                    visited = in_flight.next() => visited,
-                };
-                let Some(visited) = visited else { break };
-                let Some((item, children)) = visited else {
-                    continue;
-                };
-                frontier.extend(admit_new(&children));
-                if tx.send((level, item)).await.is_err() {
-                    return;
-                }
+            let mut next = Vec::new();
+            let consumer_is_listening = drive(
+                futures_util::stream::iter(std::mem::take(&mut frontier)),
+                concurrency,
+                &tx,
+                |target| visit(target, level),
+                |visited| {
+                    let (item, children) = visited?;
+                    next.extend(admit_new(&children));
+                    Some((level, item))
+                },
+            )
+            .await;
+            if !consumer_is_listening {
+                return;
             }
+            frontier = next;
         }
     }));
     receiver_stream(rx)
 }
 
-/// Fetch the parents, map each one's children, and yield every child once, in
-/// [`CanonicalUrl`] form.
+/// Fetch the parents, map each one's children, and yield every child once — as
+/// the page links to it, so it can be fetched.
 pub(super) fn discover_children(
     ctx: Context,
     urls: Vec<String>,
@@ -245,9 +268,8 @@ pub(super) fn discover_children(
         let mut seen = HashSet::new();
         move |(_level, children): (usize, Vec<String>)| {
             let unseen: Vec<String> = children
-                .iter()
-                .map(|child| CanonicalUrl::new(child).into_inner())
-                .filter(|child| seen.insert(child.clone()))
+                .into_iter()
+                .filter(|child| seen.insert(CanonicalUrl::new(child)))
                 .collect();
             futures_util::stream::iter(unseen)
         }

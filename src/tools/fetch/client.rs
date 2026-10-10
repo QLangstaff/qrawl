@@ -1,4 +1,5 @@
 use super::types::FetchProfile;
+use super::utils::check_domain_filter;
 use crate::errors::QrawlError;
 use reqwest::{redirect, Client};
 use std::time::Duration;
@@ -15,7 +16,7 @@ const POOL_MAX_IDLE_PER_HOST: usize = 2 * super::strategies::PER_HOST_CONCURRENC
 pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
     let builder = Client::builder()
         .cookie_store(true)
-        .redirect(redirect::Policy::limited(REDIRECT_LIMIT))
+        .redirect(redirect_policy(REDIRECT_LIMIT))
         .gzip(true)
         .brotli(true)
         .deflate(true)
@@ -26,11 +27,25 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
     let builder = match profile {
         FetchProfile::Minimal => builder
             .cookie_store(false) // No cookies for minimal
-            .redirect(redirect::Policy::limited(5)), // Fewer redirects
+            .redirect(redirect_policy(5)), // Fewer redirects
         _ => builder,
     };
 
     builder
         .build()
         .map_err(|e| QrawlError::new(format!("Failed to build client: {}", e)))
+}
+
+/// Follow at most `limit` redirects, and none to a host the domain filter
+/// rejects, so a blocked host is never requested.
+fn redirect_policy(limit: usize) -> redirect::Policy {
+    redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= limit {
+            return attempt.error("too many redirects");
+        }
+        match check_domain_filter(attempt.url().as_str()) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(e),
+        }
+    })
 }

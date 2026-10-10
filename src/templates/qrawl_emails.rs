@@ -8,9 +8,8 @@ use crate::types::Context;
 
 use super::utils::crawl;
 
-/// Get emails from URLs — fetch each seed's children, then every page those
-/// children link to (on any host), and extract and dedupe the emails on those
-/// last pages.
+/// Get emails from URLs — the deduped emails on each seed, its children, and
+/// every page those children link to (on any host).
 pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Vec<String> {
     let emails: Vec<Vec<String>> = crawl(
         ctx,
@@ -22,11 +21,11 @@ pub async fn qrawl_emails(urls: Vec<String>, ctx: Context) -> Vec<String> {
                 .await
                 .map_err(|e| log::debug!("fetch failed {}: {}", target.address, e))
                 .ok()?;
-            Some(match level {
-                0 => (Vec::new(), map_children(&html, &target.address).await),
-                1 => (Vec::new(), map_page(&html, &target.address).await),
-                _ => (extract_emails(&html).await, Vec::new()),
-            })
+            let links = match level {
+                0 => map_children(&html, &target.address).await,
+                _ => map_page(&html, &target.address).await,
+            };
+            Some((extract_emails(&html).await, links))
         },
     )
     .map(|(_level, emails)| emails)

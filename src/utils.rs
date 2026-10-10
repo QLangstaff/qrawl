@@ -48,10 +48,11 @@ pub(crate) fn host_matches(host: &str, domain: &str) -> bool {
 pub(crate) fn canonical_domain(host: &str) -> String {
     let lower = host.to_ascii_lowercase();
     let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
-    match idna.strip_prefix("www.") {
-        Some(apex) if !apex.is_empty() => apex.to_string(),
-        _ => idna,
+    let mut apex = idna.as_str();
+    while let Some(stripped) = apex.strip_prefix("www.").filter(|rest| !rest.is_empty()) {
+        apex = stripped;
     }
+    apex.to_string()
 }
 
 /// The social platform a host belongs to, or `None` for a non-social host.

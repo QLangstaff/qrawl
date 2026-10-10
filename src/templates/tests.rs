@@ -207,7 +207,33 @@ mod local_site {
                 .await;
 
         assert_eq!(children.len(), 12);
+        assert!(children.contains(&site.url("/p1/c0")), "{children:?}");
         assert_eq!(site.hits(), 1);
+
+        let pages: Vec<_> = qrawl_fetch_stream(futures_util::stream::iter(children), ctx(4))
+            .collect()
+            .await;
+        assert_eq!(pages.len(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_slow_consumer_still_gets_every_page() {
+        let site = TestSite::serve(parents_with_children).await;
+        let urls: Vec<String> = (0..12)
+            .map(|page| site.url(&format!("/leaf{page}")))
+            .collect();
+
+        let mut pages = Box::pin(qrawl_fetch_stream(futures_util::stream::iter(urls), ctx(2)));
+        let mut received = 0;
+        while pages.next().await.is_some() {
+            received += 1;
+            if received == 1 {
+                // Longer than `Context::fast()`'s per-attempt timeout.
+                tokio::time::sleep(Duration::from_secs(9)).await;
+            }
+        }
+
+        assert_eq!(received, 12);
     }
 
     #[tokio::test]
@@ -365,12 +391,16 @@ mod local_site {
         let followed = qrawl_any_url(&redirecting.url("/go"), ctx(4)).await;
         assert!(followed.is_ok(), "{followed:?}");
 
+        let hits = site.hits();
+        assert!(hits > 0);
+
         let blocked = qrawl_any_url(
             &redirecting.url("/go"),
             ctx(4).with_block_domains(vec!["localhost".to_string()]),
         )
         .await;
         assert!(blocked.is_err());
+        assert_eq!(site.hits(), hits, "the blocked host got a request");
     }
 
     #[tokio::test]
@@ -451,7 +481,7 @@ mod local_site {
 }
 
 #[tokio::test]
-async fn emails_come_from_the_pages_two_links_from_the_seed() {
+async fn emails_come_from_pages_up_to_two_links_from_the_seed() {
     use crate::test_site::{listing_page, Reply, TestSite};
     let site = TestSite::serve(|path| match path {
         "/" => Reply::Html(listing_page(
@@ -469,15 +499,28 @@ async fn emails_come_from_the_pages_two_links_from_the_seed() {
             "",
             &["mailto:Hello@Example.com".to_string()],
         )),
-        _ => Reply::Html(listing_page(
-            "seed@example.com is not two links away",
-            "",
-            &[],
-        )),
+        _ => Reply::Html(listing_page(path, "", &[])),
     })
     .await;
 
     let emails = super::qrawl_emails(vec![site.url("/")], Context::fast()).await;
 
     assert_eq!(emails, ["hello@example.com"]);
+}
+
+#[tokio::test]
+async fn emails_of_a_childless_seed_come_from_the_seed_itself() {
+    use crate::test_site::{listing_page, Reply, TestSite};
+    let site = TestSite::serve(|path| {
+        Reply::Html(listing_page(
+            path,
+            "",
+            &["mailto:hi@example.com".to_string()],
+        ))
+    })
+    .await;
+
+    let emails = super::qrawl_emails(vec![site.url("/contact")], Context::fast()).await;
+
+    assert_eq!(emails, ["hi@example.com"]);
 }

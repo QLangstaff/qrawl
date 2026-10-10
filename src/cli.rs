@@ -93,7 +93,7 @@ enum Commands {
         schema_type: String,
     },
 
-    /// Extract & Normalize Email Addresses Two Links from a URL
+    /// Extract & Normalize Email Addresses from a URL, Its Children, and Their Links
     Emails {
         /// URL
         url: String,
@@ -105,7 +105,7 @@ enum Commands {
         input: String,
     },
 
-    /// Crawl a Site, Extract & Normalize Social Links
+    /// Extract & Normalize Social Links from a URL and Two Levels of Children
     Socials {
         /// URL
         url: String,

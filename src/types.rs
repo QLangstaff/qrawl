@@ -33,17 +33,17 @@ pub struct Context {
     pub depth: usize,
     /// Max results to return. `None` = unbounded.
     pub limit: Option<usize>,
-    /// Allow domains pre-fetch. Empty = allow all.
+    /// Fetch only these domains, redirects included. Empty = allow all.
     pub allow_domains: Vec<String>,
-    /// Block domains pre-fetch. Empty = block none.
+    /// Never request these domains, redirects included. Empty = block none.
     pub block_domains: Vec<String>,
-    /// Allow URLs pre-fetch. Empty = allow all.
+    /// `qrawl_many_urls` crawls only these URLs. Empty = allow all.
     pub allow_urls: Vec<String>,
-    /// Block URLs pre-fetch. Empty = block none.
+    /// `qrawl_many_urls` skips these URLs. Empty = block none.
     pub block_urls: Vec<String>,
-    /// Include schema.org types post-fetch. Empty = include all.
+    /// `qrawl_many_urls` returns only pages with one of these schema.org types. Empty = include all.
     pub include_schemas: Vec<String>,
-    /// Exclude schema.org types post-fetch. Empty = exclude none.
+    /// `qrawl_many_urls` drops pages with one of these schema.org types. Empty = exclude none.
     pub exclude_schemas: Vec<String>,
 }
 

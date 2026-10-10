@@ -230,7 +230,7 @@ fn normalize_any_url(url: &str) -> String {
     parsed.set_fragment(None);
 
     // url crate adds trailing slash for empty path, strip it
-    parsed.to_string().trim_end_matches('/').to_string()
+    serialize(&parsed)
 }
 
 /// Canonicalize a URL: the one form two URLs of the same page share.
@@ -255,17 +255,31 @@ pub fn normalize_url(url: &str) -> String {
     }
 
     // Strip a mobile host prefix (the `vm.`/`vt.` shorteners are kept on purpose).
-    if let Some(stripped) = host
+    let mut desktop_host = host.as_str();
+    while let Some(stripped) = desktop_host
         .strip_prefix("m.")
-        .or_else(|| host.strip_prefix("mobile."))
+        .or_else(|| desktop_host.strip_prefix("mobile."))
+        .or_else(|| desktop_host.strip_prefix("www."))
     {
-        let _ = parsed.set_host(Some(stripped));
+        desktop_host = stripped;
     }
+    let _ = parsed.set_host(Some(desktop_host));
 
     let query = kept_query(&parsed, |key| !is_social_tracker(key), false);
     parsed.set_query(query.as_deref());
 
-    parsed.to_string().trim_end_matches('/').to_string()
+    serialize(&parsed)
+}
+
+/// `url` as a string, without the `/` the `url` crate writes for an empty
+/// path. A query keeps it (`https://example.com/?a=1`), so a slash inside a
+/// query value is never mistaken for it.
+fn serialize(url: &Url) -> String {
+    let serialized = url.to_string();
+    match (url.path(), url.query()) {
+        ("/", None) => serialized.trim_end_matches('/').to_string(),
+        _ => serialized,
+    }
 }
 
 /// The query of `url` with only the pairs whose key `keep` accepts, as written
