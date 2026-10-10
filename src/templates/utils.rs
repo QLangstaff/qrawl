@@ -12,12 +12,12 @@ use crate::tools::map::map_children;
 use crate::tools::normalize::{normalize_social, normalize_social_urls};
 use crate::types::{CanonicalUrl, Context, Html, PageContent};
 
-/// Canonicalize `url`, or fail before any network when it isn't a URL.
+/// Canonicalize `url`, or fail before any network when it isn't an HTTP URL.
 pub(super) fn parse_url(url: &str) -> Result<CanonicalUrl, QrawlError> {
     let canonical = CanonicalUrl::new(url);
     match url::Url::parse(canonical.as_str()) {
-        Ok(_) => Ok(canonical),
-        Err(_) => Err(QrawlError::new(format!("invalid URL: {canonical}"))),
+        Ok(parsed) if parsed.scheme() == "https" => Ok(canonical),
+        _ => Err(QrawlError::new(format!("invalid URL: {canonical}"))),
     }
 }
 

@@ -286,7 +286,9 @@ fn extract_social_facebook_parts(segs: &[&str], url: &Url) -> Parts {
 
 fn extract_social_pinterest_parts(segs: &[&str]) -> Parts {
     match segs {
-        ["pin", id, ..] => (Some(SocialKind::Post), Some((*id).to_string()), None),
+        ["pin", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
+            (Some(SocialKind::Post), Some((*id).to_string()), None)
+        }
         [user, board] if !is_reserved_pinterest(user) => (
             Some(SocialKind::Collection),
             Some((*board).to_string()),
@@ -384,6 +386,11 @@ fn is_reserved_facebook(s: &str) -> bool {
     matches!(
         s,
         "watch"
+            | "share"
+            | "share.php"
+            | "sharer"
+            | "sharer.php"
+            | "dialog"
             | "story.php"
             | "permalink.php"
             | "photo.php"
@@ -410,6 +417,8 @@ fn is_reserved_twitter(s: &str) -> bool {
     matches!(
         s,
         "home"
+            | "share"
+            | "intent"
             | "search"
             | "explore"
             | "notifications"
@@ -434,20 +443,49 @@ fn query_value(url: &Url, key: &str) -> Option<String> {
 // Side-door payload extractors (Reddit `.json` / oEmbed)
 // ---------------------------------------------------------------------------
 
-/// Extract a [`PageContent`] from a Reddit `.json` body fetched for `url`.
-pub(super) fn extract_reddit(url: &CanonicalUrl, body: &str) -> Option<PageContent> {
+/// Extract a [`PageContent`] from a Reddit `.json` body fetched for `url`: the
+/// post, or — when `social` names a comment — that comment under its post's
+/// title.
+pub(super) fn extract_reddit(
+    url: &CanonicalUrl,
+    social: &SocialParts,
+    body: &str,
+) -> Option<PageContent> {
     let value: Value = serde_json::from_str(body)
         .map_err(|e| log::debug!("reddit json extract failed: {}", e))
         .ok()?;
     let post = reddit_first_post(&value)?;
-    Some(PageContent {
+    let page = PageContent {
         title: json_string(post.get("title")),
+        ..PageContent::new(url.clone(), ContentSource::RedditJson)
+    };
+    if social.kind == Some(SocialKind::Comment) {
+        let comment = reddit_comment(&value, social.id.as_deref()?)?;
+        return Some(PageContent {
+            text: json_string(comment.get("body")),
+            author: json_string(comment.get("author")).map(|a| format!("u/{}", a)),
+            ..page
+        });
+    }
+    Some(PageContent {
         text: json_string(post.get("selftext")),
         author: json_string(post.get("author")).map(|a| format!("u/{}", a)),
         image_url: reddit_image(post),
         video_url: reddit_video(post),
-        ..PageContent::new(url.clone(), ContentSource::RedditJson)
+        ..page
     })
+}
+
+/// The comment `id` in a permalink's `[postListing, commentListing]`.
+fn reddit_comment<'a>(value: &'a Value, id: &str) -> Option<&'a Value> {
+    value
+        .get(1)?
+        .get("data")?
+        .get("children")?
+        .as_array()?
+        .iter()
+        .filter_map(|child| child.get("data"))
+        .find(|comment| comment.get("id").and_then(Value::as_str) == Some(id))
 }
 
 /// Reddit `.json` is either `[postListing, commentListing]` (a permalink) or a

@@ -94,7 +94,7 @@ async fn crawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
     let mut in_flight = FuturesUnordered::new();
     let mut results: Vec<PageContent> = Vec::new();
 
-    loop {
+    while ctx.limit.is_none_or(|limit| results.len() < limit) {
         while in_flight.len() < ctx.concurrency.get() {
             match queue.pop_front() {
                 Some((url, level)) => in_flight.push(crawl_node(url, level, level < depth)),
@@ -112,9 +112,6 @@ async fn crawl(urls: Vec<String>, ctx: &Context) -> Vec<PageContent> {
         // still yields its matching children.
         if schema_passes(&page.structured, &ctx.include_schemas, &ctx.exclude_schemas) {
             results.push(page);
-            if ctx.limit.is_some_and(|limit| results.len() >= limit) {
-                break;
-            }
         }
         for child in &children {
             enqueue(&mut queue, child, level + 1);

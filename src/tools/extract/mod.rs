@@ -20,7 +20,7 @@ pub fn extract_social_content(
     payload: &SocialPayload,
 ) -> Option<PageContent> {
     let page = match payload {
-        SocialPayload::RedditJson(body) => utils::extract_reddit(url, body),
+        SocialPayload::RedditJson(body) => utils::extract_reddit(url, social, body),
         SocialPayload::Oembed(body) => utils::extract_oembed(url, body),
     }?;
     page.has_content().then(|| page.with_social(Some(social)))

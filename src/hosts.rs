@@ -1,12 +1,13 @@
 //! Shared Hosts
 
-/// The lowercased host of `url`, or `None` when `url` doesn't parse or has no
-/// host (`mailto:`, `file:`).
+/// The lowercased host of `url`, without the root dot of a fully qualified
+/// name (`example.com.`), or `None` when `url` doesn't parse or has no host
+/// (`mailto:`, `file:`).
 pub(crate) fn host_of(url: &str) -> Option<String> {
     url::Url::parse(url)
         .ok()?
         .host_str()
-        .map(str::to_ascii_lowercase)
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
 }
 
 /// Whether `host` is `domain` or a subdomain of it (`old.reddit.com` matches

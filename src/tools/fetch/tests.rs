@@ -408,3 +408,9 @@ async fn fetch_social_no_door_for_reddit_listings() {
             .is_none());
     }
 }
+
+#[test]
+fn is_url_allowed_blocks_a_fully_qualified_host() {
+    let block = vec!["example.com".to_string()];
+    assert!(!is_url_allowed("https://example.com./a", &[], &block));
+}

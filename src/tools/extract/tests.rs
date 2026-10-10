@@ -399,7 +399,7 @@ fn extract_reddit_permalink_array() {
         ]}},
         {"kind":"Listing","data":{"children":[]}}
     ]"#;
-    let r = extract_reddit(&url(), body).expect("parses");
+    let r = extract_reddit(&url(), &reddit_post_parts(), body).expect("parses");
     assert_eq!(r.url, url());
     assert_eq!(r.title.as_deref(), Some("Hello World"));
     assert_eq!(r.text.as_deref(), Some("Body text here"));
@@ -419,7 +419,7 @@ fn extract_reddit_subreddit_listing() {
     let body = r#"{"kind":"Listing","data":{"children":[
         {"kind":"t3","data":{"title":"Top Post","selftext":"","author":"alice","thumbnail":"self"}}
     ]}}"#;
-    let r = extract_reddit(&url(), body).expect("parses");
+    let r = extract_reddit(&url(), &reddit_post_parts(), body).expect("parses");
     assert_eq!(r.title.as_deref(), Some("Top Post"));
     assert!(r.text.is_none());
     assert_eq!(r.author.as_deref(), Some("u/alice"));
@@ -434,7 +434,7 @@ fn extract_reddit_splits_video_and_image_honestly() {
         "title":"Clip","thumbnail":"https://b.thumbs/x.jpg",
         "secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/x/DASH_720.mp4"}}
     }}]}}"#;
-    let r = extract_reddit(&url(), video).expect("parses");
+    let r = extract_reddit(&url(), &reddit_post_parts(), video).expect("parses");
     assert_eq!(
         r.video_url.as_deref(),
         Some("https://v.redd.it/x/DASH_720.mp4")
@@ -445,14 +445,14 @@ fn extract_reddit_splits_video_and_image_honestly() {
         "title":"Pic","thumbnail":"https://b.thumbs/x.jpg",
         "url_overridden_by_dest":"https://i.redd.it/full.png"
     }}]}}"#;
-    let r = extract_reddit(&url(), image_dest).expect("parses");
+    let r = extract_reddit(&url(), &reddit_post_parts(), image_dest).expect("parses");
     assert_eq!(r.image_url.as_deref(), Some("https://i.redd.it/full.png"));
     assert!(r.video_url.is_none());
 
     let article_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Link","url_overridden_by_dest":"https://news.example/story"
     }}]}}"#;
-    let r = extract_reddit(&url(), article_dest).expect("parses");
+    let r = extract_reddit(&url(), &reddit_post_parts(), article_dest).expect("parses");
     assert!(
         r.image_url.is_none(),
         "an article link is neither image nor video"
@@ -462,7 +462,7 @@ fn extract_reddit_splits_video_and_image_honestly() {
 
 #[test]
 fn extract_reddit_garbage_is_none() {
-    assert!(extract_reddit(&url(), "<html>not json</html>").is_none());
+    assert!(extract_reddit(&url(), &reddit_post_parts(), "<html>not json</html>").is_none());
 }
 
 #[test]
@@ -513,4 +513,40 @@ fn page_content_has_content_requires_a_content_field() {
         ..empty
     };
     assert!(with_title.has_content());
+}
+
+fn reddit_post_parts() -> crate::types::SocialParts {
+    extract_social_parts("https://reddit.com/r/rust/comments/abc/title").expect("reddit post")
+}
+
+#[test]
+fn extract_reddit_comment_returns_the_comment_not_its_post() {
+    let url = CanonicalUrl::new("https://reddit.com/r/rust/comments/abc/title/def");
+    let social = extract_social_parts(url.as_str()).expect("reddit comment");
+    let body = r#"[
+        {"data":{"children":[{"data":{"title":"Post title","selftext":"post text","author":"op"}}]}},
+        {"data":{"children":[
+            {"data":{"id":"zzz","body":"another comment","author":"other"}},
+            {"data":{"id":"def","body":"the comment","author":"commenter"}}
+        ]}}
+    ]"#;
+    let page = extract_reddit(&url, &social, body).expect("parses");
+    assert_eq!(page.title.as_deref(), Some("Post title"));
+    assert_eq!(page.text.as_deref(), Some("the comment"));
+    assert_eq!(page.author.as_deref(), Some("u/commenter"));
+}
+
+#[test]
+fn share_buttons_have_no_social_kind() {
+    for url in [
+        "https://twitter.com/share?url=https://example.com",
+        "https://twitter.com/intent/tweet?url=https://example.com",
+        "https://facebook.com/sharer.php?u=https://example.com",
+        "https://pinterest.com/pin/create/button/?url=https://example.com",
+    ] {
+        let social = extract_social_parts(url).expect("social host");
+        assert_eq!(social.kind, None, "{url}");
+    }
+    let profile = extract_social_parts("https://twitter.com/rustlang").expect("social host");
+    assert_eq!(profile.kind, Some(SocialKind::Profile));
 }

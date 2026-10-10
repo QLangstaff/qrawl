@@ -338,3 +338,23 @@ async fn live_many_urls_depth_one_expands_and_respects_limit() {
     assert!(pages.len() <= 5, "limit must cap the crawl");
     assert!(pages.iter().all(|p| p.source == ContentSource::Html));
 }
+
+#[tokio::test]
+async fn limit_zero_returns_nothing() {
+    let pages = qrawl_many_urls(
+        vec!["https://example.invalid".to_string()],
+        Context::fast().with_limit(0),
+    )
+    .await;
+    assert!(pages.is_empty());
+}
+
+#[test]
+fn parse_url_rejects_non_http_schemes() {
+    use super::utils::parse_url;
+    assert!(parse_url("https://example.com/a").is_ok());
+    assert!(parse_url("example.com/a").is_ok());
+    for input in ["mailto:a@b.com", "ftp://example.com/file.txt", "not a url"] {
+        assert!(parse_url(input).is_err(), "{input}");
+    }
+}

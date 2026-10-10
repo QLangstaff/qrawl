@@ -67,3 +67,11 @@ fn pinterest_label_needs_a_public_suffix_after_it() {
     assert!(classify_is_social_url("https://uk.pinterest.com/pin/1"));
     assert!(!classify_is_social_url("https://pinterest.evil.com/pin/1"));
 }
+
+#[test]
+fn pinterest_label_before_an_unrelated_domain_is_not_pinterest() {
+    assert!(classify_is_social_url("https://pinterest.com.au/pin/1"));
+    assert!(classify_is_social_url("https://pinterest.de/pin/1"));
+    assert!(!classify_is_social_url("https://pinterest.abc.com/pin/1"));
+    assert!(!classify_is_social_url("https://pinterest.aws.dev/pin/1"));
+}

@@ -393,20 +393,27 @@ impl SocialPlatform {
             ("linkedin.com", SocialPlatform::LinkedIn),
             ("lnkd.in", SocialPlatform::LinkedIn),
             ("vimeo.com", SocialPlatform::Vimeo),
+            ("pinterest.com", SocialPlatform::Pinterest),
             ("pin.it", SocialPlatform::Pinterest),
         ];
         DOMAINS
             .iter()
             .find(|(domain, _)| host_matches(host, domain))
             .map(|(_, platform)| *platform)
-            // Pinterest ships many ccTLDs (`pinterest.co.uk`, `uk.pinterest.com`):
-            // a `pinterest` label followed only by a public suffix, which
-            // `pinterest.evil.com` isn't.
+            // Pinterest ships many ccTLDs: a `pinterest` label followed only by
+            // a country suffix (`pinterest.de`, `pinterest.co.uk`,
+            // `pinterest.com.au`), which `pinterest.evil.com` isn't.
             .or_else(|| {
                 let labels: Vec<&str> = host.split('.').collect();
                 let suffix = &labels[labels.iter().position(|label| *label == "pinterest")? + 1..];
-                (matches!(suffix.len(), 1 | 2) && suffix.iter().all(|label| label.len() <= 3))
-                    .then_some(SocialPlatform::Pinterest)
+                let is_country_suffix = match suffix {
+                    [country] => country.len() == 2,
+                    [second_level, country] => {
+                        matches!(*second_level, "co" | "com") && country.len() == 2
+                    }
+                    _ => false,
+                };
+                is_country_suffix.then_some(SocialPlatform::Pinterest)
             })
     }
 }
