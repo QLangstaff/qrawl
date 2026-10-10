@@ -10,7 +10,7 @@ documentation = "https://docs.rs/qrawl"
 readme = "README.md"
 keywords = ["crawler", "web-crawling", "scraper", "web-scraping", "rag"]
 categories = ["web-programming::http-client", "parsing", "asynchronous", "command-line-utilities"]
-rust-version = "1.74"
+rust-version = "1.88"
 
 include = ["Cargo.toml", "README.md", "LICENSE*", "src/**"]
 
