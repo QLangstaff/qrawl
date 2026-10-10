@@ -26,12 +26,12 @@ pub fn qrawl_children_stream(
         urls,
         1,
         |_url| true,
-        |target, is_parent| async move {
+        |target, level| async move {
             let html = fetch_strategy(&target.address)
                 .await
                 .map_err(|e| log::debug!("fetch failed {}: {}", target.address, e))
                 .ok()?;
-            let children = if is_parent {
+            let children = if level == 0 {
                 map_children(&html, &target.address).await
             } else {
                 Vec::new()

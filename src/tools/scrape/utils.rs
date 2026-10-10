@@ -2,7 +2,7 @@ use once_cell::sync::Lazy;
 use scraper::Selector;
 
 use crate::types::{Html, Jsonld, Metadata};
-use crate::utils::JSONLD_SELECTOR;
+use crate::utils::{schema_types, JSONLD_SELECTOR};
 
 /// Microformats2 items, each in canonical mf2 shape:
 /// `{"type": ["h-card"], "properties": {"name": ["…"], …}, "children": [...]}`.
@@ -871,17 +871,7 @@ fn schema_name(v: &serde_json::Value) -> Option<String> {
 
 /// Short `@type` name (last segment of an IRI/CURIE; first of an array).
 fn schema_type_short(v: &serde_json::Value) -> Option<String> {
-    let raw = match v.get("@type")? {
-        serde_json::Value::String(s) => s.as_str(),
-        serde_json::Value::Array(arr) => arr.first()?.as_str()?,
-        _ => return None,
-    };
-    Some(
-        raw.rsplit(['/', '#', ':'])
-            .next()
-            .unwrap_or(raw)
-            .to_string(),
-    )
+    schema_types(v).into_iter().next()
 }
 
 /// Fill only missing/empty properties of `existing` from `incoming` — a richer

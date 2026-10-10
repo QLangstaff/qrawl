@@ -66,24 +66,18 @@ pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent
         (allow_urls.is_empty() || allow_urls.contains(url)) && !block_urls.contains(url)
     };
 
-    let pages = crawl(
-        ctx,
-        urls,
-        depth,
-        admit,
-        |target, with_children| async move {
-            let (page, html) = page_content(&target)
-                .await
-                .map_err(|e| log::debug!("{} failed: {}", target.address, e))
-                .ok()?;
-            log::info!("crawled {}", target.address);
-            let children = match html {
-                Some(html) if with_children => map_children(&html, &target.address).await,
-                _ => Vec::new(),
-            };
-            Some((page, children))
-        },
-    )
+    let pages = crawl(ctx, urls, depth, admit, move |target, level| async move {
+        let (page, html) = page_content(&target)
+            .await
+            .map_err(|e| log::debug!("{} failed: {}", target.address, e))
+            .ok()?;
+        log::info!("crawled {}", target.address);
+        let children = match html {
+            Some(html) if level < depth => map_children(&html, &target.address).await,
+            _ => Vec::new(),
+        };
+        Some((page, children))
+    })
     // The schema filter decides results only: a roundup that doesn't match
     // still yields its matching children.
     .filter_map(move |(_level, page)| {

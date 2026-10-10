@@ -1,4 +1,4 @@
-use crate::utils::canonical_domain;
+use crate::utils::{canonical_domain, schema_types};
 use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
 use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
@@ -410,11 +410,9 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
             }
         }
         Value::Object(obj) => {
-            if obj
-                .get("@type")
-                .and_then(Value::as_str)
-                .map(|t| t.eq_ignore_ascii_case("ItemList"))
-                .unwrap_or(false)
+            if schema_types(value)
+                .iter()
+                .any(|schema_type| schema_type.eq_ignore_ascii_case("ItemList"))
             {
                 out.push(Value::Object(obj.clone()));
             }

@@ -160,8 +160,9 @@ fn receiver_stream<T: Send + 'static>(
 /// Breadth-first crawl from `seeds`, `depth` levels of children deep, as one
 /// crawl ([`Context::scope`]) on its own task.
 ///
-/// `visit` fetches one [`Target`] and returns its item plus — when told to
-/// expand — its child URLs, or `None` to drop it. Each page is visited once,
+/// `visit` fetches one [`Target`] at its level (seeds are level 0) and
+/// returns its item plus the URLs to crawl at the next level, or `None` to
+/// drop it. Children of the last level are ignored. Each page is visited once,
 /// at the shallowest level that reaches it: a level starts only when the one
 /// before it has finished, so the result doesn't depend on which fetch
 /// completes first. `admit` filters every URL before its visit.
@@ -179,7 +180,7 @@ pub(super) fn crawl<T, Admit, Visit, Fut>(
 where
     T: Send + 'static,
     Admit: Fn(&CanonicalUrl) -> bool + Send + Sync + 'static,
-    Visit: Fn(Target, bool) -> Fut + Send + 'static,
+    Visit: Fn(Target, usize) -> Fut + Send + 'static,
     Fut: Future<Output = Option<(T, Vec<String>)>> + Send + 'static,
 {
     let concurrency = ctx.concurrency.get();
@@ -199,7 +200,7 @@ where
             loop {
                 while in_flight.len() < concurrency {
                     match waiting.next() {
-                        Some(target) => in_flight.push(visit(target, level < depth)),
+                        Some(target) => in_flight.push(visit(target, level)),
                         None => break,
                     }
                 }
@@ -232,7 +233,7 @@ pub(super) fn discover_children(
         urls,
         0,
         |_url| true,
-        |target, _expand| async move {
+        |target, _level| async move {
             let html = fetch_strategy(&target.address)
                 .await
                 .map_err(|e| log::debug!("fetch failed {}: {}", target.address, e))

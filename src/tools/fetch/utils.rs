@@ -11,7 +11,7 @@ use crate::utils::{canonical_domain, host_matches, host_of};
 /// host passes only when there's no allowlist. Hosts and listed domains
 /// compare in [`canonical_domain`] form, so `WWW.Example.com` lists
 /// `example.com`.
-pub(crate) fn is_url_allowed(
+pub(super) fn is_url_allowed(
     url: &str,
     allow_domains: &[String],
     block_domains: &[String],

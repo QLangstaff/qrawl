@@ -449,3 +449,35 @@ mod local_site {
         );
     }
 }
+
+#[tokio::test]
+async fn emails_come_from_the_pages_two_links_from_the_seed() {
+    use crate::test_site::{listing_page, Reply, TestSite};
+    let site = TestSite::serve(|path| match path {
+        "/" => Reply::Html(listing_page(
+            path,
+            "",
+            &[
+                "/team".to_string(),
+                "/blog".to_string(),
+                "/shop".to_string(),
+            ],
+        )),
+        "/team" => Reply::Html(listing_page(path, "", &["/contact".to_string()])),
+        "/contact" => Reply::Html(listing_page(
+            "contact",
+            "",
+            &["mailto:Hello@Example.com".to_string()],
+        )),
+        _ => Reply::Html(listing_page(
+            "seed@example.com is not two links away",
+            "",
+            &[],
+        )),
+    })
+    .await;
+
+    let emails = super::qrawl_emails(vec![site.url("/")], Context::fast()).await;
+
+    assert_eq!(emails, ["hello@example.com"]);
+}

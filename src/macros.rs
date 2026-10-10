@@ -20,6 +20,11 @@
 /// | `extract(f)` | `async fn(&Html) -> Vec<String>` | pages → list |
 /// | `filter(p)` | `async fn(Html) -> bool` | pages → pages |
 ///
+/// `fetch` requests each URL exactly as the step before it produced it. A
+/// normalize step such as `all(normalize_urls)` dedupes by rewriting every URL
+/// to its canonical form (`https`, no `www.`, no trailing slash), so after it
+/// `fetch` requests that form, which a few servers answer differently.
+///
 /// A "page" is a `(String, Html)` — its source URL and body. `map`/`extract`/
 /// `filter` fan their tool out across the pages with bounded concurrency; a
 /// capturing closure is cloned per page, so it must be `Clone + Send + Sync`.
