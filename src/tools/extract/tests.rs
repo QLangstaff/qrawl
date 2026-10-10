@@ -647,6 +647,15 @@ async fn a_number_inside_a_longer_run_of_digits_is_not_a_phone_in_text_either() 
 }
 
 #[tokio::test]
+async fn a_number_after_another_token_ending_in_a_digit_is_found() {
+    let html = "<html><body><p>New York, NY 10001 (212) 555-1212</p><p>Suite 301 212-555-1313</p><p>２１２-555-1414</p></body></html>";
+    assert_eq!(
+        extract_phones(&html.into()).await,
+        ["(212) 555-1212", "212-555-1313"]
+    );
+}
+
+#[tokio::test]
 async fn jsonld_telephones_keep_every_countrys_format() {
     let html = r#"<html><head><script type="application/ld+json">{
         "@type":"LocalBusiness",

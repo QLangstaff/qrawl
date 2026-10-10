@@ -656,6 +656,7 @@ fn normalize_phones_strips_an_extension_however_it_is_written() {
             "212-555-1212 extn 5".to_string(),
             "212-555-1212 x-5".to_string(),
             "212-555-1212 ext #5".to_string(),
+            "212-555-1212 (x5)".to_string(),
         ]),
         ["2125551212"]
     );

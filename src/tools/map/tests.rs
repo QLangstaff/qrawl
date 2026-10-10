@@ -469,11 +469,13 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings() {
 async fn map_children_keeps_a_first_item_whose_heading_differs() {
     let item = |n: usize| {
         let heading = if n == 0 { "h3" } else { "h2" };
+        // Two item lengths, alternating.
+        let filler = "<p>b</p>".repeat(1 + n % 2);
         format!(
-            "<{heading}><a href=\"/item{n}\">I</a></{heading}><div><img src=\"/i{n}.png\"></div><p>a</p><p>b</p>"
+            "<{heading}><a href=\"/item{n}\">I</a></{heading}><div><img src=\"/i{n}.png\"></div><p>a</p>{filler}"
         )
     };
-    for items in [4usize, 6] {
+    for items in [4usize, 6, 8] {
         let html = format!(
             "<html><body><main>{}</main></body></html>",
             (0..items).map(item).collect::<String>()

@@ -18,8 +18,9 @@ static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .expect("valid regex")
 });
+/// A North American number in text, in ASCII digits.
 static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
+    Regex::new(r"(?-u)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
 });
 /// One phone number as written, in any country's format: 5 to 15 digits, up to
 /// three grouping characters between any two (`555 - 1212`), then an extension
@@ -76,18 +77,27 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
 }
 
 /// The phone numbers `PHONE_REGEX` finds in `text`. A number inside a longer
-/// run of digits is a piece of that run, not a number.
+/// run of digits is a piece of that run, not a number. A match that begins on
+/// the last digit of the token before (`10001 (212) 555-1212` read from its
+/// `1`, as a country code) is retried from the next character.
 fn find_phones(text: &str) -> Vec<String> {
     let is_digit_at = |index: Option<usize>| {
         index.is_some_and(|index| text.as_bytes().get(index).is_some_and(u8::is_ascii_digit))
     };
-    PHONE_REGEX
-        .find_iter(text)
-        .filter(|found| {
-            !is_digit_at(found.start().checked_sub(1)) && !is_digit_at(Some(found.end()))
-        })
-        .map(|found| found.as_str().to_string())
-        .collect()
+    let mut phones = Vec::new();
+    let mut from = 0;
+    while let Some(found) = PHONE_REGEX.find_at(text, from) {
+        if is_digit_at(found.start().checked_sub(1)) {
+            // The match is ASCII, so the next byte is a character boundary.
+            from = found.start() + 1;
+            continue;
+        }
+        if !is_digit_at(Some(found.end())) {
+            phones.push(found.as_str().to_string());
+        }
+        from = found.end();
+    }
+    phones
 }
 
 /// What `read` finds in the values a page's JSON-LD holds under the

@@ -360,11 +360,11 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         let mut pattern_groups: Vec<_> = multi_pattern_groups.into_iter().collect();
         pattern_groups.sort_by_key(|(_, start_indices)| start_indices[0]);
         // Each group kept, to tell a rotation of it: the same unit read from
-        // its second element on (`div, p, p, h2` for `h2, div, p, p`), which
-        // starts inside the unit's first instance. Of the two, the unit is the
-        // one whose elements keep their tags in every instance: a rotation's
-        // last element is the unit's first in most instances, and whatever
-        // follows the listing in the last. Then the one with the longer run of
+        // another of its elements on (`div, p, p, h2` for `h2, div, p, p`), a
+        // cyclic shift of its structures. Of the two, the unit is the one
+        // whose elements keep their tags in every instance: a rotation's last
+        // element is the unit's first in most instances, and whatever follows
+        // the listing in the last. Then the one with the longer run of
         // adjacent instances; a rotation never trades instances for tags, so a
         // listing whose first heading differs keeps its first item. When both
         // tie, the one that starts first. A listing whose first item alone
@@ -409,10 +409,11 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                     let adjacent_run = longest_adjacent_run(&non_overlapping, pattern_len);
                     let rotated = kept
                         .iter()
-                        .position(|group| group.first < first && first < group.first + pattern_len);
+                        .position(|group| is_cyclic_shift(group.pattern, pattern));
                     let replaces = match rotated {
                         Some(index)
-                            if kept[index].adjacent_run <= adjacent_run
+                            if kept[index].instances <= non_overlapping.len()
+                                && kept[index].adjacent_run <= adjacent_run
                                 && (kept[index].tag_consistency, kept[index].adjacent_run)
                                     < (tag_consistency, adjacent_run) =>
                         {
@@ -441,13 +442,15 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                     match replaces {
                         Some(index) => {
                             all_groups[kept[index].group_index] = group;
-                            kept[index].first = first;
+                            kept[index].pattern = pattern;
+                            kept[index].instances = non_overlapping.len();
                             kept[index].adjacent_run = adjacent_run;
                             kept[index].tag_consistency = tag_consistency;
                         }
                         None => {
                             kept.push(KeptGroup {
-                                first,
+                                pattern,
+                                instances: non_overlapping.len(),
                                 adjacent_run,
                                 tag_consistency,
                                 group_index: all_groups.len(),
@@ -462,14 +465,28 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 }
 
 /// A multi-element group of one parent, as far as telling its rotations apart
-/// needs: where it starts, its longest run of adjacent instances, how many of
-/// its positions keep one tag across every instance, and where it sits in
-/// `all_groups`.
-struct KeptGroup {
-    first: usize,
+/// needs: its structures, how often it repeats, its longest run of adjacent
+/// instances, how many of its positions keep one tag across every instance,
+/// and where it sits in `all_groups`.
+struct KeptGroup<'a> {
+    pattern: &'a [StructurePattern],
+    instances: usize,
     adjacent_run: usize,
     tag_consistency: usize,
     group_index: usize,
+}
+
+/// Whether `other` is `pattern` read from another of its elements on.
+fn is_cyclic_shift(pattern: &[StructurePattern], other: &[StructurePattern]) -> bool {
+    pattern.len() == other.len()
+        && (1..pattern.len()).any(|shift| {
+            pattern
+                .iter()
+                .cycle()
+                .skip(shift)
+                .take(pattern.len())
+                .eq(other.iter())
+        })
 }
 
 /// The most instances in a row, each right after the one before: a listing's
