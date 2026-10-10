@@ -64,28 +64,41 @@ fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
         .collect()
 }
 
-/// The string values a page's JSON-LD holds under the schema.org property
-/// `key` (`email`, `telephone`), at any depth. JSON-LD is data, so the
-/// property says what a value is; its raw text would read an SKU as a phone.
-fn extract_jsonld_values(doc: &Html, key: &str) -> Vec<String> {
+/// What `regex` finds in the values a page's JSON-LD holds under the
+/// schema.org property `key` (`email`, `telephone`), at any depth. JSON-LD is
+/// data, so the property says what a value is: read as raw text, an SKU would
+/// pass for a phone number.
+fn extract_from_jsonld(doc: &Html, key: &str, regex: &Regex) -> Vec<String> {
+    let is_key = |name: &str| {
+        name.rsplit([':', '/', '#'])
+            .next()
+            .is_some_and(|short| short.eq_ignore_ascii_case(key))
+    };
     let mut found = Vec::new();
     for script in doc.select(&JSONLD_SELECTOR) {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&script.inner_html()) else {
+        let text: String = script.text().collect();
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        let mut pending = vec![&value];
-        while let Some(value) = pending.pop() {
+        // `(value, under_key)`: whether the value sits under the property.
+        let mut pending = vec![(&value, false)];
+        while let Some((value, under_key)) = pending.pop() {
             match value {
-                serde_json::Value::Array(items) => pending.extend(items),
+                serde_json::Value::String(text) if under_key => {
+                    found.extend(regex.find_iter(text).map(|m| m.as_str().to_string()));
+                }
+                serde_json::Value::Number(number) if under_key => {
+                    let digits = number.to_string();
+                    found.extend(regex.find_iter(&digits).map(|m| m.as_str().to_string()));
+                }
+                serde_json::Value::Array(items) => {
+                    pending.extend(items.iter().map(|item| (item, under_key)));
+                }
                 serde_json::Value::Object(fields) => {
-                    for (name, value) in fields {
-                        match value {
-                            serde_json::Value::String(text) if name == key => {
-                                found.push(text.trim().to_string());
-                            }
-                            nested => pending.push(nested),
-                        }
-                    }
+                    pending.extend(fields.iter().map(|(name, value)| {
+                        // A typed literal keeps its text in `@value`.
+                        (value, is_key(name) || (under_key && name == "@value"))
+                    }));
                 }
                 _ => {}
             }
@@ -99,7 +112,7 @@ pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "mailto:"),
         extract_with_regex(doc, &EMAIL_REGEX),
-        extract_jsonld_values(doc, "email"),
+        extract_from_jsonld(doc, "email", &EMAIL_REGEX),
     ]
     .concat()
 }
@@ -109,7 +122,7 @@ pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
     [
         extract_with_prefix(doc, "tel:"),
         extract_with_regex(doc, &PHONE_REGEX),
-        extract_jsonld_values(doc, "telephone"),
+        extract_from_jsonld(doc, "telephone", &PHONE_REGEX),
     ]
     .concat()
 }

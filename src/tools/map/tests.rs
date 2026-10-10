@@ -390,7 +390,7 @@ async fn map_children_stays_fast_on_a_thousand_siblings() {
 
 #[tokio::test]
 async fn map_children_finds_long_repeating_units_every_time() {
-    for unit in [9usize, 10, 12, 20] {
+    for unit in [3usize, 9, 10, 12, 16, 20, 24, 30] {
         let item = |n: usize| {
             let filler: String = (1..unit).map(|tag| format!("<x{tag}>t</x{tag}>")).collect();
             format!("<div><a href=\"/item{n}\">Item {n}</a></div>{filler}")

@@ -287,7 +287,7 @@ async fn test_normalize_html_handles_uppercase_tags() {
         )
         .await
         .as_str(),
-        "<DIV><P>Text</P></DIV>",
+        "<div><p>Text</p></div>",
     );
 }
 
@@ -1015,7 +1015,7 @@ async fn normalize_html_keeps_jsonld_bytes_and_survives_hostile_markup() {
         ),
         (
             r#"<script type=application/ld+json>{"a":1}</script>"#,
-            r#"<script type=application/ld+json>{"a":1}</script>"#,
+            r#"<script type="application/ld+json">{"a":1}</script>"#,
         ),
         // A comment can't open a script.
         (
@@ -1094,13 +1094,30 @@ async fn normalize_html_reads_comments_and_scripts_leftmost_first() {
             "<p>a</p> <p>b</p>",
         ),
         ("<p>a</p><script>x()</script ><p>b</p>", "<p>a</p><p>b</p>"),
+        // Markup a browser reads as text stays text; no script comes out.
         (
             "<scr<script></script>ipt>alert(1)</script><p>b</p>",
+            "<scr<script>ipt&gt;alert(1)<p>b</p></scr<script>",
+        ),
+        (
+            "<p>a</p><script/src=x>evil()</script><p>b</p>",
+            "<p>a</p><p>b</p>",
+        ),
+        (
+            r#"<svg class="i"/><p>text</p><script type="application/ld+json">{"a":1}</script><svg><path/></svg><p>b</p>"#,
+            r#"<p>text</p><script type="application/ld+json">{"a":1}</script><p>b</p>"#,
+        ),
+        (
+            r#"<script type="text/javascript" type="application/ld+json">evil()</script><p>b</p>"#,
             "<p>b</p>",
         ),
         (
+            r#"<script type="application/ld+json; charset=utf-8">{"a":1}</script>"#,
+            r#"<script type="application/ld+json; charset=utf-8">{"a":1}</script>"#,
+        ),
+        (
             r#"<script type = "application/ld+json">{"articleBody":"a <!-- wp --> b"}</script>"#,
-            r#"<script type = "application/ld+json">{"articleBody":"a <!-- wp --> b"}</script>"#,
+            r#"<script type="application/ld+json">{"articleBody":"a <!-- wp --> b"}</script>"#,
         ),
     ];
     for (html, expected) in cases {
@@ -1110,4 +1127,42 @@ async fn normalize_html_reads_comments_and_scripts_leftmost_first() {
             "{html}"
         );
     }
+}
+
+#[tokio::test]
+async fn normalize_html_is_linear_on_nested_comment_and_script_openers() {
+    let layers = 20_000;
+    let comments = format!(
+        "{}<!---->{}<p>b</p>",
+        "<!-".repeat(layers),
+        "-->".repeat(layers)
+    );
+    let scripts = format!("{}<p>b</p>", "<scr".repeat(layers * 5));
+    for html in [comments, scripts] {
+        let started = std::time::Instant::now();
+        normalize_html(&html.as_str().into()).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
+fn absolute_url_refuses_text_that_only_resembles_a_host() {
+    for input in [
+        "\"example.com\"",
+        "example.com;x",
+        "1.e2",
+        "example.c0m",
+        "example.com:",
+        "",
+    ] {
+        assert_eq!(absolute_url(input), None, "{input}");
+    }
+    assert_eq!(
+        absolute_url("http:/example.com").as_deref(),
+        Some("http://example.com/")
+    );
 }

@@ -27,10 +27,13 @@ pub fn normalize_text(text: &str) -> String {
 
 /// Normalize HTML
 ///
-/// - Strip comments, scripts, styles, `<noscript>`, `<iframe>`, `<svg>`
-/// - Strip styling, scripting, and accessibility attributes
-/// - Normalize escaped newlines and whitespace
-/// - Keep JSON-LD scripts in place, unchanged
+/// Parses the markup and writes back its content:
+/// - without comments, scripts, styles, `<noscript>`, `<iframe>`, or `<svg>`
+/// - without styling, scripting, and accessibility attributes
+/// - with whitespace collapsed
+/// - with each JSON-LD script in place, its text untouched
+///
+/// The output is re-serialized, so quoting and entities are normalized too.
 pub async fn normalize_html(html: &Html) -> Html {
     let html = html.to_string();
     let normalized = tokio::task::spawn_blocking(move || utils::normalize_markup(&html))

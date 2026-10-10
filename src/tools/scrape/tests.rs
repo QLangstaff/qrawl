@@ -946,3 +946,76 @@ async fn scrape_jsonld_shortens_nested_types_and_keeps_an_entity_beside_its_grap
     assert_eq!(jsonld[0]["author"]["@type"], "Person");
     assert_eq!(jsonld[1]["@type"], "Recipe");
 }
+
+#[test]
+fn nested_items_under_several_names_are_bounded_in_size_and_time() {
+    for open in [
+        "<div itemscope itemprop=\"a b\">",
+        "<div typeof=\"T\" property=\"a b\">",
+        "<div class=\"h-card p-a p-b\">",
+    ] {
+        let html = format!(
+            "<html><body><div itemscope typeof=\"T\" class=\"h-card\">{}x{}</div></body></html>",
+            open.repeat(60),
+            "</div>".repeat(60)
+        );
+        let doc = scraper::Html::parse_document(&html);
+        let started = std::time::Instant::now();
+        let sizes = [
+            serde_json::to_string(&super::utils::scrape_microdata_from_doc(&doc))
+                .unwrap()
+                .len(),
+            serde_json::to_string(&super::utils::scrape_rdfa_from_doc(&doc))
+                .unwrap()
+                .len(),
+            serde_json::to_string(&super::utils::scrape_microformats_from_doc(&doc))
+                .unwrap()
+                .len(),
+        ];
+        let size = sizes.into_iter().max().unwrap();
+        // More than the 60 first copies alone, which proves copies were made…
+        assert!(size > 10_000, "{open}: {size} bytes");
+        // …and no more than the budget allows.
+        assert!(size < 4_000_000, "{open}: {size} bytes");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{open}: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_long_value_under_one_name_is_never_cut() {
+    let body = "word ".repeat(1_000_000);
+    let html = format!(
+        r#"<html><body><div itemscope itemtype="https://schema.org/WebPage">
+            <div itemprop="mainEntity" itemscope itemtype="https://schema.org/Article">
+                <div itemprop="hasPart" itemscope itemtype="https://schema.org/Article">
+                    <p itemprop="articleBody">{body}</p>
+                </div>
+            </div>
+        </div></body></html>"#
+    );
+    let jsonld = scrape_jsonld(&html.as_str().into()).await;
+    let text = jsonld[0]["mainEntity"]["hasPart"]["articleBody"]
+        .as_str()
+        .expect("the article body");
+    assert_eq!(text.len(), body.trim().len());
+}
+
+#[tokio::test]
+async fn one_documents_copies_do_not_spend_the_next_documents_budget() {
+    let greedy = format!(
+        "<html><body><div class=\"h-card\">{}x{}</div></body></html>",
+        "<div class=\"h-card p-a p-b\">".repeat(30),
+        "</div>".repeat(30)
+    );
+    let modest = r#"<html><body><div class="h-card"><span class="p-name p-nickname">Jane</span></div></body></html>"#;
+    let greedy_doc = scraper::Html::parse_document(&greedy);
+    let modest_doc = scraper::Html::parse_document(modest);
+    super::utils::scrape_microformats_from_doc(&greedy_doc);
+    let cards = super::utils::scrape_microformats_from_doc(&modest_doc);
+    assert_eq!(cards[0]["properties"]["name"][0], "Jane");
+    assert_eq!(cards[0]["properties"]["nickname"][0], "Jane");
+}

@@ -522,3 +522,20 @@ async fn jsonld_emails_and_phones_come_from_their_properties_only() {
     assert_eq!(emails, ["help@example.com", "ld@example.com"]);
     assert_eq!(extract_phones(&html.into()).await, ["212-555-1212"]);
 }
+
+#[tokio::test]
+async fn jsonld_contact_properties_are_read_in_every_shape() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type":"Organization",
+        "email":["a@example.com","mailto:b@example.com","n/a"],
+        "schema:telephone":[{"@value":"tel:+1 212-555-1212"},"call us"],
+        "Telephone":2125551313,
+        "name":"R&D <team>"
+    }</script></head><body></body></html>"#;
+    let mut emails = extract_emails(&html.into()).await;
+    emails.sort();
+    assert_eq!(emails, ["a@example.com", "b@example.com"]);
+    let mut phones = extract_phones(&html.into()).await;
+    phones.sort();
+    assert_eq!(phones, ["+1 212-555-1212", "2125551313"]);
+}

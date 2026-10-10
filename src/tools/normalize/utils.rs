@@ -10,40 +10,12 @@ use crate::utils::{absolute_url, canonical_domain, host_of_url, social_platform,
 static WHITESPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
 
-// HTML normalization regexes
+// HTML normalization
 
-/// A comment or a script, whichever starts first, so neither is read inside
-/// the other.
-static COMMENT_OR_SCRIPT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<!--.*?-->|<script(?:\s[^>]*)?>.*?</script\s*>").expect("valid regex")
-});
+/// Markup that is a whole document, not a fragment.
+static DOCUMENT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<!doctype|<html[\s>]").expect("valid regex"));
 
-static PLACEHOLDER_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("\0(\\d+)\0").expect("valid regex"));
-
-static STYLE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("valid regex"));
-
-static NOSCRIPT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<noscript[^>]*>.*?</noscript>").expect("valid regex"));
-
-static IFRAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<iframe[^>]*>.*?</iframe>").expect("valid regex"));
-
-static SVG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<svg[^>]*>.*?</svg>").expect("valid regex"));
-
-static START_TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<[a-zA-Z][^>]*>").expect("valid regex"));
-
-/// One attribute of a start tag: its name, then its value — quoted values
-/// first, so a space or `=` inside one never reads as another attribute.
-static ATTR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\s+([^\s=>/"']+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?"#).expect("valid regex")
-});
-
-/// Attribute names that carry styling, scripting, or accessibility wiring,
-/// not content.
 static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?ix)^(?:
@@ -59,8 +31,6 @@ static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid regex")
 });
-
-static NEWLINE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\n").expect("valid regex"));
 
 /// Tracking / analytics query parameters stripped by `normalize_url` so the
 /// same page reached via different campaigns/referrers canonicalizes identically.
@@ -145,11 +115,6 @@ pub(super) fn remove_control_chars(text: &str) -> String {
 /// - Trim leading/trailing whitespace
 pub(super) fn normalize_whitespace(text: &str) -> String {
     WHITESPACE_REGEX.replace_all(text, " ").trim().to_string()
-}
-
-/// Normalize escaped newlines (\\n) to actual newlines (\n).
-fn normalize_escaped_newlines(text: &str) -> String {
-    NEWLINE_REGEX.replace_all(text, "\n").to_string()
 }
 
 /// Normalize each item, dropping the ones that normalize to nothing and the
@@ -405,77 +370,114 @@ pub(super) fn normalize_phone(phone: &str) -> String {
     }
 }
 
-/// Normalize HTML: drop comments, scripts, styles, and junk attributes, and
-/// collapse whitespace. JSON-LD scripts are data: each stays where it is,
-/// byte for byte.
+/// Elements that carry no content: code, styling, embedded frames, vector art.
+const JUNK_ELEMENTS: [&str; 5] = ["script", "style", "noscript", "iframe", "svg"];
+
+/// Elements that never have an end tag.
+const VOID_ELEMENTS: [&str; 13] = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr",
+];
+
+/// Whether a `<script>` is JSON-LD: data, not code.
+fn is_jsonld_script(element: &scraper::node::Element) -> bool {
+    element.name() == "script"
+        && element.attr("type").is_some_and(|script_type| {
+            let essence = script_type.split(';').next().unwrap_or(script_type).trim();
+            essence.eq_ignore_ascii_case("application/ld+json")
+        })
+}
+
+/// Normalize HTML by parsing it and writing back what is content: no comments,
+/// no junk elements or attributes, whitespace collapsed. JSON-LD scripts are
+/// data, so each stays where it is with its text untouched. A parser decides
+/// what is a comment, a script, or an attribute, so text that merely looks
+/// like one is left alone.
 pub(super) fn normalize_markup(html: &str) -> String {
-    // Each kept JSON-LD script is swapped for a placeholder while the rest is
-    // stripped, then put back. NUL can't occur in HTML text, so a placeholder
-    // can't collide with content.
-    let mut markup = html.replace('\0', "");
-    let mut jsonld: Vec<String> = Vec::new();
-    // Until nothing changes: removing a script can join the two halves of
-    // another (`<scr<script></script>ipt>`).
-    loop {
-        let stripped = COMMENT_OR_SCRIPT_REGEX
-            .replace_all(&markup, |found: &regex::Captures| {
-                let found = &found[0];
-                if found.starts_with("<!--") || !is_jsonld_script(found) {
-                    return String::new();
+    use ego_tree::iter::Edge;
+    use scraper::node::Node;
+
+    // A fragment (`<p>a</p>`) stays a fragment: no `<html>` is added to it.
+    let is_document = DOCUMENT_REGEX.is_match(html);
+    let parsed = if is_document {
+        scraper::Html::parse_document(html)
+    } else {
+        scraper::Html::parse_fragment(html)
+    };
+    let root = if is_document {
+        parsed.tree.root()
+    } else {
+        *parsed.root_element()
+    };
+
+    let mut out = String::new();
+    // The junk element whose subtree is being skipped.
+    let mut skipping = None;
+    for edge in root.traverse() {
+        match edge {
+            Edge::Open(node) if skipping.is_none() && node != root => match node.value() {
+                Node::Element(element)
+                    if JUNK_ELEMENTS.contains(&element.name()) && !is_jsonld_script(element) =>
+                {
+                    skipping = Some(node.id());
                 }
-                jsonld.push(found.to_string());
-                format!("\0{}\0", jsonld.len() - 1)
-            })
-            .to_string();
-        if stripped == markup {
-            break;
-        }
-        markup = stripped;
-    }
-    let stripped = strip_junk(&markup);
-    PLACEHOLDER_REGEX
-        .replace_all(&stripped, |placeholder: &regex::Captures| {
-            placeholder[1]
-                .parse::<usize>()
-                .ok()
-                .and_then(|index| jsonld.get(index).cloned())
-                .unwrap_or_default()
-        })
-        .trim()
-        .to_string()
-}
-
-/// Whether a `<script>…</script>` declares `type="application/ld+json"`.
-fn is_jsonld_script(script: &str) -> bool {
-    let start_tag = script.split('>').next().unwrap_or(script);
-    ATTR_REGEX.captures_iter(start_tag).any(|attr| {
-        let value = attr[0]
-            .split_once('=')
-            .map_or("", |(_, value)| value.trim().trim_matches(['"', '\'']));
-        attr[1].eq_ignore_ascii_case("type") && value.eq_ignore_ascii_case("application/ld+json")
-    })
-}
-
-/// Strip junk from script-free HTML and collapse its whitespace.
-fn strip_junk(html: &str) -> String {
-    let mut stripped = normalize_escaped_newlines(html);
-    stripped = STYLE_REGEX.replace_all(&stripped, "").to_string();
-    stripped = NOSCRIPT_REGEX.replace_all(&stripped, "").to_string();
-    stripped = IFRAME_REGEX.replace_all(&stripped, "").to_string();
-    stripped = SVG_REGEX.replace_all(&stripped, "").to_string();
-    stripped = START_TAG_REGEX
-        .replace_all(&stripped, |tag: &regex::Captures| {
-            ATTR_REGEX
-                .replace_all(&tag[0], |attr: &regex::Captures| {
-                    let has_value = attr[0].contains('=');
-                    if has_value && JUNK_ATTR_NAME_REGEX.is_match(&attr[1]) {
-                        String::new()
-                    } else {
-                        attr[0].to_string()
+                Node::Element(element) => {
+                    out.push('<');
+                    out.push_str(element.name());
+                    for (name, value) in element.attrs() {
+                        if !JUNK_ATTR_NAME_REGEX.is_match(name) {
+                            out.push_str(&format!(" {name}=\"{}\"", escape(value, true)));
+                        }
                     }
-                })
-                .to_string()
-        })
-        .to_string();
-    WHITESPACE_REGEX.replace_all(&stripped, " ").to_string()
+                    out.push('>');
+                }
+                Node::Text(text) => {
+                    let in_jsonld = node
+                        .parent()
+                        .and_then(|parent| parent.value().as_element())
+                        .is_some_and(is_jsonld_script);
+                    if in_jsonld {
+                        out.push_str(text);
+                    } else {
+                        push_collapsed(&mut out, &escape(&text.replace("\\n", " "), false));
+                    }
+                }
+                _ => {}
+            },
+            Edge::Close(node) if skipping == Some(node.id()) => skipping = None,
+            Edge::Close(node) if skipping.is_none() && node != root => {
+                if let Node::Element(element) = node.value() {
+                    if !VOID_ELEMENTS.contains(&element.name()) {
+                        out.push_str(&format!("</{}>", element.name()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Append `text` with each run of whitespace as one space, and none doubled
+/// where it meets the whitespace already written.
+fn push_collapsed(out: &mut String, text: &str) {
+    for c in text.chars() {
+        if !c.is_whitespace() {
+            out.push(c);
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+}
+
+fn escape(text: &str, in_attribute: bool) -> String {
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    if in_attribute {
+        escaped.replace('"', "&quot;")
+    } else {
+        escaped
+    }
 }

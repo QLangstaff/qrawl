@@ -14,7 +14,7 @@ use crate::tools::fetch::{fetch_embed, fetch_strategy, Fetched};
 use crate::tools::map::map_page;
 use crate::tools::normalize::{absolute_url, normalize_urls, CanonicalUrl};
 use crate::tools::scrape::{scrape_all, scrape_embed};
-use crate::types::{Context, Html};
+use crate::types::{Context, Html, SocialKind};
 
 use super::types::PageContent;
 
@@ -75,8 +75,12 @@ pub(super) async fn page_content(
     let embed = match item(&url) {
         served if served == item(&target.url) => embed,
         // A different item: its embed, never the given one's.
-        Some((_, Some(_), _)) => fetch_embed(url.as_str()).await,
-        // A wall or a plain page: the given item's embed stands.
+        Some((
+            _,
+            Some(SocialKind::Post | SocialKind::Video | SocialKind::Photo | SocialKind::Comment),
+            _,
+        )) => fetch_embed(url.as_str()).await,
+        // A wall, a profile, or a plain page: the given item's embed stands.
         _ => embed,
     };
 
@@ -199,8 +203,7 @@ pub(super) struct Visited<T> {
 /// level are ignored. Each page is yielded once, at the shallowest level that
 /// reaches it: a level starts only when the one before it has finished, so
 /// the result doesn't depend on which fetch completes first. A target that
-/// redirects yields the page it landed on, at the level of the target, unless
-/// that page was already yielded. `admit` filters every
+/// redirects counts as the page it landed on. `admit` filters every
 /// URL before its visit, and the URL a redirect served after it.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
@@ -237,7 +240,6 @@ where
         enqueue(&seeds, &mut seen, &mut frontier);
         for level in 0..=depth {
             let mut next = Vec::new();
-            let mut redirected = Vec::new();
             let consumer_is_listening = drive(
                 futures_util::stream::iter(std::mem::take(&mut frontier)),
                 concurrency,
@@ -259,25 +261,16 @@ where
                 },
                 |(given, visited): (CanonicalUrl, Option<Visited<T>>)| {
                     let visited = visited?;
-                    if visited.url != given {
-                        if yielded.contains(&visited.url) {
-                            return None;
-                        }
-                        // A landing page that is also queued waits for its
-                        // level to finish; any other is this redirect's alone.
-                        if seen.contains(&visited.url) {
-                            redirected.push(visited);
-                            return None;
-                        }
-                        if !admit(&visited.url) {
-                            return None;
-                        }
-                        seen.insert(visited.url.clone());
-                        yielded.insert(visited.url.clone());
-                        enqueue(&visited.children, &mut seen, &mut next);
-                        return Some((level, visited.item));
+                    // The first visit to arrive at a page yields it, whether
+                    // it was asked for that page or redirected to it. Any
+                    // visit of the same page makes the same item, so which
+                    // one arrives first changes nothing.
+                    let is_redirect = visited.url != given;
+                    if (is_redirect && !admit(&visited.url)) || !yielded.insert(visited.url.clone())
+                    {
+                        return None;
                     }
-                    yielded.insert(given);
+                    seen.insert(visited.url);
                     enqueue(&visited.children, &mut seen, &mut next);
                     Some((level, visited.item))
                 },
@@ -286,20 +279,8 @@ where
             if !consumer_is_listening {
                 return;
             }
-            // A redirect onto a queued page is settled once the level is in,
-            // so which page it yields doesn't depend on which fetch finished
-            // first: the page it landed on, unless that page was yielded.
-            for visited in redirected {
-                if !admit(&visited.url) || !yielded.insert(visited.url.clone()) {
-                    continue;
-                }
-                seen.insert(visited.url.clone());
-                next.retain(|target| target.url != visited.url);
-                enqueue(&visited.children, &mut seen, &mut next);
-                if tx.send((level, visited.item)).await.is_err() {
-                    return;
-                }
-            }
+            // A page a redirect reached in this level isn't crawled again.
+            next.retain(|target| !yielded.contains(&target.url));
             frontier = next;
         }
     }));

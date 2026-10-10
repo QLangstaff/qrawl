@@ -101,7 +101,7 @@ pub(crate) fn absolute_url(input: &str) -> Option<String> {
         .or_else(|| lower.strip_prefix("http:"))
     {
         return http_url(input)
-            .filter(|_| names_a_host(rest))
+            .filter(|_| names_a_host(rest.trim_start_matches('/')))
             .map(String::from);
     }
     if !names_a_host(input) {
@@ -123,7 +123,9 @@ fn names_a_host(input: &str) -> bool {
         // A bracketed IPv6 address, with an optional port after it.
         Some(bracketed) => return bracketed.contains(']'),
         None => match authority.rsplit_once(':') {
-            Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+            Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                host
+            }
             Some(_) => return false,
             None => authority,
         },
@@ -133,12 +135,16 @@ fn names_a_host(input: &str) -> bool {
         return true;
     }
     let labels: Vec<&str> = host.split('.').collect();
+    // A label is letters, digits and hyphens; an IDN's letters aren't ASCII.
+    let is_label =
+        |label: &&str| !label.is_empty() && label.chars().all(|c| c.is_alphanumeric() || c == '-');
     let is_ipv4 = labels.len() == 4 && labels.iter().all(|label| label.parse::<u8>().is_ok());
+    // A TLD is letters, or punycode (`xn--p1ai`).
     let has_tld = labels.len() >= 2
-        && labels.iter().all(|label| !label.is_empty())
-        && labels
-            .last()
-            .is_some_and(|tld| tld.len() >= 2 && !tld.chars().all(|c| c.is_ascii_digit()));
+        && labels.iter().all(is_label)
+        && labels.last().is_some_and(|tld| {
+            tld.len() >= 2 && (tld.starts_with("xn--") || tld.chars().all(char::is_alphabetic))
+        });
     is_ipv4 || has_tld
 }
 

@@ -299,33 +299,30 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
     let n = children.len();
     let structures: Vec<StructurePattern> = children.iter().map(map_structure_pattern).collect();
 
-    // A unit of `p` elements repeats its structures `p` apart, so the
-    // distances between repeats of one structure are the only lengths worth
-    // scanning: the most frequent few, in a fixed order.
-    let mut last_seen: HashMap<&StructurePattern, usize> = HashMap::new();
-    let mut distances: HashMap<usize, usize> = HashMap::new();
-    for (idx, structure) in structures.iter().enumerate() {
-        if let Some(previous) = last_seen.insert(structure, idx) {
-            *distances.entry(idx - previous).or_default() += 1;
-        }
-    }
-    let mut candidates: Vec<(usize, usize)> = distances
-        .into_iter()
-        .filter(|(len, _)| {
-            (MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN)).contains(len)
-                && n >= len * MIN_SIBLING_GROUP_SIZE
+    // A unit of `p` elements repeats its structures `p` apart, so a length is
+    // scored by how many siblings match the one `p` later; the best few are
+    // scanned, in a fixed order.
+    let mut candidates: Vec<(usize, usize)> = (MIN_PATTERN_LEN
+        ..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN))
+        .filter(|len| n >= len * MIN_SIBLING_GROUP_SIZE)
+        .map(|len| {
+            let repeats = (0..n - len)
+                .filter(|&idx| structures[idx] == structures[idx + len])
+                .count();
+            (len, repeats)
         })
+        .filter(|(_, repeats)| *repeats > 0)
         .collect();
     candidates.sort_by_key(|(len, repeats)| (std::cmp::Reverse(*repeats), *len));
     candidates.truncate(MAX_PATTERN_CANDIDATES);
 
     for (pattern_len, _) in candidates {
-        let mut multi_pattern_groups: HashMap<Vec<StructurePattern>, Vec<usize>> = HashMap::new();
+        let mut multi_pattern_groups: HashMap<&[StructurePattern], Vec<usize>> = HashMap::new();
 
         // Scan through all possible positions
         let mut idx = 0;
         while idx + pattern_len <= n {
-            let pattern = structures[idx..idx + pattern_len].to_vec();
+            let pattern = &structures[idx..idx + pattern_len];
 
             multi_pattern_groups.entry(pattern).or_default().push(idx);
             idx += 1;
