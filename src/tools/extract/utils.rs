@@ -21,6 +21,13 @@ static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
 });
+/// One phone number as written, in any country's format: 5 to 15 digits with
+/// the punctuation that groups them, then an extension (` ext. 12`, ` x12`)
+/// or RFC 3966 parameters (`;ext=12`) if any.
+static ONE_PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\+?(?:[\s().\-/]*\d){5,15}[\s().\-/]*(?:;.*|(?:ext\.?|x)\s*\d+)?$")
+        .expect("valid regex")
+});
 
 /// Extract values from links with a specific href prefix (e.g., "mailto:", "tel:")
 fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
@@ -106,20 +113,25 @@ fn extract_from_jsonld(doc: &Html, key: &str, read: impl Fn(&str) -> Vec<String>
     found
 }
 
-/// A JSON-LD `telephone` value as a phone number: the value itself, without a
-/// `tel:` scheme, when it has a digit. The property already says it's a phone
-/// number, so no one country's format is imposed on it; `"call us"` has no
-/// digit and is dropped.
+/// The phone numbers in a JSON-LD `telephone` value: the value itself, without
+/// a `tel:` scheme, when it is one number as written, in any country's format.
+/// Otherwise — prose, two numbers, `"call us"` — whatever `PHONE_REGEX` finds
+/// in it, as in page text.
 fn read_jsonld_telephone(text: &str) -> Vec<String> {
     let text = text.trim();
     let scheme = text.get(.."tel:".len()).unwrap_or_default();
-    let number = if scheme.eq_ignore_ascii_case("tel:") {
+    let value = if scheme.eq_ignore_ascii_case("tel:") {
         text["tel:".len()..].trim()
     } else {
         text
     };
-    let has_digit = number.chars().any(|c| c.is_ascii_digit());
-    has_digit.then(|| number.to_string()).into_iter().collect()
+    if ONE_PHONE_REGEX.is_match(value) {
+        return vec![value.to_string()];
+    }
+    PHONE_REGEX
+        .find_iter(value)
+        .map(|found| found.as_str().to_string())
+        .collect()
 }
 
 /// Extract all email addresses from HTML document.

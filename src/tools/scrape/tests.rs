@@ -1020,6 +1020,61 @@ async fn a_value_nested_under_one_property_at_every_level_is_bounded() {
 }
 
 #[tokio::test]
+async fn a_nested_microformat_as_a_property_at_every_level_is_bounded() {
+    let text = "word ".repeat(200_000);
+    let html = format!(
+        "<html><body><div class=\"h-entry\">{}{text}{}</div></body></html>",
+        "<div class=\"h-card p-author\">".repeat(500),
+        "</div>".repeat(500)
+    );
+    let started = std::time::Instant::now();
+    // The raw items hold each level's implied `value`: the copies.
+    let items = raw_mf2(&html);
+    let size = serde_json::to_string(&items).unwrap().len();
+    assert!(size > 2 * text.len(), "{size} bytes");
+    assert!(size < 10 * html.len(), "{size} bytes from {}", html.len());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_value_stored_once_survives_a_spent_copy_budget() {
+    // A chain of nested items under two names spends the budget on copies;
+    // the property after it is stored once, for free.
+    let microdata = format!(
+        "<html><body><div itemscope>{}x{}<span itemprop=\"name\">Jane</span></div></body></html>",
+        "<div itemscope itemprop=\"a b\">".repeat(60),
+        "</div>".repeat(60)
+    );
+    let rdfa = format!(
+        "<html><body><div typeof=\"T\">{}x{}<span property=\"name\">Jane</span></div></body></html>",
+        "<div typeof=\"T\" property=\"a b\">".repeat(60),
+        "</div>".repeat(60)
+    );
+    let microformats = format!(
+        "<html><body><div class=\"h-card\">{}x{}<span class=\"p-name\">Jane</span></div></body></html>",
+        "<div class=\"h-card p-a p-b\">".repeat(60),
+        "</div>".repeat(60)
+    );
+    let doc = |html: &str| scraper::Html::parse_document(html);
+    assert_eq!(
+        super::utils::scrape_microdata_from_doc(&doc(&microdata))[0]["name"],
+        "Jane"
+    );
+    assert_eq!(
+        super::utils::scrape_rdfa_from_doc(&doc(&rdfa))[0]["name"],
+        "Jane"
+    );
+    assert_eq!(
+        super::utils::scrape_microformats_from_doc(&doc(&microformats))[0]["properties"]["name"][0],
+        "Jane"
+    );
+}
+
+#[tokio::test]
 async fn thousands_of_entities_each_keep_every_property_and_merge_fast() {
     let entries: String = (0..4_000)
         .map(|n| {

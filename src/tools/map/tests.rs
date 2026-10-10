@@ -411,6 +411,37 @@ async fn map_children_finds_long_repeating_units_every_time() {
 }
 
 #[tokio::test]
+async fn map_children_finds_the_unit_through_ads_and_two_item_lengths() {
+    let item = |n: usize, unit: usize| {
+        format!(
+            "<h2><a href=\"/item{n}\">Item {n}</a></h2><div><img src=\"/i{n}.png\"></div>{}",
+            "<p>text</p>".repeat(unit - 2)
+        )
+    };
+    // An ad after every third item.
+    let with_ads: String = (0..9)
+        .map(|n| {
+            let ad = if n % 3 == 2 {
+                format!("<aside><a href=\"/ad{n}\">Ad</a></aside>")
+            } else {
+                String::new()
+            };
+            format!("{}{ad}", item(n, 5))
+        })
+        .collect();
+    // Items of two lengths, alternating.
+    let two_lengths: String = (0..10)
+        .map(|n| item(n, if n % 2 == 0 { 10 } else { 13 }))
+        .collect();
+    for (body, items) in [(with_ads, 9), (two_lengths, 10)] {
+        let html = format!("<html><body><main>{body}</main></body></html>");
+        let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+        let items_found = urls.iter().filter(|url| url.contains("/item")).count();
+        assert_eq!(items_found, items, "{urls:?}");
+    }
+}
+
+#[tokio::test]
 async fn map_children_finds_units_of_distinct_siblings_then_filler() {
     // Two distinctive siblings, then paragraphs: every short distance matches
     // inside the paragraphs, and only the unit's length matches the whole.

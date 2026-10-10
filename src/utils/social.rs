@@ -168,12 +168,12 @@ fn pinterest_parts(segs: &[&str]) -> Parts {
         ["pin", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
             (Some(SocialKind::Post), Some((*id).to_string()), None)
         }
-        [user, board] if !is_reserved_pinterest(user) => (
+        [user, board] if names_an_account(user) && !is_reserved_pinterest(user) => (
             Some(SocialKind::Collection),
             Some((*board).to_string()),
             Some((*user).to_string()),
         ),
-        [user] if !is_reserved_pinterest(user) => {
+        [user] if names_an_account(user) && !is_reserved_pinterest(user) => {
             (Some(SocialKind::Profile), None, Some((*user).to_string()))
         }
         _ => (None, None, None),
@@ -286,34 +286,35 @@ fn is_reserved_instagram(s: &str) -> bool {
     )
 }
 
+/// A path segment that can be an account's: not a route prefix like `_`.
+fn names_an_account(segment: &str) -> bool {
+    segment.chars().any(char::is_alphanumeric)
+}
+
+/// A `.php` segment is a script (`login.php`, `share.php`), never a profile.
 fn is_reserved_facebook(s: &str) -> bool {
-    matches!(
-        s,
-        "watch"
-            | "privacy"
-            | "policies"
-            | "legal"
-            | "about"
-            | "login"
-            | "share"
-            | "share.php"
-            | "sharer"
-            | "sharer.php"
-            | "dialog"
-            | "story.php"
-            | "permalink.php"
-            | "photo.php"
-            | "photo"
-            | "profile.php"
-            | "groups"
-            | "pages"
-            | "events"
-            | "marketplace"
-            | "gaming"
-            | "help"
-            | "settings"
-            | "checkpoint"
-    )
+    s.ends_with(".php")
+        || matches!(
+            s,
+            "watch"
+                | "privacy"
+                | "policies"
+                | "legal"
+                | "about"
+                | "login"
+                | "share"
+                | "sharer"
+                | "dialog"
+                | "photo"
+                | "groups"
+                | "pages"
+                | "events"
+                | "marketplace"
+                | "gaming"
+                | "help"
+                | "settings"
+                | "checkpoint"
+        )
 }
 
 fn is_reserved_pinterest(s: &str) -> bool {

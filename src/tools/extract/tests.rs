@@ -294,7 +294,9 @@ fn pinterest_and_facebook_system_routes_are_not_items() {
         "https://www.pinterest.com/login/",
         "https://pinterest.com/explore/",
         "https://pinterest.com/password/reset/",
+        "https://pinterest.com/_/_/",
         "https://facebook.com/checkpoint/",
+        "https://www.facebook.com/login.php",
     ] {
         let s = social(url);
         assert_eq!(s.kind, None, "{url}");
@@ -571,6 +573,28 @@ async fn jsonld_contact_properties_are_read_in_every_shape() {
             "+44 20 7946 0958",
             "020 7946 0958",
             "2125551313"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type":"LocalBusiness",
+        "telephone":[
+            "tel:+1-212-555-1212;ext=12",
+            "+1-212-555-1313 (sales), +1-212-555-1414 (support)",
+            "12", 12, 12.5, "TEL:TEL:555", "<b>555</b>", "call us"
+        ]
+    }</script></head><body></body></html>"#;
+    let mut phones = extract_phones(&html.into()).await;
+    phones.sort();
+    assert_eq!(
+        phones,
+        [
+            "+1-212-555-1212;ext=12",
+            "+1-212-555-1313",
+            "+1-212-555-1414"
         ]
     );
 }

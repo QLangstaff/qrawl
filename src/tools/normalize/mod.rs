@@ -34,7 +34,7 @@ pub fn normalize_text(text: &str) -> String {
 /// - with each JSON-LD script in place, its text untouched
 ///
 /// The output is re-serialized, so quoting and entities are normalized too; a
-/// fragment stays a fragment, and a document keeps its doctype.
+/// fragment stays a fragment, and a document keeps its doctype name.
 pub async fn normalize_html(html: &Html) -> Html {
     let html = html.to_string();
     let normalized = tokio::task::spawn_blocking(move || utils::normalize_markup(&html))
@@ -58,7 +58,8 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// Normalize phone numbers
 ///
 /// - Trim whitespace
-/// - Strip a space-separated extension (e.g. " ext. 123", " x123")
+/// - Strip a space-separated extension (e.g. " ext. 123", " x123") and RFC 3966
+///   parameters (`;ext=123`)
 /// - Keep leading `+` for international numbers
 /// - Remove non-digit characters
 /// - Deduplicate

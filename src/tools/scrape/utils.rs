@@ -78,11 +78,13 @@ pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
         .filter_map(|el| serde_json::from_str(&el.text().collect::<String>()).ok())
         .flat_map(flatten_jsonld)
         .collect();
-    merge_schema_entities(&mut items, scrape_microdata_from_doc(document));
-    merge_schema_entities(&mut items, scrape_rdfa_from_doc(document));
+    // One copy budget for the three encodings.
+    reset_copy_budget(document);
+    merge_schema_entities(&mut items, microdata_items(document));
+    merge_schema_entities(&mut items, rdfa_items(document));
     merge_schema_entities(
         &mut items,
-        microformats_to_schema(&scrape_microformats_from_doc(document)),
+        microformats_to_schema(&microformat_items(document)),
     );
     items
 }
@@ -194,8 +196,13 @@ pub(super) fn scrape_metadata_from_doc(document: &scraper::Html) -> Metadata {
 // resolution — `scrape_*` don't receive the page URL).
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub(super) fn scrape_microdata_from_doc(document: &scraper::Html) -> Jsonld {
     reset_copy_budget(document);
+    microdata_items(document)
+}
+
+fn microdata_items(document: &scraper::Html) -> Jsonld {
     document
         .select(&MICRODATA_SELECTOR)
         // Top-level items only: an `itemscope` element that also has `itemprop`
@@ -293,13 +300,15 @@ fn collect_properties<'a>(
 }
 
 /// Bytes of *copies* one document may yield per byte of its markup, over
-/// [`COPY_BUDGET_FLOOR_BYTES`]. A value is stored free under the first
-/// property that holds it, so a page is never cut for what it says once.
-/// Every further storing is a copy and is charged: the value under each
-/// further name its attribute lists, a property's text when it encloses
-/// another property's, a microformat element read under each further class.
-/// A page copies a few times its size at most; one that lists thousands of
-/// names, or nests a property hundreds deep, would copy gigabytes.
+/// [`COPY_BUDGET_FLOOR_BYTES`], across its Microdata, RDFa, and microformats.
+/// A value is stored free under the first property that holds it, so a page
+/// is never cut for what it says once. Every further storing is a copy and is
+/// charged: the value under each further name its attribute lists, a
+/// property's text when it encloses another property's, a microformat element
+/// read under each further class, a nested microformat's implied `value`. So
+/// a document yields at most what each encoding says once plus this many
+/// times its size in copies; one that lists thousands of names, or nests a
+/// property hundreds deep, would copy gigabytes.
 const COPY_BYTES_PER_MARKUP_BYTE: usize = 8;
 
 /// The copy budget every document has, however small its markup.
@@ -440,8 +449,13 @@ fn microdata_prop_value(el: &scraper::ElementRef) -> serde_json::Value {
 //   - Full `vocab`/`prefix` CURIE resolution — local names are surfaced as-is.
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub(super) fn scrape_rdfa_from_doc(document: &scraper::Html) -> Jsonld {
     reset_copy_budget(document);
+    rdfa_items(document)
+}
+
+fn rdfa_items(document: &scraper::Html) -> Jsonld {
     document
         .select(&RDFA_SELECTOR)
         // Top-level typed resources: a `typeof` that also has `property` is a
@@ -589,8 +603,13 @@ enum PropKind {
     E,
 }
 
+#[cfg(test)]
 pub(super) fn scrape_microformats_from_doc(document: &scraper::Html) -> Microformats {
     reset_copy_budget(document);
+    microformat_items(document)
+}
+
+fn microformat_items(document: &scraper::Html) -> Microformats {
     document
         .select(&CLASS_SELECTOR)
         // Top-level roots only: a root nested inside another root is reached by
@@ -725,10 +744,20 @@ fn collect_mf(
                 // Nested root with no property class → a child microformat.
                 children.push(nested);
             } else {
-                // Nested root that is also a property → its parsed object (with
-                // an implied `value`) is the property value.
-                let value = mf_nested_value(&child, &nested);
-                let nested_value = with_value(nested, value);
+                // Nested root that is also a property → its parsed object is the
+                // property value, with an implied `value`. That `value` repeats
+                // the nested item's own text: a copy, left out when the budget
+                // can't cover it.
+                let nested_value = if has_copy_budget() {
+                    let value = serde_json::Value::String(mf_nested_value(&child, &nested));
+                    if spend_copy_budget(&value) {
+                        with_value(nested, value)
+                    } else {
+                        nested
+                    }
+                } else {
+                    nested
+                };
                 let names: Vec<&str> = prop_classes.iter().map(|(_, name)| name.as_str()).collect();
                 insert_under_names(properties, &names.join(" "), nested_value, push_mf_prop);
             }
@@ -740,6 +769,7 @@ fn collect_mf(
             let encloses_a_property = !prop_classes.is_empty()
                 && child
                     .descendants()
+                    .skip(1)
                     .filter_map(scraper::ElementRef::wrap)
                     .any(|descendant| !property_classes(&descendant, vocab).is_empty());
             for (index, (kind, name)) in prop_classes.iter().enumerate() {
@@ -771,9 +801,9 @@ fn push_mf_prop(
     }
 }
 
-fn with_value(mut item: serde_json::Value, value: String) -> serde_json::Value {
+fn with_value(mut item: serde_json::Value, value: serde_json::Value) -> serde_json::Value {
     if let serde_json::Value::Object(ref mut map) = item {
-        map.insert("value".to_string(), serde_json::Value::String(value));
+        map.insert("value".to_string(), value);
     }
     item
 }

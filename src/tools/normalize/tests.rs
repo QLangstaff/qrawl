@@ -307,8 +307,10 @@ async fn normalize_html_keeps_text_as_written() {
     for (html, expected) in [
         // A backslash-n in text is text, not a newline.
         ("<p>C:\\new\\table</p>", "<p>C:\\new\\table</p>"),
-        // A non-breaking space is content; it isn't collapsed into the spaces.
+        // A non-breaking space is content; it isn't collapsed into the spaces,
+        // or trimmed from the ends.
         ("<p>a&nbsp;&nbsp;b  c</p>", "<p>a\u{a0}\u{a0}b c</p>"),
+        (" &nbsp;<p>x</p>&nbsp; ", "\u{a0}<p>x</p>\u{a0}"),
     ] {
         assert_eq!(normalize_html(&html.into()).await.as_str(), expected);
     }
@@ -325,6 +327,13 @@ async fn normalize_html_keeps_attributes_in_source_order_with_their_prefixes() {
             r##"<math xlink:href="#a" xml:lang="en"><mi>x</mi></math>"##,
             r##"<math xlink:href="#a" xml:lang="en"><mi>x</mi></math>"##,
         ),
+        // A foreign element's `xmlns` is junk like any other.
+        (
+            r#"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#,
+            "<math><mi>x</mi></math>",
+        ),
+        // A stray `<` or quote in a tag makes no attribute.
+        (r#"<a href="x"<b>y</a>"#, r#"<a href="x">y</a>"#),
     ] {
         for _ in 0..8 {
             assert_eq!(normalize_html(&html.into()).await.as_str(), expected);
@@ -344,10 +353,23 @@ async fn normalize_html_reads_a_document_from_its_first_tag_alone() {
             "<textarea>&lt;!doctype html&gt;</textarea>",
             "<textarea>&lt;!doctype html&gt;</textarea>",
         ),
-        // A document keeps its doctype, even after a comment.
+        // A document keeps its doctype, even after a comment, an empty
+        // comment, a byte order mark, or an XML prolog.
         (
             "<!-- c --><!DOCTYPE html><html><body><p>x</p></body></html>",
             "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>",
+        ),
+        (
+            "\u{feff}<!--><!DOCTYPE html><html><body><p>x</p></body></html>",
+            "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>",
+        ),
+        (
+            "\u{feff}<?xml version=\"1.0\"?><!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0//EN\" \"x.dtd\"><html><body><p>x</p></body></html>",
+            "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>",
+        ),
+        (
+            "<!DOCTYPE><html><body><p>x</p></body></html>",
+            "<!DOCTYPE><html><head></head><body><p>x</p></body></html>",
         ),
     ] {
         assert_eq!(
@@ -575,6 +597,14 @@ fn test_normalize_phones_deduplication() {
     let output = normalize_phones(&input);
     assert_eq!(output.len(), 1);
     assert_eq!(output[0], "5551234567");
+}
+
+#[test]
+fn normalize_phones_drops_rfc_3966_parameters() {
+    assert_eq!(
+        normalize_phones(&["+1-212-555-1212;ext=12".to_string()]),
+        ["+12125551212"]
+    );
 }
 
 #[test]

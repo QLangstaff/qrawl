@@ -12,15 +12,19 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
 
 // HTML normalization
 
-/// Markup that is a whole document, not a fragment: its first tag, after any
-/// comments, is a doctype or `<html>`.
+/// What may come before markup's first tag: a byte order mark, whitespace,
+/// comments (`<!-->` is an empty one), and an XML prolog.
+const BEFORE_FIRST_TAG: &str = r"^\x{FEFF}?\s*(?:(?:<!--(?:-?>|.*?-->)|<\?[^>]*>)\s*)*";
+
+/// Markup that is a whole document, not a fragment: its first tag is a
+/// doctype or `<html>`.
 static DOCUMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)^\s*(?:<!--.*?-->\s*)*(?:<!doctype|<html[\s>])").expect("valid regex")
+    Regex::new(&format!(r"(?is){BEFORE_FIRST_TAG}(?:<!doctype|<html[\s>])")).expect("valid regex")
 });
 
-/// A fragment's first tag, after any comments.
+/// A fragment's first tag.
 static FIRST_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)^\s*(?:<!--.*?-->\s*)*<([a-z][a-z0-9]*)").expect("valid regex")
+    Regex::new(&format!(r"(?is){BEFORE_FIRST_TAG}<([a-z][a-z0-9]*)")).expect("valid regex")
 });
 
 static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -359,6 +363,11 @@ pub(super) fn normalize_email(email: &str) -> String {
 pub(super) fn normalize_phone(phone: &str) -> String {
     let mut result = phone.trim().to_string();
 
+    // RFC 3966 parameters (`;ext=12`, `;phone-context=…`) aren't the number.
+    if let Some(pos) = result.find(';') {
+        result.truncate(pos);
+    }
+
     // Strip extension patterns
     // ASCII lowercasing keeps byte offsets, so `pos` indexes `result` too.
     let lower = result.to_ascii_lowercase();
@@ -463,11 +472,12 @@ pub(super) fn normalize_markup(html: &str) -> String {
                     out.push_str(element.name());
                     // In source order: `scraper`'s `deterministic` feature.
                     for (qualified, value) in &element.attrs {
-                        let name = match &qualified.prefix {
+                        // A foreign element's `xmlns` gets an empty prefix.
+                        let name = match qualified.prefix.as_deref().filter(|p| !p.is_empty()) {
                             Some(prefix) => format!("{prefix}:{}", qualified.local),
                             None => qualified.local.to_string(),
                         };
-                        if !JUNK_ATTR_NAME_REGEX.is_match(&name) {
+                        if !is_junk_attribute(&name) {
                             out.push_str(&format!(" {name}=\"{}\"", escape(value, true)));
                         }
                     }
@@ -484,9 +494,10 @@ pub(super) fn normalize_markup(html: &str) -> String {
                         push_collapsed(&mut out, &escape(text, false));
                     }
                 }
-                Node::Doctype(doctype) => {
-                    out.push_str(&format!("<!DOCTYPE {}>", doctype.name()));
-                }
+                Node::Doctype(doctype) => match doctype.name() {
+                    "" => out.push_str("<!DOCTYPE>"),
+                    name => out.push_str(&format!("<!DOCTYPE {name}>")),
+                },
                 _ => {}
             },
             Edge::Close(node) if skipping == Some(node.id()) => skipping = None,
@@ -500,7 +511,14 @@ pub(super) fn normalize_markup(html: &str) -> String {
             _ => {}
         }
     }
-    out.trim().to_string()
+    out.trim_matches(' ').to_string()
+}
+
+/// Whether an attribute is left out: one that carries styling, scripting, or
+/// accessibility wiring, not content, or one whose name a tag's stray `<`,
+/// quote, `=`, or `>` made, which would re-parse as something else.
+fn is_junk_attribute(name: &str) -> bool {
+    JUNK_ATTR_NAME_REGEX.is_match(name) || name.contains(['<', '>', '"', '\'', '='])
 }
 
 /// Append `text` with each run of whitespace as one space, and none doubled

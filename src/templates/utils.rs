@@ -205,9 +205,10 @@ pub(super) struct Visited<T> {
 /// reaches it: a level starts only when the one before it has finished. A
 /// target that redirects counts as the page it landed on, so within a level
 /// the first visit to arrive at a page yields it, and the item is that
-/// visit's: the address it served and the children it listed. A target the
-/// level already yielded isn't visited. `admit` filters every URL before its
-/// visit, and the URL a redirect served after it.
+/// visit's: the address it served and the children it listed. A target whose
+/// page was yielded by the time its turn comes isn't visited; one already in
+/// flight when a redirect lands on its page is fetched and dropped. `admit`
+/// filters every URL before its visit, and the URL a redirect served after it.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
 /// a level shares one pool of `ctx.concurrency` ([`drive`]), and dropping the

@@ -52,6 +52,10 @@ struct SiblingGroup {
     in_navigation: bool,
     /// Number of elements in the repeating pattern (higher = richer pattern).
     pattern_len: usize,
+    /// Where the first sibling stands among its parent's children. A unit
+    /// rotated by one (`div, p, p, h2` for `h2, div, p, p`) ties the unit on
+    /// every score and starts one later.
+    first_index: usize,
     /// The actual HTML fragments of the siblings.
     siblings: Vec<String>,
 }
@@ -117,6 +121,7 @@ pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
 /// 3. **Coverage** - pattern_len × quantity (richer patterns preferred)
 /// 4. **Quantity** - More siblings preferred
 /// 5. **Pattern length** - Longer patterns preferred (richer structure)
+/// 6. **First index** - The group that starts earliest, so a unit beats its rotations
 ///
 #[cfg(test)]
 pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
@@ -135,11 +140,12 @@ pub(super) fn map_body_siblings_from_doc(doc: &Html) -> Vec<String> {
     // Select best group using scoring hierarchy
     let selected = all_sibling_groups.into_iter().max_by_key(|group| {
         (
-            !group.in_navigation, // Exclude navigation/footer first
-            group.in_main,        // Prefer <main> content
-            group.coverage(),     // Prefer richer patterns (pattern_len × quantity)
-            group.quantity(),     // Prefer more siblings
-            group.pattern_len,    // Prefer longer patterns
+            !group.in_navigation,                 // Exclude navigation/footer first
+            group.in_main,                        // Prefer <main> content
+            group.coverage(),                     // Prefer richer patterns (pattern_len × quantity)
+            group.quantity(),                     // Prefer more siblings
+            group.pattern_len,                    // Prefer longer patterns
+            std::cmp::Reverse(group.first_index), // Prefer the unit to its rotations
         )
     });
 
@@ -271,6 +277,7 @@ fn map_sibling_groups_recursive<'a>(
                         in_main: is_inside_tag(first_child, MAIN_TAG),
                         in_navigation: NAV_TAGS.iter().any(|tag| is_inside_tag(first_child, tag)),
                         pattern_len: SINGLE_ELEMENT_PATTERN_LEN,
+                        first_index: indices[0],
                         siblings,
                     });
                 }
@@ -299,22 +306,32 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
     let n = children.len();
     let structures: Vec<StructurePattern> = children.iter().map(map_structure_pattern).collect();
 
-    // A unit of `p` elements repeats its structures `p` apart, so a length is
-    // scored by how many siblings match the one `p` later; the best few are
-    // scanned, in a fixed order. Only the last sibling of a run of equal
-    // structures counts: inside a run (a unit's filler paragraphs), every
-    // short distance matches, which would outscore the unit's own length.
+    // A unit of `p` elements repeats its structures `p` apart, so the distance
+    // from a sibling to the next with its structure is a unit's length; the
+    // most frequent few are scanned, in a fixed order. Only the last sibling
+    // of a run of equal structures counts: inside a run (a unit's filler
+    // paragraphs), every short distance matches, which would outscore the
+    // unit's own length. Only the next repeat counts: a repeat further on is
+    // the length of several units, which an ad between items or two item
+    // lengths would make frequent, and which would outrank the unit itself.
     let ends_a_run = |idx: usize| structures.get(idx + 1) != Some(&structures[idx]);
-    let mut candidates: Vec<(usize, usize)> = (MIN_PATTERN_LEN
-        ..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN))
-        .filter(|len| n >= len * MIN_SIBLING_GROUP_SIZE)
-        .map(|len| {
-            let repeats = (0..n - len)
-                .filter(|&idx| ends_a_run(idx) && structures[idx] == structures[idx + len])
-                .count();
-            (len, repeats)
+    let mut last_seen: HashMap<&StructurePattern, usize> = HashMap::new();
+    let mut distances: HashMap<usize, usize> = HashMap::new();
+    for (idx, structure) in structures
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| ends_a_run(*idx))
+    {
+        if let Some(previous) = last_seen.insert(structure, idx) {
+            *distances.entry(idx - previous).or_default() += 1;
+        }
+    }
+    let mut candidates: Vec<(usize, usize)> = distances
+        .into_iter()
+        .filter(|(len, _)| {
+            (MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN)).contains(len)
+                && n >= len * MIN_SIBLING_GROUP_SIZE
         })
-        .filter(|(_, repeats)| *repeats > 0)
         .collect();
     candidates.sort_by_key(|(len, repeats)| (std::cmp::Reverse(*repeats), *len));
     candidates.truncate(MAX_PATTERN_CANDIDATES);
@@ -380,6 +397,7 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                                 .iter()
                                 .any(|tag| is_inside_tag(first_child, tag)),
                             pattern_len,
+                            first_index: non_overlapping[0],
                             siblings,
                         });
                     }
