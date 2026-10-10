@@ -24,20 +24,19 @@ qrawl url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
   "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
   "platform": "YouTube",
   "kind": "Video",
-  "source": "Oembed",
   "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
-  "text": null,
+  "text": "The official video for “Never Gonna Give You Up” by Rick Astley. …",
   "author": "Rick Astley",
   "imageUrl": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
-  "videoUrl": null,
-  "structured": [],
-  "metadata": [],
+  "videoUrl": "https://www.youtube.com/embed/dQw4w9WgXcQ",
+  "structured": ["… schema.org entities …"],
+  "metadata": [["oembed:title", "…"], ["og:title", "…"], "…"],
   "socials": [],
-  "body": null
+  "body": "<body>…</body>"
 }
 ```
 
-`url` takes any link and returns one shape, `PageContent`. A recognized social item (Reddit, TikTok, YouTube, Pinterest, Vimeo) goes through its *side door* — Reddit's `.json` or the platform's oEmbed. Everything else is fetched — retrying across browser profiles (Minimal → Windows → iOS) if a site pushes back — and scraped for schema.org data, `<meta>` tags, social links, and body HTML. No API key, no headless browser, no config.
+`url` takes any link — a blog post, a store page, a TikTok video — and returns one shape, `PageContent`, filled the same way every time. It fetches the page, retrying across browser profiles (Minimal → Windows → iOS) if a site pushes back, plus the item's embed when the platform serves one (Reddit's `.json`, oEmbed for TikTok, YouTube, Pinterest, and Vimeo). It scrapes both into schema.org data, metadata, social links, and body HTML. You map that shape to your own domain. No API key, no headless browser, no config.
 
 ## Compose them
 
@@ -84,13 +83,13 @@ A library that doesn't need the CLI can drop `clap` with `default-features = fal
 
 ## The toolkit
 
-Small, focused functions — async where they fetch or parse, sync where they don't.
+Small, focused functions — async where they fetch or parse, sync where they don't. Each tool owns one job and never calls another; you chain them.
 
 | Tool | What it does |
 |------|--------------|
-| **fetch** | HTTP that gets through — auto-retry across browser profiles, or a fast single attempt; social side doors |
-| **scrape** | Pull the body, `<meta>` tags, and schema.org data (JSON-LD, Microdata, RDFa, Microformats — merged) out of HTML |
-| **extract** | Surface structured signal: emails, phones, social links, schema.org types, Open Graph content |
+| **fetch** | HTTP that gets through — auto-retry across browser profiles, or a fast single attempt; a platform's embed of an item |
+| **scrape** | Pull the body, `<meta>` tags, and schema.org data (JSON-LD, Microdata, RDFa, Microformats — merged) out of HTML, and metadata out of an embed |
+| **extract** | Surface structured signal: emails, phones, schema.org types, a preview, a URL's social platform and ids |
 | **map** | Discover URLs from a page: every link, or just the children |
 | **classify** | Answer yes/no: is this URL social, does this page carry a schema.org type |
 | **normalize** | Canonicalize URLs, strip junk HTML, normalize text, dedupe emails / phones / socials |
@@ -105,15 +104,13 @@ Drop-in compositions of the tools for the common jobs. They're tiny — [read th
 |----------|---------|----------|
 | `qrawl_any_url` | any link | one `PageContent` (the `url` command above) |
 | `qrawl_many_urls` | many links | a `PageContent` per page, optionally crawled `depth` levels deep and filtered by domain, URL, or schema.org type |
-| `qrawl_share` | a shared link and its caption | a `PageContent` that degrades to the caption when nothing fetches |
 | `qrawl_children` | parent URLs | the fetched HTML of each child page |
 | `qrawl_children_stream`, `qrawl_discover_children`, `qrawl_fetch_stream` | parent URLs | the same crawl as streams, to filter or stop early |
-| `qrawl_schema` | site URLs and a schema.org type | the child pages that carry that type |
 | `qrawl_emails` | site URLs | the deduped emails on the pages two links from each URL |
 
 ```rust,no_run
-use qrawl::templates::qrawl_many_urls;
-use qrawl::types::{Context, PageContent};
+use qrawl::templates::{qrawl_many_urls, PageContent};
+use qrawl::types::Context;
 
 // One level deep, recipe pages only, stop after 30.
 async fn recipes(urls: Vec<String>) -> Vec<PageContent> {
@@ -138,7 +135,7 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl url <url>` | any link → `PageContent` |
 | `qrawl urls <url>...` | many links → a `PageContent` each; `--depth` (at most 3), `--limit`, `--allow`, `--block`, `--allow-url`, `--block-url`, `--include-schema`, `--exclude-schema` |
 | `qrawl fetch <url>` | fetch and report the page's size |
-| `qrawl preview <url>` | Open Graph content — title, text, author, image, video |
+| `qrawl preview <url>` | the page's preview — title, text, author, image, video |
 | `qrawl metadata <input>` | all `<meta>` tags |
 | `qrawl body <input>` | the `<body>` HTML |
 | `qrawl markdown <input>` | the page as Markdown |
@@ -148,7 +145,7 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl phones <input>` | phone numbers |
 | `qrawl page <url>` | every link on the page |
 | `qrawl children <url>` | child URLs under the page that fetch |
-| `qrawl schema <url> <type>` | child pages that carry a schema.org type |
+| `qrawl schema <url> <type>` | the page and its children that carry a schema.org type |
 | `qrawl emails <url>` | deduped emails on the pages two links from the URL |
 | `qrawl socials <url>` | crawl the site, return deduped social links |
 

@@ -1,7 +1,6 @@
 #![cfg(test)]
 use crate::tools::normalize::utils::{decode_html_entities, normalize_email, normalize_phone};
 use crate::tools::normalize::*;
-use crate::types::CanonicalUrl;
 use crate::utils::canonical_domain;
 
 // Tests for normalize_text()
@@ -789,13 +788,13 @@ fn test_normalize_social_urls_dedups_without_lowercasing() {
         "https://youtube.com/@NASA".to_string(),
         "https://instagram.com/nasa".to_string(),
     ];
-    let output = normalize_social_urls(&input);
+    let output = normalize_urls(&input);
     assert_eq!(output.len(), 2);
     // Case preserved — `@NASA` must NOT be lowercased (unlike emails).
     assert!(output.contains(&"https://youtube.com/@NASA".to_string()));
 }
 
-// Tests for normalize_social() — it must reproduce classify's prior canonical
+// Tests for normalize_url() — it must reproduce classify's prior canonical
 // forms for social URLs (the basis for classify dropping its own canonicalize),
 // the only intended delta being sorted query params.
 
@@ -804,11 +803,11 @@ fn test_normalize_social_strips_share_tokens() {
     // YouTube `si` and Twitter `s` are social share tokens `normalize_url` keeps
     // but `normalize_social` drops.
     assert_eq!(
-        normalize_social("https://youtu.be/dQw4w9WgXcQ?si=trackingtoken"),
+        normalize_url("https://youtu.be/dQw4w9WgXcQ?si=trackingtoken"),
         "https://youtu.be/dQw4w9WgXcQ"
     );
     assert_eq!(
-        normalize_social("https://x.com/jack/status/20?s=20"),
+        normalize_url("https://x.com/jack/status/20?s=20"),
         "https://x.com/jack/status/20"
     );
 }
@@ -817,11 +816,11 @@ fn test_normalize_social_strips_share_tokens() {
 fn test_normalize_social_strips_mobile_prefix() {
     // `m.`/`mobile.` are stripped for social hosts — but not the `vm.` shortener.
     assert_eq!(
-        normalize_social("https://m.facebook.com/zuck"),
+        normalize_url("https://m.facebook.com/zuck"),
         "https://facebook.com/zuck"
     );
     assert_eq!(
-        normalize_social("https://vm.tiktok.com/ZMabcdef/"),
+        normalize_url("https://vm.tiktok.com/ZMabcdef/"),
         "https://vm.tiktok.com/ZMabcdef"
     );
 }
@@ -831,11 +830,11 @@ fn test_normalize_social_is_web_safe() {
     // A non-social host gets only the general pass — a functional `?s=` and an
     // `m.` host survive (no platform → no social rules).
     assert_eq!(
-        normalize_social("https://example.com/search?s=recipes"),
+        normalize_url("https://example.com/search?s=recipes"),
         "https://example.com/search?s=recipes"
     );
     assert_eq!(
-        normalize_social("https://m.example.com/page"),
+        normalize_url("https://m.example.com/page"),
         "https://m.example.com/page"
     );
 }
@@ -845,15 +844,15 @@ fn test_normalize_social_matches_classify_forms() {
     // Equivalence with classify's prior canonicalization; the only delta is
     // sorted query params (classify preserved input order).
     assert_eq!(
-        normalize_social("https://www.tiktok.com/@user/video/123"),
+        normalize_url("https://www.tiktok.com/@user/video/123"),
         "https://tiktok.com/@user/video/123"
     );
     assert_eq!(
-        normalize_social("https://www.instagram.com/p/Cabc/?igshid=xyz"),
+        normalize_url("https://www.instagram.com/p/Cabc/?igshid=xyz"),
         "https://instagram.com/p/Cabc"
     );
     assert_eq!(
-        normalize_social("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30"),
+        normalize_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30"),
         "https://youtube.com/watch?t=30&v=dQw4w9WgXcQ"
     );
 }
@@ -881,9 +880,9 @@ fn normalize_url_leaves_non_http_inputs_unchanged() {
 }
 
 #[test]
-fn normalize_social_keeps_percent_encoded_query_values() {
+fn normalize_url_keeps_percent_encoded_query_values_on_a_social_host() {
     assert_eq!(
-        normalize_social("https://youtube.com/results?search_query=a%26b&si=x"),
+        normalize_url("https://youtube.com/results?search_query=a%26b&si=x"),
         "https://youtube.com/results?search_query=a%26b"
     );
 }

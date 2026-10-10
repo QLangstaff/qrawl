@@ -7,10 +7,14 @@ use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::errors::QrawlError;
-use crate::tools::extract::{extract_page_content, extract_social_content, extract_social_parts};
-use crate::tools::fetch::{fetch_social, fetch_strategy};
-use crate::tools::map::map_children;
-use crate::types::{CanonicalUrl, Context, Html, PageContent};
+use crate::tools::extract::{extract_preview, extract_social_parts};
+use crate::tools::fetch::{fetch_embed, fetch_strategy};
+use crate::tools::map::{map_children, map_page};
+use crate::tools::normalize::{normalize_urls, CanonicalUrl};
+use crate::tools::scrape::{scrape_all, scrape_embed};
+use crate::types::{Context, Html};
+
+use super::types::PageContent;
 
 /// A URL to crawl. `address` is what gets fetched: the URL as given, because
 /// a server can answer `http://`, `www.`, and a trailing slash differently.
@@ -43,25 +47,61 @@ pub(super) fn parse_url(input: &str) -> Result<Target, QrawlError> {
     Ok(Target { address, url })
 }
 
-/// Resolve one URL into its [`PageContent`]: a recognized social item through
-/// its door ([`fetch_social`] → [`extract_social_content`]), everything else —
-/// and any door miss — through the page ([`fetch_strategy`] →
-/// [`extract_page_content`]). The page path also returns the fetched [`Html`],
-/// which a crawl maps for children.
-pub(super) async fn resolve_url(
+/// Fetch one [`Target`] and compose its [`PageContent`] from the tools, the
+/// same steps for every URL. Also returns the page [`Html`], when it fetched,
+/// for a crawl to map children from.
+///
+/// Fails only when neither the page nor an embed could be fetched.
+pub(super) async fn page_content(
     target: &Target,
 ) -> Result<(PageContent, Option<Html>), QrawlError> {
-    let social = extract_social_parts(target.url.as_str());
-    if let Some(social) = &social {
-        if let Some(payload) = fetch_social(social, &target.url).await {
-            if let Some(page) = extract_social_content(&target.url, social, &payload) {
-                return Ok((page, None));
-            }
-        }
-    }
-    let html = fetch_strategy(&target.address).await?;
-    let page = extract_page_content(&target.url, social.as_ref(), &html).await;
-    Ok((page, Some(html)))
+    let url = target.url.as_str();
+
+    // fetch: the page, and the platform's embed when the URL has one.
+    let (html, embed) =
+        futures_util::future::join(fetch_strategy(&target.address), fetch_embed(url)).await;
+    let html = match (html, &embed) {
+        (Ok(html), _) => Some(html),
+        (Err(_), Some(_)) => None,
+        (Err(e), None) => return Err(e),
+    };
+
+    // scrape: the embed and the page into the same layers.
+    let embed_metadata = embed.map_or_else(Vec::new, |embed| scrape_embed(&embed, url));
+    let (body, page_metadata, structured) = match &html {
+        Some(html) => scrape_all(html).await,
+        None => (Html::new(String::new()), Vec::new(), Vec::new()),
+    };
+    let metadata = [embed_metadata, page_metadata].concat();
+
+    // map + normalize + extract: the social URLs the page links to.
+    let links = match &html {
+        Some(html) => map_page(html, &target.address).await,
+        None => Vec::new(),
+    };
+    let socials = normalize_urls(&links)
+        .into_iter()
+        .filter(|link| extract_social_parts(link).is_some_and(|social| social.kind.is_some()))
+        .collect();
+
+    // extract: the content fields and the URL's social facts.
+    let preview = extract_preview(&metadata);
+    let social = extract_social_parts(url);
+    let page = PageContent {
+        url: target.url.clone(),
+        platform: social.as_ref().map(|social| social.platform),
+        kind: social.as_ref().and_then(|social| social.kind),
+        title: preview.title,
+        text: preview.text,
+        author: preview.author.or(social.and_then(|social| social.handle)),
+        image_url: preview.image_url,
+        video_url: preview.video_url,
+        structured,
+        metadata,
+        socials,
+        body: (!body.as_str().is_empty()).then_some(body),
+    };
+    Ok((page, html))
 }
 
 /// Fetch each URL as it arrives and yield the `(url, html)` pairs that succeed,

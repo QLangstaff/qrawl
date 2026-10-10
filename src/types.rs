@@ -1,7 +1,7 @@
 //! Shared Types
 
 use dashmap::DashMap;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -268,86 +268,6 @@ pub type Jsonld = Vec<Value>;
 /// Metadata key-value pairs.
 pub type Metadata = Vec<(String, String)>;
 
-/// Microformats2 items, each in canonical mf2 shape:
-/// `{"type": ["h-card"], "properties": {"name": ["…"], …}, "children": [...]}`.
-///
-/// Deliberately **not** [`Jsonld`]: mf2 is a distinct vocabulary (`h-card`/
-/// `h-entry`, not schema.org), keyed on `type` (not `@type`) with array-valued
-/// properties — so it is kept distinct from the native encodings. To consume
-/// it as schema.org (normalized and merged with the native encodings), use
-/// `scrape_jsonld`, which folds mf2 in.
-pub(crate) type Microformats = Vec<Value>;
-
-/// A URL in qrawl's canonical form — the social-aware canonicalization
-/// ([`normalize_social`](crate::tools::normalize::normalize_social)) that
-/// [`PageContent`], the URL templates, and the fetch cache key on.
-///
-/// Construct via [`CanonicalUrl::new`] (or `From<&str>` / `From<String>`); the
-/// inner string is private so the invariant can't be bypassed. Serialization is
-/// transparent (a bare string); **deserialization re-canonicalizes**, so a
-/// non-canonical string from a DB / API payload / hand-written JSON can't sneak
-/// past the invariant.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct CanonicalUrl(String);
-
-impl CanonicalUrl {
-    /// Canonicalize and wrap. Idempotent if the input is already canonical.
-    pub fn new(raw: &str) -> Self {
-        Self(crate::tools::normalize::normalize_social(raw))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl AsRef<str> for CanonicalUrl {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for CanonicalUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl From<&str> for CanonicalUrl {
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<String> for CanonicalUrl {
-    fn from(s: String) -> Self {
-        Self::new(&s)
-    }
-}
-
-impl<'de> Deserialize<'de> for CanonicalUrl {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(Self::new(&String::deserialize(deserializer)?))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Social vocabulary
-//
-// Data shapes for URL classification. `classify_is_social_url` /
-// `extract_social_parts` answer "is this social?" and extract a social URL's
-// `SocialParts`. The verbs live in their tools; this is just the vocabulary,
-// alongside `Jsonld`/`Metadata`/`Context`.
-// ---------------------------------------------------------------------------
-
 /// The social platform a URL belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SocialPlatform {
@@ -363,9 +283,7 @@ pub enum SocialPlatform {
 }
 
 /// The social facts of a URL — its platform, item kind, and identifiers —
-/// extracted by [`extract_social_parts`](crate::tools::extract::extract_social_parts).
-/// The URL string itself is a [`CanonicalUrl`], threaded alongside this by the
-/// pipeline.
+/// extracted by `extract_social_parts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SocialParts {
@@ -390,7 +308,7 @@ pub struct SocialParts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SocialKind {
     /// An entity page — a person, account, or channel (TikTok `@user`, Reddit
-    /// `u/user`, a YouTube channel, a web author page).
+    /// `u/user`, a YouTube channel).
     Profile,
     /// A single text or link post.
     Post,
@@ -401,125 +319,16 @@ pub enum SocialKind {
     /// A reply within a thread.
     Comment,
     /// A collection / listing of items — a subreddit, a Pinterest board, a
-    /// channel feed, a web index page (schema.org `CollectionPage`,
-    /// ActivityStreams `Collection`).
+    /// channel feed.
     Collection,
 }
 
-/// A social door's response body, tagged with the door that served it —
-/// fetched by [`fetch_social`](crate::tools::fetch::fetch_social), parsed by
-/// [`extract_social_content`](crate::tools::extract::extract_social_content).
+/// A platform's structured representation of an item, served beside its
+/// HTML page — fetched by `fetch_embed`, read by `scrape_embed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SocialPayload {
-    /// Reddit's `.json` representation of a URL.
+pub enum Embed {
+    /// Reddit's `.json` representation of a post or comment.
     RedditJson(String),
     /// A provider's oEmbed JSON.
     Oembed(String),
-}
-
-/// Provenance of the content fields in a [`PageContent`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ContentSource {
-    RedditJson,
-    Oembed,
-    OpenGraph,
-    /// The page itself was fetched and scraped (structured data + body) — the
-    /// spine of [`qrawl_any_url`](crate::templates::qrawl_any_url) for any
-    /// non-social URL.
-    Html,
-    /// No side door produced anything — fields come only from the share payload.
-    SharePayloadOnly,
-}
-
-/// Everything qrawl could pull from a single URL — qrawl's one content shape,
-/// produced by [`qrawl_any_url`](crate::templates::qrawl_any_url) /
-/// [`qrawl_many_urls`](crate::templates::qrawl_many_urls) /
-/// [`qrawl_share`](crate::templates::qrawl_share). Domain-agnostic: it carries
-/// generic web signals and leaves domain mapping — turning a schema.org
-/// `Recipe` into the caller's recipe type, say — to the caller.
-///
-/// [`source`](PageContent::source) tells you which path produced it: a social
-/// side door fills only the content fields (`title` … `video_url`), leaving
-/// the page extras (`structured`/`metadata`/`socials`/`body`) empty; the page
-/// path ([`ContentSource::Html`]) fills both.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PageContent {
-    /// Canonical URL.
-    pub url: CanonicalUrl,
-    /// The social platform, or `None` for a non-social (web) URL.
-    pub platform: Option<SocialPlatform>,
-    /// The item kind, or `None` for a web URL or an opaque social shortlink.
-    pub kind: Option<SocialKind>,
-    /// Which path produced the content.
-    pub source: ContentSource,
-    pub title: Option<String>,
-    /// Body / caption / short description.
-    pub text: Option<String>,
-    pub author: Option<String>,
-    /// Hero image / thumbnail (`og:image` or a side-door thumbnail).
-    pub image_url: Option<String>,
-    /// Playable video URL discovered by a side door (an oEmbed thumbnail is
-    /// `image_url`, not this; this is e.g. a Reddit hosted video or `og:video`).
-    pub video_url: Option<String>,
-    /// schema.org entities — the merged `scrape_jsonld` view (JSON-LD +
-    /// Microdata + RDFa + Microformats2, deduped). Empty on the social side-door
-    /// paths.
-    pub structured: Jsonld,
-    /// Raw `<meta>` tags (Open Graph / Twitter Card / standard). Empty on the
-    /// social side-door paths.
-    pub metadata: Metadata,
-    /// Social profile/content links found on the page
-    /// ([`extract_social_urls`](crate::tools::extract::extract_social_urls),
-    /// canonical + deduped). Empty on the social side-door paths (no page HTML
-    /// to scan).
-    pub socials: Vec<String>,
-    /// The page `<body>` as [`Html`] (`scrape_body`). Transform to Markdown
-    /// terminally (`transform_markdown`) when LLM-ready text is wanted. `None` on
-    /// side-door paths and the lean bulk path.
-    pub body: Option<Html>,
-}
-
-impl PageContent {
-    /// An empty bundle for `url` tagged with the path that produced it — the
-    /// seed every extractor fills via struct update syntax.
-    pub fn new(url: CanonicalUrl, source: ContentSource) -> Self {
-        Self {
-            url,
-            platform: None,
-            kind: None,
-            source,
-            title: None,
-            text: None,
-            author: None,
-            image_url: None,
-            video_url: None,
-            structured: Vec::new(),
-            metadata: Vec::new(),
-            socials: Vec::new(),
-            body: None,
-        }
-    }
-
-    /// True if at least one content field was extracted — used to decide
-    /// whether a payload result is worth keeping or the caller falls through
-    /// to the next path. `url` is always present, so it doesn't count.
-    pub fn has_content(&self) -> bool {
-        self.title.is_some()
-            || self.text.is_some()
-            || self.image_url.is_some()
-            || self.video_url.is_some()
-    }
-
-    /// Thread a URL's social facts through: `platform`/`kind` come from the
-    /// classification, and a missing `author` falls back to the classified
-    /// handle.
-    pub fn with_social(mut self, social: Option<&SocialParts>) -> Self {
-        self.platform = social.map(|s| s.platform);
-        self.kind = social.and_then(|s| s.kind);
-        if self.author.is_none() {
-            self.author = social.and_then(|s| s.handle.clone());
-        }
-        self
-    }
 }

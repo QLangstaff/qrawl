@@ -1,9 +1,11 @@
 //! Normalize Tools
 
 mod tests;
+mod types;
 mod utils;
 
-pub use utils::{normalize_social, normalize_url};
+pub use types::CanonicalUrl;
+pub use utils::normalize_url;
 
 use crate::types::Html;
 
@@ -71,20 +73,10 @@ pub fn normalize_phones(phones: &[String]) -> Vec<String> {
 /// - Normalize protocol to https
 /// - Normalize domain (lowercase, IDNA, strip www)
 /// - Normalize path (strip all trailing slashes)
-/// - Sort query parameters
+/// - Strip tracking parameters, sort the rest
 /// - Remove fragment
+/// - On a social platform, strip the mobile host prefix and share tokens
 /// - Deduplicate
 pub fn normalize_urls(urls: &[String]) -> Vec<String> {
     utils::normalize_each(urls, utils::normalize_url)
-}
-
-/// Normalize social URLs
-///
-/// - Canonicalize with [`normalize_social`]
-/// - Deduplicate
-///
-/// Unlike [`normalize_emails`], this does **not** lowercase the path — social
-/// URLs carry case-sensitive handles and ids (a YouTube id like `dQw4w9WgXcQ`).
-pub fn normalize_social_urls(socials: &[String]) -> Vec<String> {
-    utils::normalize_each(socials, utils::normalize_social)
 }

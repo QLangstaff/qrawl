@@ -7,7 +7,7 @@ use super::utils::discover_children;
 /// Streaming child-URL discovery.
 ///
 /// Fetches each parent URL, runs `map_children` on the HTML, and yields the
-/// child URLs — each once, in [`CanonicalUrl`](crate::types::CanonicalUrl)
+/// child URLs — each once, in [`CanonicalUrl`](crate::tools::normalize::CanonicalUrl)
 /// form, in completion order. It stops before the children are fetched, so
 /// callers can `filter` or `take` the URL stream before paying the fetch cost:
 ///

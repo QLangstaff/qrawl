@@ -4,7 +4,7 @@ use crate::tools::scrape::*;
 /// Parse raw mf2 items directly (the parser `scrape_jsonld` folds in via
 /// `microformats_to_schema`). No public tool exposes raw mf2, so tests reach the
 /// internal parser to assert its un-normalized vocabulary shape.
-fn raw_mf2(html: &str) -> crate::types::Microformats {
+fn raw_mf2(html: &str) -> Vec<serde_json::Value> {
     super::utils::scrape_microformats_from_doc(&scraper::Html::parse_document(html))
 }
 
@@ -755,4 +755,150 @@ async fn scrape_jsonld_merges_native_and_mf2() {
             .any(|v| v["@type"] == "Person" && v["name"] == "Ada"),
         "h-card Person unified in: {schema:#?}"
     );
+}
+
+// ===== Embed readers (pure, no network) =====
+
+#[test]
+fn scrape_embed_reddit_permalink_array() {
+    let body = r#"[
+        {"kind":"Listing","data":{"children":[
+            {"kind":"t3","data":{
+                "title":"Hello World",
+                "selftext":"Body text here",
+                "author":"spez",
+                "thumbnail":"https://b.thumbs.redditmedia.com/x.jpg"
+            }}
+        ]}},
+        {"kind":"Listing","data":{"children":[]}}
+    ]"#;
+    let r = reddit(body);
+    assert_eq!(value(&r, "reddit:title"), Some("Hello World"));
+    assert_eq!(value(&r, "reddit:text"), Some("Body text here"));
+    assert_eq!(value(&r, "reddit:author"), Some("u/spez"));
+    // No link destination, so the preview thumbnail is the image.
+    assert_eq!(
+        value(&r, "reddit:image"),
+        Some("https://b.thumbs.redditmedia.com/x.jpg")
+    );
+    assert_eq!(value(&r, "reddit:video"), None);
+}
+
+#[test]
+fn scrape_embed_reddit_subreddit_listing() {
+    // Single listing (not an array): take the first post; empty selftext and
+    // a non-http thumbnail collapse to None.
+    let body = r#"{"kind":"Listing","data":{"children":[
+        {"kind":"t3","data":{"title":"Top Post","selftext":"","author":"alice","thumbnail":"self"}}
+    ]}}"#;
+    let r = reddit(body);
+    assert_eq!(value(&r, "reddit:title"), Some("Top Post"));
+    assert_eq!(value(&r, "reddit:text"), None);
+    assert_eq!(value(&r, "reddit:author"), Some("u/alice"));
+    assert_eq!(value(&r, "reddit:image"), None);
+}
+
+#[test]
+fn scrape_embed_reddit_splits_video_and_image_honestly() {
+    // A hosted video → video_url; an image link-post destination beats the
+    // thumbnail → image_url; a non-image article destination has no home → dropped.
+    let video = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+        "title":"Clip","thumbnail":"https://b.thumbs/x.jpg",
+        "secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/x/DASH_720.mp4"}}
+    }}]}}"#;
+    let r = reddit(video);
+    assert_eq!(
+        value(&r, "reddit:video"),
+        Some("https://v.redd.it/x/DASH_720.mp4")
+    );
+    assert_eq!(value(&r, "reddit:image"), Some("https://b.thumbs/x.jpg"));
+
+    let image_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+        "title":"Pic","thumbnail":"https://b.thumbs/x.jpg",
+        "url_overridden_by_dest":"https://i.redd.it/full.png"
+    }}]}}"#;
+    let r = reddit(image_dest);
+    assert_eq!(
+        value(&r, "reddit:image"),
+        Some("https://i.redd.it/full.png")
+    );
+    assert_eq!(value(&r, "reddit:video"), None);
+
+    let article_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+        "title":"Link","url_overridden_by_dest":"https://news.example/story"
+    }}]}}"#;
+    let r = reddit(article_dest);
+    assert!(
+        value(&r, "reddit:image").is_none(),
+        "an article link is neither image nor video"
+    );
+    assert_eq!(value(&r, "reddit:video"), None);
+}
+
+#[test]
+fn scrape_embed_reddit_garbage_is_none() {
+    assert!(reddit("<html>not json</html>").is_empty());
+}
+
+#[test]
+fn scrape_embed_oembed_fields() {
+    let body = r#"{
+        "title":"My Video",
+        "author_name":"Creator",
+        "thumbnail_url":"https://i.example/t.jpg",
+        "html":"<iframe></iframe>"
+    }"#;
+    let r = scrape_embed(
+        &Embed::Oembed(body.to_string()),
+        "https://youtube.com/watch?v=x",
+    );
+    assert_eq!(value(&r, "oembed:title"), Some("My Video"));
+    assert_eq!(value(&r, "oembed:author_name"), Some("Creator"));
+    assert_eq!(
+        value(&r, "oembed:thumbnail_url"),
+        Some("https://i.example/t.jpg")
+    );
+    assert_eq!(r.len(), 3);
+}
+
+#[test]
+fn scrape_embed_reddit_comment_is_the_comment_not_its_post() {
+    let body = r#"[
+        {"data":{"children":[{"data":{"title":"Post title","selftext":"post text","author":"op"}}]}},
+        {"data":{"children":[
+            {"data":{"id":"zzz","body":"another comment","author":"other"}},
+            {"data":{"id":"def","body":"the comment","author":"commenter"}}
+        ]}}
+    ]"#;
+    let r = scrape_embed(
+        &Embed::RedditJson(body.to_string()),
+        "https://reddit.com/r/rust/comments/abc/title/def",
+    );
+    assert_eq!(value(&r, "reddit:title"), Some("Post title"));
+    assert_eq!(value(&r, "reddit:text"), Some("the comment"));
+    assert_eq!(value(&r, "reddit:author"), Some("u/commenter"));
+}
+
+use crate::types::{Embed, Metadata};
+
+fn value<'a>(metadata: &'a Metadata, key: &str) -> Option<&'a str> {
+    metadata
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn reddit(body: &str) -> Metadata {
+    scrape_embed(
+        &Embed::RedditJson(body.to_string()),
+        "https://reddit.com/r/rust/comments/abc/title",
+    )
+}
+
+#[test]
+fn scrape_embed_reddit_link_post_keeps_its_destination() {
+    let r = reddit(
+        r#"{"data":{"children":[{"data":{"title":"Link","url_overridden_by_dest":"https://news.example/story"}}]}}"#,
+    );
+    assert_eq!(value(&r, "reddit:url"), Some("https://news.example/story"));
 }

@@ -3,54 +3,46 @@ use std::collections::HashSet;
 use futures_util::stream::StreamExt;
 
 use crate::tools::classify::classify_has_schema_type;
-use crate::tools::fetch::is_url_allowed;
 use crate::tools::map::map_children;
-use crate::types::{CanonicalUrl, Context, Jsonld, PageContent};
+use crate::tools::normalize::CanonicalUrl;
+use crate::types::{Context, Jsonld};
 
-use super::utils::{crawl, resolve_url};
+use super::types::PageContent;
+use super::utils::{crawl, page_content};
 
 /// Upper bound on crawl depth — a guardrail against a runaway expansion;
 /// `ctx.depth` is clamped to this.
 const MAX_DEPTH: usize = 3;
 
-/// Fetch and normalize **many** URLs concurrently — fast, best-effort, and
-/// optionally crawling `ctx.depth` levels deep.
+/// [`qrawl_any_url`](super::qrawl_any_url) over **many** URLs — concurrent,
+/// best-effort, and optionally crawling `ctx.depth` levels of children deep.
 ///
-/// Runs a bounded concurrent crawl (up to `ctx.concurrency` fetches in flight,
-/// never sequential):
-/// - `ctx.depth == 0`: fetch + extract exactly the given URLs (no child discovery).
-/// - `ctx.depth >= 1`: also `map_children` each fetched page and follow those, up
-///   to `ctx.depth` levels (clamped to `MAX_DEPTH`), deduped by canonical URL.
+/// Every URL becomes a [`PageContent`] by the same steps as `qrawl_any_url`.
+/// A URL that can't be fetched is dropped, so the result holds only
+/// successes: level by level, in completion order within a level.
 ///
-/// Each URL resolves the way [`qrawl_any_url`](super::qrawl_any_url) resolves
-/// it — a recognized social *item* through its side door, everything else
-/// through the page — except that a crawl doesn't carry bodies
-/// (`PageContent::body` is `None`). URLs that fail to fetch are dropped, so
-/// the returned `Vec` holds only successes, in completion order (not input
-/// order).
-///
-/// All knobs live on [`Context`]:
-/// - `allow_domains`/`block_domains` and `allow_urls`/`block_urls` filter
-///   *before* fetch, on seeds and every child, so a blocked URL is never
-///   fetched or returned.
-/// - `include_schemas`/`exclude_schemas` filter the *results* after fetch: a page
-///   counts (and counts toward `limit`) only if its structured data includes an
-///   include-type (empty = any) and none of the exclude-types; non-matching
-///   pages are still expanded for their children. Side-door hits carry no
-///   structured data, so a non-empty `include_schemas` drops them — a Recipe
-///   filter keeps blog pages, not TikTok/oEmbed items.
-/// - `limit` caps matching results and **stops early** once reached (in-flight
-///   fetches are cancelled); `None` = no cap. Bulk callers pass `Context::fast()`,
-///   whose per-attempt fetch timeout is inherently short to cap tail latency.
+/// - `ctx.depth == 0`: exactly the given URLs.
+/// - `ctx.depth >= 1`: also each fetched page's children (`map_children`), up
+///   to `ctx.depth` levels (at most `MAX_DEPTH`). Each page is crawled once,
+///   at the shallowest level that reaches it.
+/// - `allow_domains`/`block_domains`: a URL on a filtered host fails its fetch,
+///   so it's never returned or expanded.
+/// - `allow_urls`/`block_urls`: filter seeds and children before their fetch.
+/// - `include_schemas`/`exclude_schemas`: filter the *results*. A page counts
+///   (toward `limit` too) only if its structured data includes an include-type
+///   (empty = any) and none of the exclude-types; a page that doesn't count is
+///   still expanded for its children.
+/// - `limit`: stop once this many results are in, cancelling the fetches in
+///   flight; `None` = no cap.
 ///
 /// ```no_run
 /// use qrawl::templates::qrawl_many_urls;
 /// use qrawl::types::Context;
 ///
 /// # async fn run(seeds: Vec<String>) {
-/// // Direct: just these URLs.
+/// // Just these URLs.
 /// let pages = qrawl_many_urls(seeds.clone(), Context::fast()).await;
-/// // Expand one level, recipe pages only, stop after 30.
+/// // One level deep, recipe pages only, stop after 30.
 /// let ctx = Context::fast()
 ///     .with_depth(1)
 ///     .with_limit(30)
@@ -63,7 +55,6 @@ pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent
     let depth = ctx.depth.min(MAX_DEPTH);
     let (include_schemas, exclude_schemas) =
         (ctx.include_schemas.clone(), ctx.exclude_schemas.clone());
-    let (allow_domains, block_domains) = (ctx.allow_domains.clone(), ctx.block_domains.clone());
     let canonical_set = |urls: &[String]| -> HashSet<CanonicalUrl> {
         urls.iter().map(|url| CanonicalUrl::new(url)).collect()
     };
@@ -72,9 +63,7 @@ pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent
         canonical_set(&ctx.block_urls),
     );
     let admit = move |url: &CanonicalUrl| {
-        is_url_allowed(url.as_str(), &allow_domains, &block_domains)
-            && (allow_urls.is_empty() || allow_urls.contains(url))
-            && !block_urls.contains(url)
+        (allow_urls.is_empty() || allow_urls.contains(url)) && !block_urls.contains(url)
     };
 
     let pages = crawl(
@@ -83,13 +72,11 @@ pub async fn qrawl_many_urls(urls: Vec<String>, ctx: Context) -> Vec<PageContent
         depth,
         admit,
         |target, with_children| async move {
-            let (mut page, html) = resolve_url(&target)
+            let (page, html) = page_content(&target)
                 .await
                 .map_err(|e| log::debug!("{} failed: {}", target.address, e))
                 .ok()?;
-            log::info!("crawled {} ({:?})", target.address, page.source);
-            page.body = None;
-            // A side-door hit has no page to map, so it's a leaf.
+            log::info!("crawled {}", target.address);
             let children = match html {
                 Some(html) if with_children => map_children(&html, &target.address).await,
                 _ => Vec::new(),

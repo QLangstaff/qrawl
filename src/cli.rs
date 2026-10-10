@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand};
 use std::io::Read;
 
-use crate::types::{CanonicalUrl, Context, Html};
+use crate::types::{Context, Html};
 use crate::{runtime, templates, tools};
 
 #[derive(Parser)]
@@ -65,7 +65,7 @@ enum Commands {
         input: String,
     },
 
-    /// Scrape & Extract Open Graph Preview
+    /// Scrape & Extract a Page's Preview (title, text, author, image, video)
     Preview {
         /// URL
         url: String,
@@ -85,7 +85,7 @@ enum Commands {
         schema_type: String,
     },
 
-    /// Crawl a Site, Keep Pages of a schema.org Type
+    /// A Page and Its Children That Carry a schema.org Type
     Schema {
         /// URL
         url: String,
@@ -111,13 +111,13 @@ enum Commands {
         url: String,
     },
 
-    /// Universal URL Pipeline (side door or fetch + scrape → one bundle)
+    /// Any URL → One `PageContent`
     Url {
         /// URL
         url: String,
     },
 
-    /// Universal Bulk Pipeline (fast, concurrent, best-effort over many URLs)
+    /// Many URLs → a `PageContent` Each (concurrent, best-effort)
     Urls {
         /// URLs (space-separated)
         #[arg(required = true)]
@@ -239,10 +239,7 @@ async fn run_command(command: Commands, ctx: Context) {
 
         Commands::Preview { url } => {
             let metadata = tools::scrape::scrape_metadata(&fetch(&url, ctx).await).await;
-            print_json(&tools::extract::extract_open_graph(
-                &CanonicalUrl::new(&url),
-                &metadata,
-            ));
+            print_json(&tools::extract::extract_preview(&metadata));
         }
 
         Commands::Schemas { input } => {
@@ -259,9 +256,9 @@ async fn run_command(command: Commands, ctx: Context) {
         }
 
         Commands::Schema { url, schema_type } => {
-            print_json(&urls_of(
-                templates::qrawl_schema(vec![url], &schema_type, ctx).await,
-            ));
+            let ctx = ctx.with_depth(1).with_include_schemas(vec![schema_type]);
+            let pages = templates::qrawl_many_urls(vec![url], ctx).await;
+            print_json(&pages.into_iter().map(|page| page.url).collect::<Vec<_>>());
         }
 
         Commands::Emails { url } => {
@@ -277,7 +274,7 @@ async fn run_command(command: Commands, ctx: Context) {
             // Depth 2: the seed, its children, and their children.
             let pages = templates::qrawl_many_urls(vec![url], ctx.with_depth(2)).await;
             let socials: Vec<String> = pages.into_iter().flat_map(|page| page.socials).collect();
-            print_json(&tools::normalize::normalize_social_urls(&socials));
+            print_json(&tools::normalize::normalize_urls(&socials));
         }
 
         Commands::Url { url } => match templates::qrawl_any_url(&url, ctx).await {

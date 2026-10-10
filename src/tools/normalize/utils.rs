@@ -161,7 +161,7 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
         .collect()
 }
 
-/// Canonicalize a URL for comparison.
+/// The general canonicalization every URL gets.
 ///
 /// Performs:
 /// 1. Add https:// if protocol is missing
@@ -178,7 +178,7 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
 /// - `https://www.example.com?b=2&a=1` → `https://example.com/?a=1&b=2`
 /// - `https://example.com/page#section` → `https://example.com/page`
 /// - `https://example.com?utm_source=x&id=7` → `https://example.com/?id=7`
-pub fn normalize_url(url: &str) -> String {
+fn normalize_any_url(url: &str) -> String {
     // `mailto:`, `ftp://`, and `localhost:8080` already name a scheme, and a
     // relative path names no host, so none of them gains an `https://` prefix.
     let url_lower = url.to_ascii_lowercase();
@@ -233,17 +233,15 @@ pub fn normalize_url(url: &str) -> String {
     parsed.to_string().trim_end_matches('/').to_string()
 }
 
-/// Canonicalize a URL with social-platform awareness — the form the
-/// classify/extract tools and the fetch cache key on.
+/// Canonicalize a URL: the one form two URLs of the same page share.
 ///
-/// Runs [`normalize_url`] for the general canonicalization, then for a
-/// *recognized* social platform additionally
-/// strips a mobile host prefix (`m.`/`mobile.`) and the social share / referrer
-/// tokens (`si`, `s`, `feature`, …) that would otherwise split one piece of
-/// content across many look-alike URLs. A non-social host gets only the general
-/// pass, so it's safe on any URL (a plain web page keeps a functional `?s=`).
-pub fn normalize_social(url: &str) -> String {
-    let normalized = normalize_url(url);
+/// Performs the general pass (`normalize_any_url`), then — for a recognized
+/// social platform only — strips a mobile host prefix (`m.`/`mobile.`) and the
+/// share / referrer tokens (`si`, `s`, `feature`, …) that would otherwise
+/// split one item across look-alike URLs. A plain web page keeps a functional
+/// `?s=`.
+pub fn normalize_url(url: &str) -> String {
+    let normalized = normalize_any_url(url);
     let Ok(mut parsed) = Url::parse(&normalized) else {
         return normalized;
     };
@@ -286,8 +284,8 @@ fn kept_query(url: &Url, keep: impl Fn(&str) -> bool, sort: bool) -> Option<Stri
     (!pairs.is_empty()).then(|| pairs.join("&"))
 }
 
-/// Social share / referrer tokens stripped by [`normalize_social`] on top of
-/// `normalize_url`'s general trackers, for recognized platforms only.
+/// Social share / referrer tokens [`normalize_url`] strips on top of the
+/// general trackers, for recognized platforms only.
 fn is_social_tracker(key: &str) -> bool {
     matches!(
         key,

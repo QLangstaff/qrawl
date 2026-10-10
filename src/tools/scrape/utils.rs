@@ -1,8 +1,15 @@
 use once_cell::sync::Lazy;
 use scraper::Selector;
 
-use crate::types::{Html, Jsonld, Metadata, Microformats};
+use crate::types::{Html, Jsonld, Metadata};
 use crate::utils::JSONLD_SELECTOR;
+
+/// Microformats2 items, each in canonical mf2 shape:
+/// `{"type": ["h-card"], "properties": {"name": ["…"], …}, "children": [...]}`.
+///
+/// Not [`Jsonld`]: mf2 is a distinct vocabulary (`h-card`/`h-entry`, not
+/// schema.org), keyed on `type` (not `@type`) with array-valued properties.
+type Microformats = Vec<serde_json::Value>;
 
 /// Selector for Microdata items (`itemscope` elements). Top-level items are
 /// filtered in code (an `itemscope` that also has `itemprop` is a nested item).
@@ -71,7 +78,7 @@ pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
 }
 
 /// Everything from one parse: body HTML, metadata, and the unified schema view.
-pub(crate) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
+pub(super) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
     (
         scrape_body_from_doc(document),
         scrape_metadata_from_doc(document),

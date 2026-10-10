@@ -1,11 +1,10 @@
 //! Scrape Tools
 
-use crate::types::{Html, Jsonld, Metadata};
+use crate::types::{Embed, Html, Jsonld, Metadata};
 
+mod embed;
 mod tests;
 mod utils;
-
-pub(crate) use utils::scrape_from_doc;
 
 /// Scrape the page body as [`Html`] — the `<body>` subtree. A scrape leaf: it
 /// yields HTML, so it composes into [`transform_markdown`](crate::tools::transform::transform_markdown)
@@ -57,7 +56,19 @@ pub async fn scrape_metadata(html: &Html) -> Metadata {
 /// times).
 pub async fn scrape_all(html: &Html) -> (Html, Metadata, Jsonld) {
     let html = html.to_string();
-    tokio::task::spawn_blocking(move || scrape_from_doc(&scraper::Html::parse_document(&html)))
-        .await
-        .expect("scrape_all: spawn_blocking failed")
+    tokio::task::spawn_blocking(move || {
+        utils::scrape_from_doc(&scraper::Html::parse_document(&html))
+    })
+    .await
+    .expect("scrape_all: spawn_blocking failed")
+}
+
+/// Scrape a fetched [`Embed`] (`fetch_embed`) into metadata pairs, keyed
+/// `oembed:title` / `oembed:author_name` / `oembed:thumbnail_url` and
+/// `reddit:title` / `reddit:text` / `reddit:author` / `reddit:image` /
+/// `reddit:video` / `reddit:url`. `url` is the item the embed was fetched
+/// for: a Reddit comment URL selects that comment. Empty when the embed
+/// doesn't parse.
+pub fn scrape_embed(embed: &Embed, url: &str) -> Metadata {
+    embed::scrape_embed(embed, url)
 }

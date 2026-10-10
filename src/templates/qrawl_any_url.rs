@@ -1,21 +1,25 @@
 use crate::errors::QrawlError;
-use crate::types::{Context, PageContent};
+use crate::types::Context;
 
-use super::utils::{parse_url, resolve_url};
+use super::types::PageContent;
+use super::utils::{page_content, parse_url};
 
-/// Fetch and normalize **one** URL thoroughly into a [`PageContent`].
+/// Turn **any** URL into a [`PageContent`]: the one template, a plain
+/// composition of the tools that runs the same steps for a blog post, a store
+/// page, and a TikTok video.
 ///
-/// A recognized social *item* (Reddit post, TikTok/YouTube/Pinterest/Vimeo
-/// video or pin) goes through its dedicated side door (Reddit `.json` /
-/// oEmbed); everything else — blogs, profiles, Instagram/Facebook, and any
-/// non-social page — is fetched and scraped for structured data (JSON-LD +
-/// Microdata + RDFa + Microformats2), `<meta>` tags, the social links on the
-/// page, and body HTML.
+/// 1. `fetch`: the page (`fetch_strategy`) and, when the platform serves one,
+///    the item's embed (`fetch_embed`).
+/// 2. `scrape`: both into the same layers — body, metadata pairs, schema.org
+///    entities (`scrape_all`, `scrape_embed`).
+/// 3. `map` + `normalize`: the page's links, canonical and deduped.
+/// 4. `extract`: the content fields (`extract_preview`) and the URL's social
+///    facts (`extract_social_parts`).
 ///
-/// Domain-agnostic: the caller maps the result to its own schema (see
-/// [`PageContent`]). Honors `ctx`'s fetch strategy and domain filters. Returns
-/// `Err` on an unparseable input URL, before any network, or when neither a
-/// side door nor a page fetch yields anything.
+/// Domain-agnostic: the caller maps the result to its own schema. Honors
+/// `ctx`'s fetch strategy and domain filters. Returns `Err` on an input that
+/// isn't an HTTP URL, before any network, or when neither the page nor an
+/// embed could be fetched.
 ///
 /// ```no_run
 /// use qrawl::templates::qrawl_any_url;
@@ -30,6 +34,6 @@ use super::utils::{parse_url, resolve_url};
 /// ```
 pub async fn qrawl_any_url(url: &str, ctx: Context) -> Result<PageContent, QrawlError> {
     let target = parse_url(url)?;
-    let (page, _html) = ctx.scope(resolve_url(&target)).await?;
+    let (page, _html) = ctx.scope(page_content(&target)).await?;
     Ok(page)
 }

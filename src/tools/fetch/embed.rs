@@ -1,34 +1,48 @@
-//! Social-platform side-door fetch.
+//! Embed fetch.
 //!
 //! Some platforms serve a structured representation of an item through a
 //! dedicated endpoint — Reddit appends `.json`, oEmbed providers expose an
-//! `/oembed` API — instead of the rendered HTML page. [`fetch_social`] routes a
-//! classified URL to its endpoint and acquires the raw bytes; the
-//! [`extract`](crate::tools::extract) tool parses them.
+//! `/oembed` API — beside the rendered HTML page. [`fetch_embed`] fetches it;
+//! `scrape_embed` reads it.
 //!
-//! It uses [`fetch_bytes`](super::fetch_bytes), NOT
-//! [`fetch_strategy`](super::fetch_strategy): the strategy path validates for
-//! HTML and rejects any body without `<html>`/`<!doctype>` markers (and anything
-//! under 500 bytes), which would throw away every JSON response.
+//! It uses [`fetch_bytes`](super::fetch_bytes), not
+//! [`fetch_strategy`](super::fetch_strategy), which validates for HTML and
+//! would reject every JSON response.
 
-use crate::types::{CanonicalUrl, SocialKind, SocialParts, SocialPayload, SocialPlatform};
+use crate::types::{Embed, SocialKind, SocialParts, SocialPlatform};
+use crate::utils::social_parts;
 
 use super::fetch_bytes;
 
-/// Fetch a social item's structured representation through its dedicated door.
-/// Owns the routing knowledge: `.json` covers a Reddit post or comment, and
-/// oEmbed covers individual TikTok/YouTube/Pinterest/Vimeo content. Profiles,
-/// subreddits, boards, feeds, and opaque shortlinks with `kind: None` have no
-/// door, because a listing's payload describes one of its items; every other platform
-/// (Instagram/Facebook/X/LinkedIn) has no public door. `None` when the URL has
-/// no door or lacks the ids to address one — returned before any network — or
-/// the door fails (logged at debug); the caller falls back to fetching the page.
-pub async fn fetch_social(social: &SocialParts, url: &CanonicalUrl) -> Option<SocialPayload> {
-    let (request, door): (String, fn(String) -> SocialPayload) = match social.platform {
+/// Fetch the embed of the item at `url`: Reddit's `.json` for a post or
+/// comment, oEmbed for an individual TikTok/YouTube/Pinterest/Vimeo item.
+/// `None` — before any network — for every URL with no embed: a non-social
+/// URL, a profile, subreddit, board, or feed (whose payload would describe one
+/// of its items), an opaque shortlink, and Instagram/Facebook/X/LinkedIn, which
+/// serve none without a token. Also `None` when the request fails (logged at
+/// debug).
+pub async fn fetch_embed(url: &str) -> Option<Embed> {
+    let (request, embed) = embed_request(url)?;
+    match fetch_bytes(&request, None).await {
+        Ok(bytes) => Some(embed(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(e) => {
+            log::debug!("embed fetch failed {}: {}", url, e);
+            None
+        }
+    }
+}
+
+/// Wraps a response body as the [`Embed`] its endpoint serves.
+type EmbedOf = fn(String) -> Embed;
+
+/// The request that serves `url`'s embed, and the [`Embed`] its response is.
+pub(super) fn embed_request(url: &str) -> Option<(String, EmbedOf)> {
+    let social = social_parts(url)?;
+    match social.platform {
         SocialPlatform::Reddit
             if matches!(social.kind, Some(SocialKind::Post | SocialKind::Comment)) =>
         {
-            (reddit_json_url(url.as_str()), SocialPayload::RedditJson)
+            Some((reddit_json_url(url), Embed::RedditJson))
         }
         SocialPlatform::TikTok
         | SocialPlatform::YouTube
@@ -39,16 +53,9 @@ pub async fn fetch_social(social: &SocialParts, url: &CanonicalUrl) -> Option<So
                 Some(SocialKind::Video | SocialKind::Post | SocialKind::Photo)
             ) =>
         {
-            (oembed_request_url(social)?, SocialPayload::Oembed)
+            Some((oembed_request_url(&social)?, Embed::Oembed))
         }
-        _ => return None,
-    };
-    match fetch_bytes(&request, None).await {
-        Ok(bytes) => Some(door(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) => {
-            log::debug!("social door failed {}: {}", url.as_str(), e);
-            None
-        }
+        _ => None,
     }
 }
 
@@ -82,9 +89,8 @@ pub(super) fn oembed_request_url(social: &SocialParts) -> Option<String> {
 }
 
 /// Rebuild the provider's expected canonical URL from the classified fields,
-/// independent of how the shared URL was formatted. Required because
-/// [`CanonicalUrl`] strips `www.`, but some oEmbed endpoints are picky about the exact
-/// host — notably **TikTok 400s without `www.`**.
+/// independent of how the given URL was written, because some oEmbed endpoints
+/// are picky about the exact host — notably **TikTok 400s without `www.`**.
 fn oembed_target_url(social: &SocialParts) -> Option<String> {
     let id = social.id.as_deref();
     match social.platform {

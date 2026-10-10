@@ -1,14 +1,7 @@
 #![cfg(test)]
-use crate::tools::extract::utils::{extract_oembed, extract_reddit};
 use crate::tools::extract::*;
-use crate::types::{CanonicalUrl, SocialKind, SocialPlatform};
+use crate::types::{SocialKind, SocialPlatform};
 use serde_json::json;
-
-/// A canonical URL for the payload-extractor tests, which need one to build a
-/// [`PageContent`] but don't care about its value.
-fn url() -> CanonicalUrl {
-    CanonicalUrl::new("https://example.com/x")
-}
 
 #[tokio::test]
 async fn test_extract_emails_basic() {
@@ -56,7 +49,7 @@ fn test_extract_og_uses_metadata_fallbacks() {
         ),
     ];
 
-    let extracted = extract_open_graph(&url(), &metadata);
+    let extracted = extract_preview(&metadata);
     assert_eq!(extracted.title, Some("OG Title".to_string()));
     assert_eq!(extracted.text, Some("Twitter Description".to_string()));
     assert_eq!(
@@ -120,31 +113,6 @@ async fn test_extract_phones_preserves_formats() {
     assert_eq!(phones.len(), 2); // Raw formats retained for downstream normalization
     assert!(phones.contains(&"+1-555-123-4567".to_string()));
     assert!(phones.contains(&"+1 (555) 123-4567".to_string()));
-}
-
-// Self-contained: links are extracted by `extract_social_parts` (no `classify`
-// dependency) and only known-platform / known-kind ones survive, as canonical URLs.
-#[tokio::test]
-async fn test_extract_social_urls_keeps_profiles_drops_noise() {
-    let html = r#"
-            <html><body>
-              <a href="https://instagram.com/nasa">IG</a>
-              <a href="https://twitter.com/nasa">X</a>
-              <a href="https://www.youtube.com/@NASA">YT</a>
-              <a href="/about">About</a>
-              <a href="https://facebook.com/sharer/sharer.php?u=x">Share</a>
-              <a href="mailto:hi@nasa.gov">Email</a>
-              <a href="https://example.com/page">External</a>
-            </body></html>
-        "#;
-    let socials = extract_social_urls(&html.into()).await;
-    assert!(socials.contains(&"https://instagram.com/nasa".to_string()));
-    assert!(socials.contains(&"https://twitter.com/nasa".to_string()));
-    assert!(socials.contains(&"https://youtube.com/@NASA".to_string()));
-    // Dropped: relative, share-button (Unknown kind), mailto (no host), external host.
-    assert!(!socials.iter().any(|s| s.contains("sharer")));
-    assert!(!socials.iter().any(|s| s.contains("example.com")));
-    assert!(!socials.iter().any(|s| s.contains("about")));
 }
 
 // ---------------------------------------------------------------------------
@@ -384,103 +352,6 @@ fn social_serializes_with_camel_case() {
     assert_eq!(json["handle"], "@user");
 }
 
-// ===== Side-door payload extractors (pure, no network) =====
-
-#[test]
-fn extract_reddit_permalink_array() {
-    let body = r#"[
-        {"kind":"Listing","data":{"children":[
-            {"kind":"t3","data":{
-                "title":"Hello World",
-                "selftext":"Body text here",
-                "author":"spez",
-                "thumbnail":"https://b.thumbs.redditmedia.com/x.jpg"
-            }}
-        ]}},
-        {"kind":"Listing","data":{"children":[]}}
-    ]"#;
-    let r = extract_reddit(&url(), &reddit_post_parts(), body).expect("parses");
-    assert_eq!(r.url, url());
-    assert_eq!(r.title.as_deref(), Some("Hello World"));
-    assert_eq!(r.text.as_deref(), Some("Body text here"));
-    assert_eq!(r.author.as_deref(), Some("u/spez"));
-    // No link destination, so the preview thumbnail is the image.
-    assert_eq!(
-        r.image_url.as_deref(),
-        Some("https://b.thumbs.redditmedia.com/x.jpg")
-    );
-    assert!(r.video_url.is_none());
-}
-
-#[test]
-fn extract_reddit_subreddit_listing() {
-    // Single listing (not an array): take the first post; empty selftext and
-    // a non-http thumbnail collapse to None.
-    let body = r#"{"kind":"Listing","data":{"children":[
-        {"kind":"t3","data":{"title":"Top Post","selftext":"","author":"alice","thumbnail":"self"}}
-    ]}}"#;
-    let r = extract_reddit(&url(), &reddit_post_parts(), body).expect("parses");
-    assert_eq!(r.title.as_deref(), Some("Top Post"));
-    assert!(r.text.is_none());
-    assert_eq!(r.author.as_deref(), Some("u/alice"));
-    assert!(r.image_url.is_none());
-}
-
-#[test]
-fn extract_reddit_splits_video_and_image_honestly() {
-    // A hosted video → video_url; an image link-post destination beats the
-    // thumbnail → image_url; a non-image article destination has no home → dropped.
-    let video = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
-        "title":"Clip","thumbnail":"https://b.thumbs/x.jpg",
-        "secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/x/DASH_720.mp4"}}
-    }}]}}"#;
-    let r = extract_reddit(&url(), &reddit_post_parts(), video).expect("parses");
-    assert_eq!(
-        r.video_url.as_deref(),
-        Some("https://v.redd.it/x/DASH_720.mp4")
-    );
-    assert_eq!(r.image_url.as_deref(), Some("https://b.thumbs/x.jpg"));
-
-    let image_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
-        "title":"Pic","thumbnail":"https://b.thumbs/x.jpg",
-        "url_overridden_by_dest":"https://i.redd.it/full.png"
-    }}]}}"#;
-    let r = extract_reddit(&url(), &reddit_post_parts(), image_dest).expect("parses");
-    assert_eq!(r.image_url.as_deref(), Some("https://i.redd.it/full.png"));
-    assert!(r.video_url.is_none());
-
-    let article_dest = r#"{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
-        "title":"Link","url_overridden_by_dest":"https://news.example/story"
-    }}]}}"#;
-    let r = extract_reddit(&url(), &reddit_post_parts(), article_dest).expect("parses");
-    assert!(
-        r.image_url.is_none(),
-        "an article link is neither image nor video"
-    );
-    assert!(r.video_url.is_none());
-}
-
-#[test]
-fn extract_reddit_garbage_is_none() {
-    assert!(extract_reddit(&url(), &reddit_post_parts(), "<html>not json</html>").is_none());
-}
-
-#[test]
-fn extract_oembed_fields() {
-    let body = r#"{
-        "title":"My Video",
-        "author_name":"Creator",
-        "thumbnail_url":"https://i.example/t.jpg",
-        "html":"<iframe></iframe>"
-    }"#;
-    let r = extract_oembed(&url(), body).expect("parses");
-    assert_eq!(r.title.as_deref(), Some("My Video"));
-    assert_eq!(r.author.as_deref(), Some("Creator"));
-    assert_eq!(r.image_url.as_deref(), Some("https://i.example/t.jpg"));
-    assert!(r.text.is_none());
-    assert!(r.video_url.is_none());
-}
-
 #[test]
 fn extract_og_maps_all_fields() {
     let metadata = vec![
@@ -496,44 +367,12 @@ fn extract_og_maps_all_fields() {
         ),
         ("author".to_string(), "Jane Doe".to_string()),
     ];
-    let r = extract_open_graph(&url(), &metadata);
+    let r = extract_preview(&metadata);
     assert_eq!(r.title.as_deref(), Some("OG Title"));
     assert_eq!(r.text.as_deref(), Some("OG Desc"));
     assert_eq!(r.image_url.as_deref(), Some("https://img.example/a.jpg"));
     assert_eq!(r.video_url.as_deref(), Some("https://vid.example/v.mp4"));
     assert_eq!(r.author.as_deref(), Some("Jane Doe"));
-}
-
-#[test]
-fn page_content_has_content_requires_a_content_field() {
-    let empty = PageContent::new(url(), ContentSource::OpenGraph);
-    assert!(!empty.has_content());
-    let with_title = PageContent {
-        title: Some("x".to_string()),
-        ..empty
-    };
-    assert!(with_title.has_content());
-}
-
-fn reddit_post_parts() -> crate::types::SocialParts {
-    extract_social_parts("https://reddit.com/r/rust/comments/abc/title").expect("reddit post")
-}
-
-#[test]
-fn extract_reddit_comment_returns_the_comment_not_its_post() {
-    let url = CanonicalUrl::new("https://reddit.com/r/rust/comments/abc/title/def");
-    let social = extract_social_parts(url.as_str()).expect("reddit comment");
-    let body = r#"[
-        {"data":{"children":[{"data":{"title":"Post title","selftext":"post text","author":"op"}}]}},
-        {"data":{"children":[
-            {"data":{"id":"zzz","body":"another comment","author":"other"}},
-            {"data":{"id":"def","body":"the comment","author":"commenter"}}
-        ]}}
-    ]"#;
-    let page = extract_reddit(&url, &social, body).expect("parses");
-    assert_eq!(page.title.as_deref(), Some("Post title"));
-    assert_eq!(page.text.as_deref(), Some("the comment"));
-    assert_eq!(page.author.as_deref(), Some("u/commenter"));
 }
 
 #[test]
@@ -549,4 +388,28 @@ fn share_buttons_have_no_social_kind() {
     }
     let profile = extract_social_parts("https://twitter.com/rustlang").expect("social host");
     assert_eq!(profile.kind, Some(SocialKind::Profile));
+}
+
+#[test]
+fn extract_preview_prefers_embed_keys_over_page_metadata() {
+    let metadata = vec![
+        ("oembed:title".to_string(), "The video".to_string()),
+        ("oembed:author_name".to_string(), "Creator".to_string()),
+        ("title".to_string(), "TikTok - Make Your Day".to_string()),
+        ("og:site_name".to_string(), "TikTok".to_string()),
+        ("description".to_string(), "Page description".to_string()),
+    ];
+    let preview = extract_preview(&metadata);
+    assert_eq!(preview.title.as_deref(), Some("The video"));
+    assert_eq!(preview.author.as_deref(), Some("Creator"));
+    assert_eq!(preview.text.as_deref(), Some("Page description"));
+}
+
+#[test]
+fn extract_schema_types_shortens_iris_and_dedupes() {
+    let jsonld = vec![
+        json!({"@type": "https://schema.org/Recipe"}),
+        json!({"@type": ["Recipe", "schema:Article"]}),
+    ];
+    assert_eq!(extract_schema_types(&jsonld), ["Recipe", "Article"]);
 }

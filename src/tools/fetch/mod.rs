@@ -1,17 +1,16 @@
 //! Fetch Tools
 
 mod client;
+mod embed;
 mod headers;
-mod social;
 mod strategies;
 mod types;
 mod utils;
 
 mod tests;
 
-pub use social::fetch_social;
+pub use embed::fetch_embed;
 pub use types::FetchProfile;
-pub(crate) use utils::is_url_allowed;
 
 use crate::errors::QrawlError;
 use crate::types::{fetch_cache_get, fetch_cache_put, get_fetch_strategy, FetchStrategy, Html};

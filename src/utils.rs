@@ -8,6 +8,10 @@ use scraper::Selector;
 
 use crate::types::SocialPlatform;
 
+mod social;
+
+pub(crate) use social::social_parts;
+
 /// Selector for anchor elements with hrefs.
 pub(crate) static LINK_SELECTOR: Lazy<Selector> =
     Lazy::new(|| Selector::parse("a[href]").expect("valid link selector"));
@@ -95,4 +99,25 @@ pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
             };
             is_country_suffix.then_some(SocialPlatform::Pinterest)
         })
+}
+
+/// The schema.org types an entity declares in `@type`, as short names: a full
+/// IRI (`https://schema.org/Recipe`), a CURIE (`schema:Recipe`), and a bare
+/// term all yield `Recipe`, whether `@type` is one string or an array.
+pub(crate) fn schema_types(entity: &serde_json::Value) -> Vec<String> {
+    let short = |declared: &str| {
+        declared
+            .rsplit([':', '/', '#'])
+            .find(|segment| !segment.is_empty())
+            .map(str::to_string)
+    };
+    match entity.get("@type") {
+        Some(serde_json::Value::String(declared)) => short(declared).into_iter().collect(),
+        Some(serde_json::Value::Array(declared)) => declared
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter_map(short)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
