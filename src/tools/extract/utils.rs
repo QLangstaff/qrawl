@@ -1,5 +1,4 @@
 use regex::Regex;
-use scraper::Html;
 use std::sync::LazyLock;
 
 use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR, PHONE_EXTENSION, TLD_LEN};
@@ -34,9 +33,9 @@ static ONE_PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Extract values from links with a specific href prefix (e.g., "mailto:", "tel:")
-fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
+fn extract_with_prefix(document: &scraper::Html, prefix: &str) -> Vec<String> {
     let mut results = Vec::new();
-    for link in doc.select(&LINK_SELECTOR) {
+    for link in document.select(&LINK_SELECTOR) {
         if let Some(href) = link.value().attr("href") {
             // A scheme is case-insensitive (`MAILTO:`).
             let scheme = href.get(..prefix.len()).unwrap_or_default();
@@ -57,8 +56,9 @@ fn extract_with_prefix(doc: &Html, prefix: &str) -> Vec<String> {
 /// text is code, not content. The spaces keep adjacent elements apart:
 /// `<div>9631</div>` beside `<a>contact@domain.com</a>` must not read
 /// `9631contact@domain.com`.
-fn document_text(doc: &Html) -> String {
-    doc.root_element()
+fn document_text(document: &scraper::Html) -> String {
+    document
+        .root_element()
         .descendants()
         .filter_map(|node| {
             let text = node.value().as_text()?;
@@ -70,9 +70,9 @@ fn document_text(doc: &Html) -> String {
 }
 
 /// Extract values from text content using a regex pattern
-fn extract_with_regex(doc: &Html, regex: &Regex) -> Vec<String> {
+fn extract_with_regex(document: &scraper::Html, regex: &Regex) -> Vec<String> {
     regex
-        .find_iter(&document_text(doc))
+        .find_iter(&document_text(document))
         .map(|found| found.as_str().to_string())
         .collect()
 }
@@ -107,14 +107,18 @@ fn find_phones(text: &str) -> Vec<String> {
 /// string, a number, an array, a typed literal's `@value`, an IRI's `@id`, or
 /// the items of a `@list` or `@set`. JSON-LD is data, so the property says
 /// what a value is: read as raw text, an SKU would pass for a phone number.
-fn extract_from_jsonld(doc: &Html, key: &str, read: impl Fn(&str) -> Vec<String>) -> Vec<String> {
+fn extract_from_jsonld(
+    document: &scraper::Html,
+    key: &str,
+    read: impl Fn(&str) -> Vec<String>,
+) -> Vec<String> {
     let is_key = |name: &str| {
         name.rsplit([':', '/', '#'])
             .next()
             .is_some_and(|short| short.eq_ignore_ascii_case(key))
     };
     let mut found = Vec::new();
-    for script in doc.select(&JSONLD_SELECTOR) {
+    for script in document.select(&JSONLD_SELECTOR) {
         let text: String = script.text().collect();
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
@@ -163,11 +167,11 @@ fn read_jsonld_telephone(text: &str) -> Vec<String> {
 }
 
 /// Extract all email addresses from HTML document.
-pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
+pub(super) fn extract_email_elements(document: &scraper::Html) -> Vec<String> {
     [
-        extract_with_prefix(doc, "mailto:"),
-        extract_with_regex(doc, &EMAIL_REGEX),
-        extract_from_jsonld(doc, "email", |text| {
+        extract_with_prefix(document, "mailto:"),
+        extract_with_regex(document, &EMAIL_REGEX),
+        extract_from_jsonld(document, "email", |text| {
             EMAIL_REGEX
                 .find_iter(text)
                 .map(|found| found.as_str().to_string())
@@ -178,11 +182,11 @@ pub(super) fn extract_email_elements(doc: &Html) -> Vec<String> {
 }
 
 /// Extract all phone numbers from HTML document.
-pub(super) fn extract_phone_elements(doc: &Html) -> Vec<String> {
+pub(super) fn extract_phone_elements(document: &scraper::Html) -> Vec<String> {
     [
-        extract_with_prefix(doc, "tel:"),
-        find_phones(&document_text(doc)),
-        extract_from_jsonld(doc, "telephone", read_jsonld_telephone),
+        extract_with_prefix(document, "tel:"),
+        find_phones(&document_text(document)),
+        extract_from_jsonld(document, "telephone", read_jsonld_telephone),
     ]
     .concat()
 }

@@ -33,7 +33,7 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
 
     builder
         .build()
-        .map_err(|e| QrawlError::Request(format!("building the client: {}", e)))
+        .map_err(|error| QrawlError::Request(format!("building the client: {}", error)))
 }
 
 /// Follow fewer than `limit` redirects, and none to a host the domain filter

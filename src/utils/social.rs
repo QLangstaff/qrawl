@@ -19,19 +19,17 @@ pub(crate) fn social_parts(input: &str) -> Option<SocialParts> {
         // network round-trip expands.
         (None, None, None)
     } else {
-        // Owned segments, then a `&str` view for ergonomic slice patterns.
         let segments = path_segments(&url);
-        let segs: Vec<&str> = segments.iter().map(String::as_str).collect();
         match platform {
-            SocialPlatform::Reddit => reddit_parts(&segs),
-            SocialPlatform::TikTok => tiktok_parts(&segs),
-            SocialPlatform::Instagram => instagram_parts(&segs),
-            SocialPlatform::Facebook => facebook_parts(&segs, &url),
-            SocialPlatform::Pinterest => pinterest_parts(&segs),
-            SocialPlatform::YouTube => youtube_parts(&host, &segs, &url),
-            SocialPlatform::Twitter => twitter_parts(&segs),
-            SocialPlatform::LinkedIn => linkedin_parts(&segs),
-            SocialPlatform::Vimeo => vimeo_parts(&segs),
+            SocialPlatform::Reddit => reddit_parts(&segments),
+            SocialPlatform::TikTok => tiktok_parts(&segments),
+            SocialPlatform::Instagram => instagram_parts(&segments),
+            SocialPlatform::Facebook => facebook_parts(&segments, &url),
+            SocialPlatform::Pinterest => pinterest_parts(&segments),
+            SocialPlatform::YouTube => youtube_parts(&host, &segments, &url),
+            SocialPlatform::Twitter => twitter_parts(&segments),
+            SocialPlatform::LinkedIn => linkedin_parts(&segments),
+            SocialPlatform::Vimeo => vimeo_parts(&segments),
         }
     };
 
@@ -44,9 +42,9 @@ pub(crate) fn social_parts(input: &str) -> Option<SocialParts> {
 }
 
 /// Non-empty path segments.
-fn path_segments(url: &Url) -> Vec<String> {
+fn path_segments(url: &Url) -> Vec<&str> {
     url.path_segments()
-        .map(|segs| segs.filter(|s| !s.is_empty()).map(str::to_string).collect())
+        .map(|segments| segments.filter(|s| !s.is_empty()).collect())
         .unwrap_or_default()
 }
 
@@ -89,8 +87,8 @@ fn profile(handle: Option<String>) -> Parts {
     )
 }
 
-fn reddit_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn reddit_parts(segments: &[&str]) -> Parts {
+    match segments {
         // /r/{sub}/comments/{post}/{slug}/{comment}
         ["r", sub, "comments", _post, _slug, comment, ..] => (
             Some(SocialKind::Comment),
@@ -124,8 +122,8 @@ fn reddit_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn tiktok_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn tiktok_parts(segments: &[&str]) -> Parts {
+    match segments {
         [user, "video", id, ..] if user.starts_with('@') => (
             Some(SocialKind::Video),
             Some((*id).to_string()),
@@ -141,8 +139,8 @@ fn tiktok_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn instagram_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn instagram_parts(segments: &[&str]) -> Parts {
+    match segments {
         ["p", id, ..] => (Some(SocialKind::Post), Some((*id).to_string()), None),
         ["reel", id, ..] | ["reels", id, ..] | ["tv", id, ..] => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
@@ -154,8 +152,8 @@ fn instagram_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn facebook_parts(segs: &[&str], url: &Url) -> Parts {
-    match segs {
+fn facebook_parts(segments: &[&str], url: &Url) -> Parts {
+    match segments {
         ["watch", ..] => {
             let id = query_value(url, "v");
             (id.is_some().then_some(SocialKind::Video), id, None)
@@ -183,8 +181,8 @@ fn facebook_parts(segs: &[&str], url: &Url) -> Parts {
     }
 }
 
-fn pinterest_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn pinterest_parts(segments: &[&str]) -> Parts {
+    match segments {
         ["pin", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
             (Some(SocialKind::Post), Some((*id).to_string()), None)
         }
@@ -205,15 +203,15 @@ fn pinterest_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
+fn youtube_parts(host: &str, segments: &[&str], url: &Url) -> Parts {
     // youtu.be/{id}
     if host == "youtu.be" {
-        return match segs {
+        return match segments {
             [id, ..] => (Some(SocialKind::Video), Some((*id).to_string()), None),
             _ => (None, None, None),
         };
     }
-    match segs {
+    match segments {
         ["watch", ..] => {
             let id = query_value(url, "v");
             (id.is_some().then_some(SocialKind::Video), id, None)
@@ -229,8 +227,8 @@ fn youtube_parts(host: &str, segs: &[&str], url: &Url) -> Parts {
     }
 }
 
-fn twitter_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn twitter_parts(segments: &[&str]) -> Parts {
+    match segments {
         // `/i/status/{id}` addresses a post without naming its author.
         [user, "status", id, ..] => (
             Some(SocialKind::Post),
@@ -246,8 +244,8 @@ fn twitter_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn linkedin_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn linkedin_parts(segments: &[&str]) -> Parts {
+    match segments {
         ["in", slug, ..] | ["company", slug, ..] => profile(account(slug)),
         ["posts", slug, ..] | ["pulse", slug, ..] => {
             (Some(SocialKind::Post), Some((*slug).to_string()), None)
@@ -257,8 +255,8 @@ fn linkedin_parts(segs: &[&str]) -> Parts {
     }
 }
 
-fn vimeo_parts(segs: &[&str]) -> Parts {
-    match segs {
+fn vimeo_parts(segments: &[&str]) -> Parts {
+    match segments {
         [id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }

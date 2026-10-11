@@ -18,7 +18,7 @@ use super::utils::{page_content, parse_url, Children};
 ///    facts (`extract_social_parts`).
 ///
 /// Domain-agnostic: the caller maps the result to its own schema. Honors
-/// `ctx`'s fetch strategy and domain filters. Returns `Err` on an input that
+/// `context`'s fetch strategy and domain filters. Returns `Err` on an input that
 /// isn't an HTTP URL, before any network, or when neither the page nor an
 /// embed could be fetched.
 ///
@@ -33,8 +33,8 @@ use super::utils::{page_content, parse_url, Children};
 /// // page.structured carries the schema.org Recipe, if the page exposes one.
 /// # }
 /// ```
-pub async fn qrawl_any_url(url: &str, ctx: Context) -> Result<PageContent, QrawlError> {
+pub async fn qrawl_any_url(url: &str, context: Context) -> Result<PageContent, QrawlError> {
     let target = parse_url(url)?;
-    let (page, _children) = ctx.scope(page_content(&target, Children::Skip)).await?;
+    let (page, _children) = context.scope(page_content(&target, Children::Skip)).await?;
     Ok(page)
 }

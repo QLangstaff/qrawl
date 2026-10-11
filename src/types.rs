@@ -75,27 +75,27 @@ impl Context {
     /// defaults — including one in a task `future` spawns, because the context
     /// is task-local.
     pub async fn scope<F: Future>(self, future: F) -> F::Output {
-        CTX.scope(Arc::new(self), future).await
+        CONTEXT.scope(Arc::new(self), future).await
     }
 }
 
 tokio::task_local! {
-    static CTX: Arc<Context>;
+    static CONTEXT: Arc<Context>;
 }
 
 /// Read a field of the enclosing [`Context`], or `None` outside a
 /// [`Context::scope`].
 pub(crate) fn with_context<T>(read: impl FnOnce(&Context) -> T) -> Option<T> {
-    CTX.try_with(|ctx| read(ctx)).ok()
+    CONTEXT.try_with(|context| read(context)).ok()
 }
 
 pub(crate) fn get_fetch_strategy() -> FetchStrategy {
-    with_context(|ctx| ctx.fetch_strategy).unwrap_or(FetchStrategy::Auto)
+    with_context(|context| context.fetch_strategy).unwrap_or(FetchStrategy::Auto)
 }
 
 #[doc(hidden)]
 pub fn get_concurrency() -> NonZeroUsize {
-    with_context(|ctx| ctx.concurrency).unwrap_or(DEFAULT_CONCURRENCY)
+    with_context(|context| context.concurrency).unwrap_or(DEFAULT_CONCURRENCY)
 }
 
 /// Raw HTML content — the substrate every page-scraping tool consumes.

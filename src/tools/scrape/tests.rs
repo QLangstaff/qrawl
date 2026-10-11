@@ -1,15 +1,15 @@
 #![cfg(test)]
 use crate::tools::scrape::*;
 
-/// Parse raw mf2 items directly (the parser `scrape_jsonld` folds in via
-/// `microformats_to_schema`). No public tool exposes raw mf2, so tests reach the
+/// Parse raw Microformats2 items directly (the parser `scrape_jsonld` folds in via
+/// `microformats_to_schema`). No public tool exposes raw Microformats2, so tests reach the
 /// internal parser to assert its un-normalized vocabulary shape.
-fn raw_mf2(html: &str) -> Vec<serde_json::Value> {
-    super::utils::scrape_microformats_from_doc(&scraper::Html::parse_document(html))
+fn raw_microformats2(html: &str) -> Vec<serde_json::Value> {
+    super::utils::scrape_microformats_from_document(&scraper::Html::parse_document(html))
 }
 
-// The boundary trap: a nested item must NOT leak its props to the parent,
-// and a plain wrapper must NOT block the parent's props.
+// The boundary trap: a nested item must NOT leak its properties to the parent,
+// and a plain wrapper must NOT block the parent's properties.
 #[tokio::test]
 async fn microdata_nested_item_and_plain_wrapper() {
     let html = r#"
@@ -31,7 +31,7 @@ async fn microdata_nested_item_and_plain_wrapper() {
     let recipe = &items[0];
     assert_eq!(recipe["@type"], "Recipe");
 
-    // Plain wrapper did NOT block these props.
+    // Plain wrapper did NOT block these properties.
     assert_eq!(recipe["prepTime"], "PT15M");
     assert_eq!(recipe["cookTime"], "PT0M");
 
@@ -67,7 +67,7 @@ async fn microdata_value_by_element_type() {
 }
 
 #[tokio::test]
-async fn microdata_repeated_prop_becomes_array() {
+async fn microdata_repeated_property_becomes_array() {
     let html = r#"
             <div itemscope itemtype="https://schema.org/Recipe">
               <span itemprop="recipeIngredient">cucumber</span>
@@ -164,7 +164,7 @@ async fn rdfa_nested_item_and_plain_wrapper() {
 }
 
 #[tokio::test]
-async fn rdfa_content_attr_precedence() {
+async fn rdfa_content_attribute_precedence() {
     let html = r#"
             <div typeof="https://schema.org/Article">
               <span property="headline" content="Real Headline">Display Text</span>
@@ -234,7 +234,7 @@ async fn rdfa_id_from_resource_and_short_type() {
 async fn rdfa_chaining_without_typeof_is_a_pinned_limitation() {
     // DOCUMENTED LIMITATION (see utils.rs RDFa header): a `property` that
     // introduces its own subject via `resource` but lacks `typeof` is not
-    // split into a separate entity — its props flatten onto the parent.
+    // split into a separate entity — its properties flatten onto the parent.
     // This pins that behavior so it's a known limitation, not a surprise.
     let html = r##"
             <div vocab="https://schema.org/" typeof="Recipe">
@@ -277,7 +277,7 @@ async fn microdata_empty_when_absent() {
 // ===== Microformats2 =====
 
 #[tokio::test]
-async fn mf2_basic_h_recipe() {
+async fn microformats2_basic_h_recipe() {
     let html = r#"
             <div class="h-recipe">
               <h1 class="p-name">Avocado Soup</h1>
@@ -286,7 +286,7 @@ async fn mf2_basic_h_recipe() {
               <span class="p-yield">4 servings</span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-recipe"]));
     assert_eq!(
@@ -304,14 +304,14 @@ async fn mf2_basic_h_recipe() {
 }
 
 #[tokio::test]
-async fn mf2_nested_h_card_is_a_property_not_a_leak() {
+async fn microformats2_nested_h_card_is_a_property_not_a_leak() {
     let html = r#"
             <div class="h-entry">
               <h1 class="p-name">My Post</h1>
               <span class="p-author h-card"><span class="p-name">Alice</span></span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items.len(), 1); // h-card is nested, not top-level
                                 // The nested h-card's name must NOT leak into the h-entry.
     assert_eq!(
@@ -325,7 +325,7 @@ async fn mf2_nested_h_card_is_a_property_not_a_leak() {
 }
 
 #[tokio::test]
-async fn mf2_property_value_rules() {
+async fn microformats2_property_value_rules() {
     let html = r#"
             <div class="h-entry">
               <a class="u-url" href="https://ex.com/post">permalink</a>
@@ -334,18 +334,21 @@ async fn mf2_property_value_rules() {
               <span class="p-name">Title</span>
             </div>
         "#;
-    let items = raw_mf2(html);
-    let props = &items[0]["properties"];
-    assert_eq!(props["url"], serde_json::json!(["https://ex.com/post"])); // u- → href
-    assert_eq!(props["published"], serde_json::json!(["2024-06-01"])); // dt- → datetime
-    assert_eq!(props["name"], serde_json::json!(["Title"])); // p- → text
-    let content = &props["content"][0]; // e- → {html, value}
+    let items = raw_microformats2(html);
+    let properties = &items[0]["properties"];
+    assert_eq!(
+        properties["url"],
+        serde_json::json!(["https://ex.com/post"])
+    ); // u- → href
+    assert_eq!(properties["published"], serde_json::json!(["2024-06-01"])); // dt- → datetime
+    assert_eq!(properties["name"], serde_json::json!(["Title"])); // p- → text
+    let content = &properties["content"][0]; // e- → {html, value}
     assert_eq!(content["value"], "Hello world");
     assert!(content["html"].as_str().unwrap().contains("<b>world</b>"));
 }
 
 #[tokio::test]
-async fn mf2_children_for_non_property_nested_roots() {
+async fn microformats2_children_for_non_property_nested_roots() {
     let html = r#"
             <div class="h-feed">
               <h1 class="p-name">My Blog</h1>
@@ -353,7 +356,7 @@ async fn mf2_children_for_non_property_nested_roots() {
               <div class="h-entry"><span class="p-name">Post 2</span></div>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0]["properties"]["name"],
@@ -369,7 +372,7 @@ async fn mf2_children_for_non_property_nested_roots() {
 }
 
 #[tokio::test]
-async fn mf2_ignores_css_utility_classes() {
+async fn microformats2_ignores_css_utility_classes() {
     // Tailwind/Bootstrap padding utilities share the `p-` prefix but have
     // no-letter names → must NOT become properties named "2"/"4".
     let html = r#"
@@ -378,33 +381,33 @@ async fn mf2_ignores_css_utility_classes() {
               <div class="p-4"><span class="p-org">Acme</span></div>
             </div>
         "#;
-    let items = raw_mf2(html);
-    let props = items[0]["properties"].as_object().unwrap();
+    let items = raw_microformats2(html);
+    let properties = items[0]["properties"].as_object().unwrap();
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Alice"]));
     assert_eq!(items[0]["properties"]["org"], serde_json::json!(["Acme"]));
-    assert!(props.get("2").is_none());
-    assert!(props.get("4").is_none());
+    assert!(properties.get("2").is_none());
+    assert!(properties.get("4").is_none());
 }
 
 #[tokio::test]
-async fn mf2_h_prefix_utility_classes_are_not_roots() {
-    // Tailwind height utilities share the `h-` prefix; only whitelisted mf2
+async fn microformats2_h_prefix_utility_classes_are_not_roots() {
+    // Tailwind height utilities share the `h-` prefix; only whitelisted Microformats2
     // vocabularies are roots, so these produce nothing.
     let html = r#"
             <div class="h-screen flex">
               <div class="h-full"><p class="text-lg">Just Tailwind</p></div>
             </div>
         "#;
-    assert!(raw_mf2(html).is_empty());
+    assert!(raw_microformats2(html).is_empty());
 }
 
 #[tokio::test]
-async fn mf2_implied_properties_are_a_pinned_limitation() {
-    // DOCUMENTED LIMITATION (see utils.rs mf2 header): implied name/url are
+async fn microformats2_implied_properties_are_a_pinned_limitation() {
+    // DOCUMENTED LIMITATION (see utils.rs Microformats2 header): implied name/url are
     // deferred, so a minimal h-card yields empty properties rather than
     // implying name="Alice" / url=href. This pins that behavior.
     let html = r#"<a class="h-card" href="https://alice.example">Alice</a>"#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     assert!(items[0]["properties"].as_object().unwrap().is_empty());
 }
@@ -421,22 +424,22 @@ async fn scrape_jsonld_folds_in_microformats() {
     let types: Vec<&str> = schema.iter().filter_map(|v| v["@type"].as_str()).collect();
     assert!(types.contains(&"Article"), "JSON-LD present: {types:?}");
     assert!(types.contains(&"Person"), "mf2 folded in: {types:?}");
-    // Raw mf2 is still parseable directly (no public tool exposes it).
-    let mf = raw_mf2(html);
-    assert_eq!(mf[0]["type"], serde_json::json!(["h-card"]));
+    // Raw Microformats2 is still parseable directly (no public tool exposes it).
+    let microformat = raw_microformats2(html);
+    assert_eq!(microformat[0]["type"], serde_json::json!(["h-card"]));
 }
 
 #[tokio::test]
-async fn mf2_empty_when_absent() {
-    assert!(raw_mf2("<div class='just-css'>hi</div>").is_empty());
+async fn microformats2_empty_when_absent() {
+    assert!(raw_microformats2("<div class='just-css'>hi</div>").is_empty());
 }
 
-// ===== Microformats1 backcompat (mf1 → mf2) =====
+// ===== Microformats1 backcompat (Microformats1 → Microformats2) =====
 
 #[tokio::test]
-async fn mf1_nested_author_vcard_in_hentry() {
-    // The whole machine at once: root-map (hentry→h-entry), per-vocab prop
-    // (author→p-author), cross-vocab nesting (author span re-resolves to
+async fn microformats1_nested_author_vcard_in_hentry() {
+    // The whole machine at once: root-map (hentry→h-entry), per-vocabulary property
+    // (author→p-author), cross-vocabulary nesting (author span re-resolves to
     // Vcard, fn→p-name), and the boundary (fn must NOT leak to entry name).
     let html = r#"
             <div class="hentry">
@@ -444,7 +447,7 @@ async fn mf1_nested_author_vcard_in_hentry() {
               <span class="author vcard"><span class="fn">Alice</span></span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-entry"]));
     // entry-title → name; nested vcard's fn must NOT leak here.
@@ -456,7 +459,7 @@ async fn mf1_nested_author_vcard_in_hentry() {
 }
 
 #[tokio::test]
-async fn mf1_vcard_multi_class_properties() {
+async fn microformats1_vcard_multi_class_properties() {
     let html = r#"
             <div class="vcard">
               <a class="fn url" href="https://alice.example">Alice</a>
@@ -464,21 +467,24 @@ async fn mf1_vcard_multi_class_properties() {
               <span class="bday">1990-12-28</span>
             </div>
         "#;
-    let items = raw_mf2(html);
-    let props = &items[0]["properties"];
+    let items = raw_microformats2(html);
+    let properties = &items[0]["properties"];
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     // One element, two classes → two properties (fn→p-name text, url→u-url href).
-    assert_eq!(props["name"], serde_json::json!(["Alice"]));
-    assert_eq!(props["url"], serde_json::json!(["https://alice.example"]));
+    assert_eq!(properties["name"], serde_json::json!(["Alice"]));
     assert_eq!(
-        props["photo"],
+        properties["url"],
+        serde_json::json!(["https://alice.example"])
+    );
+    assert_eq!(
+        properties["photo"],
         serde_json::json!(["https://alice.example/p.jpg"])
     );
-    assert_eq!(props["bday"], serde_json::json!(["1990-12-28"]));
+    assert_eq!(properties["bday"], serde_json::json!(["1990-12-28"]));
 }
 
 #[tokio::test]
-async fn mf1_hrecipe() {
+async fn microformats1_hrecipe() {
     let html = r#"
             <div class="hrecipe">
               <h1 class="fn">Soup</h1>
@@ -487,7 +493,7 @@ async fn mf1_hrecipe() {
               <span class="yield">4 servings</span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-recipe"]));
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Soup"]));
     assert_eq!(
@@ -501,14 +507,14 @@ async fn mf1_hrecipe() {
 }
 
 #[tokio::test]
-async fn mf1_hfeed_entries_become_children() {
+async fn microformats1_hfeed_entries_become_children() {
     let html = r#"
             <div class="hfeed">
               <div class="hentry"><span class="entry-title">Post 1</span></div>
               <div class="hentry"><span class="entry-title">Post 2</span></div>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-feed"]));
     let children = items[0]["children"].as_array().unwrap();
@@ -521,7 +527,7 @@ async fn mf1_hfeed_entries_become_children() {
 }
 
 #[tokio::test]
-async fn mf1_nested_adr_does_not_leak_into_vcard() {
+async fn microformats1_nested_adr_does_not_leak_into_vcard() {
     // The reason adr/geo must be roots: their sub-properties stay in the
     // nested h-adr instead of leaking onto the h-card.
     let html = r#"
@@ -533,7 +539,7 @@ async fn mf1_nested_adr_does_not_leak_into_vcard() {
               </span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["Acme"]));
     let adr = &items[0]["properties"]["adr"][0];
     assert_eq!(adr["type"], serde_json::json!(["h-adr"]));
@@ -547,12 +553,12 @@ async fn mf1_nested_adr_does_not_leak_into_vcard() {
 }
 
 #[tokio::test]
-async fn mf1_empty_geo_dropped_but_populated_geo_kept() {
+async fn microformats1_empty_geo_dropped_but_populated_geo_kept() {
     // A stray CSS `class="geo"` yields an empty h-geo → dropped.
-    let empty = raw_mf2(r#"<div class="geo"></div>"#);
+    let empty = raw_microformats2(r#"<div class="geo"></div>"#);
     assert!(empty.is_empty());
     // A real geo with coordinates survives.
-    let real = raw_mf2(
+    let real = raw_microformats2(
         r#"<div class="geo"><span class="latitude">45.5</span><span class="longitude">-122.6</span></div>"#,
     );
     assert_eq!(real.len(), 1);
@@ -563,25 +569,26 @@ async fn mf1_empty_geo_dropped_but_populated_geo_kept() {
 }
 
 #[tokio::test]
-async fn mf1_empty_vcard_is_not_dropped() {
+async fn microformats1_empty_vcard_is_not_dropped() {
     // The guard is scoped to geo/adr — a minimal vcard (a microformat-only
-    // coinage) survives with empty properties, like the mf2 h-card.
-    let items = raw_mf2(r#"<span class="vcard"></span>"#);
+    // coinage) survives with empty properties, like the Microformats2 h-card.
+    let items = raw_microformats2(r#"<span class="vcard"></span>"#);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
 }
 
 #[tokio::test]
-async fn mf1_dual_root_prefers_mf2() {
-    // An element with both `h-card` (mf2) and `vcard` (mf1) → mf2 wins, so
-    // the mf2-prefixed `p-name` is read and the bare `fn` is ignored.
+async fn microformats1_dual_root_prefers_microformats2() {
+    // An element with both `h-card` (Microformats2) and `vcard` (Microformats1) →
+    // Microformats2 wins, so the Microformats2-prefixed `p-name` is read and the bare
+    // `fn` is ignored.
     let html = r#"
             <div class="h-card vcard">
               <span class="p-name">A</span>
               <span class="fn">B</span>
             </div>
         "#;
-    let items = raw_mf2(html);
+    let items = raw_microformats2(html);
     assert_eq!(items[0]["type"], serde_json::json!(["h-card"]));
     assert_eq!(items[0]["properties"]["name"], serde_json::json!(["A"]));
 }
@@ -637,7 +644,7 @@ fn merge_appends_distinct_entities() {
 // Microdata alone misses them) must normalize to a Recipe whose
 // `recipeInstructions` is a 3-element ARRAY, not one joined blob.
 #[tokio::test]
-async fn mf2_h_recipe_normalizes_with_step_array() {
+async fn microformats2_h_recipe_normalizes_with_step_array() {
     let html = r#"
             <div class="hrecipe h-recipe">
               <h3 class="p-name fn">Raspberry Swirl Cheesecake Bars</h3>
@@ -678,7 +685,7 @@ async fn mf2_h_recipe_normalizes_with_step_array() {
 // A non-recipe vocabulary maps too (the table is generic), and an unrecognized
 // type is dropped.
 #[tokio::test]
-async fn mf2_h_card_and_unknown_type() {
+async fn microformats2_h_card_and_unknown_type() {
     let html = r#"
             <div class="h-card">
               <span class="p-name">Ada Lovelace</span>
@@ -694,7 +701,7 @@ async fn mf2_h_card_and_unknown_type() {
 }
 
 #[tokio::test]
-async fn mf2_h_entry_content_is_text_not_array() {
+async fn microformats2_h_entry_content_is_text_not_array() {
     // schema.org `articleBody` is `Text`, so a multi-paragraph `e-content` must
     // stay ONE string — unlike `recipeInstructions` (an `ItemList`).
     let html = r#"
@@ -715,9 +722,9 @@ async fn mf2_h_entry_content_is_text_not_array() {
 // The full unify: a page double-encoding one Recipe — Microdata (name +
 // ingredient, NO steps) and an h-recipe microformat (steps in a no-itemprop
 // e-instructions block) — yields ONE complete Recipe, plus the standalone
-// h-card Person. Proves native + mf2 union and the cross-encoding merge.
+// h-card Person. Proves native + Microformats2 union and the cross-encoding merge.
 #[tokio::test]
-async fn scrape_jsonld_merges_native_and_mf2() {
+async fn scrape_jsonld_merges_native_and_microformats2() {
     let html = r#"
             <div itemscope itemtype="https://schema.org/Recipe">
               <span itemprop="name">Cheesecake Bars</span>
@@ -959,16 +966,16 @@ fn nested_items_under_several_names_are_bounded_in_size_and_time() {
             open.repeat(60),
             "</div>".repeat(60)
         );
-        let doc = scraper::Html::parse_document(&html);
+        let document = scraper::Html::parse_document(&html);
         let started = std::time::Instant::now();
         let sizes = [
-            serde_json::to_string(&super::utils::scrape_microdata_from_doc(&doc))
+            serde_json::to_string(&super::utils::scrape_microdata_from_document(&document))
                 .unwrap()
                 .len(),
-            serde_json::to_string(&super::utils::scrape_rdfa_from_doc(&doc))
+            serde_json::to_string(&super::utils::scrape_rdfa_from_document(&document))
                 .unwrap()
                 .len(),
-            serde_json::to_string(&super::utils::scrape_microformats_from_doc(&doc))
+            serde_json::to_string(&super::utils::scrape_microformats_from_document(&document))
                 .unwrap()
                 .len(),
         ];
@@ -1029,7 +1036,7 @@ async fn a_nested_microformat_as_a_property_at_every_level_is_bounded() {
     );
     let started = std::time::Instant::now();
     // The raw items hold each level's implied `value`: the copies.
-    let items = raw_mf2(&html);
+    let items = raw_microformats2(&html);
     let size = serde_json::to_string(&items).unwrap().len();
     assert!(size > 2 * text.len(), "{size} bytes");
     assert!(size < 10 * html.len(), "{size} bytes from {}", html.len());
@@ -1055,7 +1062,7 @@ async fn a_nested_author_keeps_its_name_when_the_budget_is_spent() {
     );
     // The budget was spent: the author's implied `value` was left out, its
     // name wasn't.
-    let author = &raw_mf2(&html)[0]["properties"]["author"][0];
+    let author = &raw_microformats2(&html)[0]["properties"]["author"][0];
     assert_eq!(author["properties"]["name"][0], "Jane Doe");
     assert!(author.get("value").is_none());
     let jsonld = scrape_jsonld(&html.as_str().into()).await;
@@ -1081,17 +1088,18 @@ async fn a_value_stored_once_survives_a_spent_copy_budget() {
         "<div class=\"h-card p-a p-b\">".repeat(60),
         "</div>".repeat(60)
     );
-    let doc = |html: &str| scraper::Html::parse_document(html);
+    let document = |html: &str| scraper::Html::parse_document(html);
     assert_eq!(
-        super::utils::scrape_microdata_from_doc(&doc(&microdata))[0]["name"],
+        super::utils::scrape_microdata_from_document(&document(&microdata))[0]["name"],
         "Jane"
     );
     assert_eq!(
-        super::utils::scrape_rdfa_from_doc(&doc(&rdfa))[0]["name"],
+        super::utils::scrape_rdfa_from_document(&document(&rdfa))[0]["name"],
         "Jane"
     );
     assert_eq!(
-        super::utils::scrape_microformats_from_doc(&doc(&microformats))[0]["properties"]["name"][0],
+        super::utils::scrape_microformats_from_document(&document(&microformats))[0]["properties"]
+            ["name"][0],
         "Jane"
     );
 }
@@ -1144,10 +1152,10 @@ async fn one_documents_copies_do_not_spend_the_next_documents_budget() {
         "</div>".repeat(30)
     );
     let modest = r#"<html><body><div class="h-card"><span class="p-name p-nickname">Jane</span></div></body></html>"#;
-    let greedy_doc = scraper::Html::parse_document(&greedy);
-    let modest_doc = scraper::Html::parse_document(modest);
-    super::utils::scrape_microformats_from_doc(&greedy_doc);
-    let cards = super::utils::scrape_microformats_from_doc(&modest_doc);
+    let greedy_document = scraper::Html::parse_document(&greedy);
+    let modest_document = scraper::Html::parse_document(modest);
+    super::utils::scrape_microformats_from_document(&greedy_document);
+    let cards = super::utils::scrape_microformats_from_document(&modest_document);
     assert_eq!(cards[0]["properties"]["name"][0], "Jane");
     assert_eq!(cards[0]["properties"]["nickname"][0], "Jane");
 }

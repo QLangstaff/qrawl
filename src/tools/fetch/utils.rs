@@ -37,7 +37,7 @@ pub(super) fn is_url_allowed(
 /// `Context::scope` nothing is filtered.
 pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
     let is_allowed =
-        with_context(|ctx| is_url_allowed(url, &ctx.allow_domains, &ctx.block_domains))
+        with_context(|context| is_url_allowed(url, &context.allow_domains, &context.block_domains))
             .unwrap_or(true);
     if is_allowed {
         Ok(())

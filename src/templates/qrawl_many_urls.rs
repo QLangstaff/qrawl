@@ -30,7 +30,7 @@ use super::utils::{crawl, page_content, Children, Visited};
 /// - limit: stop once this many pages are returned, cancelling the fetches in
 ///   flight.
 ///
-/// `ctx`'s domain lists apply to every fetch, so a page on a filtered host is
+/// `context`'s domain lists apply to every fetch, so a page on a filtered host is
 /// never requested, returned, or expanded.
 ///
 /// ```no_run
@@ -51,7 +51,7 @@ use super::utils::{crawl, page_content, Children, Visited};
 pub async fn qrawl_many_urls(
     urls: Vec<String>,
     options: CrawlOptions,
-    ctx: Context,
+    context: Context,
 ) -> Vec<PageContent> {
     let CrawlOptions {
         depth,
@@ -69,23 +69,29 @@ pub async fn qrawl_many_urls(
         (allow_urls.is_empty() || allow_urls.contains(url)) && !block_urls.contains(url)
     };
 
-    let pages = crawl(ctx, urls, depth, admit, move |target, level| async move {
-        let children = if level < depth {
-            Children::Map
-        } else {
-            Children::Skip
-        };
-        let (page, children) = page_content(&target, children)
-            .await
-            .map_err(|e| log::debug!("{} failed: {}", target.address, e))
-            .ok()?;
-        log::info!("crawled {}", page.address);
-        Some(Visited {
-            url: page.url.clone(),
-            item: page,
-            children,
-        })
-    })
+    let pages = crawl(
+        context,
+        urls,
+        depth,
+        admit,
+        move |target, level| async move {
+            let children = if level < depth {
+                Children::Map
+            } else {
+                Children::Skip
+            };
+            let (page, children) = page_content(&target, children)
+                .await
+                .map_err(|error| log::debug!("{} failed: {}", target.address, error))
+                .ok()?;
+            log::info!("crawled {}", page.address);
+            Some(Visited {
+                url: page.url.clone(),
+                item: page,
+                children,
+            })
+        },
+    )
     // The schema filter decides results only: a roundup that doesn't match
     // still yields its matching children.
     .filter_map(move |(_level, page)| {

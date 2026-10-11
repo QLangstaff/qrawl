@@ -126,7 +126,7 @@ async fn read_body(response: &mut Response) -> Result<Vec<u8>, QrawlError> {
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?
+        .map_err(|error| QrawlError::Request(format!("reading the response: {}", error)))?
     {
         if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
             return Err(QrawlError::TooLarge(MAX_RESPONSE_BYTES));
@@ -189,7 +189,7 @@ where
     for (attempt, profile) in profiles.iter().enumerate() {
         let result = match send(url, *profile, referer, attempt_timeout(strategy)).await {
             Ok(response) => read(response).await,
-            Err(e) => Err(e),
+            Err(error) => Err(error),
         };
         match result {
             Ok(value) => {
@@ -208,11 +208,13 @@ where
             // A missing page is missing under every profile, a redirect the
             // domain filter refused stays refused, a size is the server's, and
             // a loop a cookie-keeping client ran into is a loop.
-            Err(e) if e.is_final() => return Err(e),
-            Err(e @ QrawlError::TooManyRedirects(_)) if profile.keeps_cookies() => return Err(e),
-            Err(e) => {
-                log::debug!("{} via {:?} failed: {}", url, profile, e);
-                errors.push(e);
+            Err(error) if error.is_final() => return Err(error),
+            Err(error @ QrawlError::TooManyRedirects(_)) if profile.keeps_cookies() => {
+                return Err(error)
+            }
+            Err(error) => {
+                log::debug!("{} via {:?} failed: {}", url, profile, error);
+                errors.push(error);
             }
         }
     }
@@ -241,12 +243,12 @@ async fn send(
         .timeout(timeout)
         .send()
         .await
-        .map_err(|e| {
+        .map_err(|error| {
             // A redirect the domain filter refused surfaces as a reqwest error.
-            match std::error::Error::source(&e).and_then(|s| s.downcast_ref::<QrawlError>()) {
+            match std::error::Error::source(&error).and_then(|s| s.downcast_ref::<QrawlError>()) {
                 Some(blocked) => blocked.clone(),
-                None if e.is_redirect() => QrawlError::TooManyRedirects(url.to_string()),
-                None => QrawlError::Request(e.to_string()),
+                None if error.is_redirect() => QrawlError::TooManyRedirects(url.to_string()),
+                None => QrawlError::Request(error.to_string()),
             }
         })
 }

@@ -1,7 +1,7 @@
 use crate::tools::scrape::jsonld_entities;
 use crate::utils::LINK_SELECTOR;
 use crate::utils::{canonical_domain, schema_types};
-use scraper::{ElementRef, Html};
+use scraper::ElementRef;
 use serde_json::Value;
 use std::cmp::Reverse;
 use url::Url;
@@ -87,8 +87,8 @@ pub(super) fn map_siblings(html: &str, url: &str) -> Vec<String> {
 }
 
 /// Map child URLs from HTML siblings using a pre-parsed document.
-pub(super) fn map_siblings_from_doc(doc: &Html, url: &str) -> Vec<String> {
-    let siblings = map_body_siblings_from_doc(doc);
+pub(super) fn map_siblings_from_document(document: &scraper::Html, url: &str) -> Vec<String> {
+    let siblings = map_body_siblings_from_document(document);
     map_sibling_link(&siblings, url)
 }
 
@@ -97,15 +97,15 @@ pub(super) fn map_siblings_from_doc(doc: &Html, url: &str) -> Vec<String> {
 /// Extracts ItemList from JSON-LD and resolves URLs (including anchor references).
 #[cfg(test)]
 pub(super) fn map_itemlist(html: &str, url: &str) -> Vec<String> {
-    let doc = Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_doc(&doc);
-    map_itemlist_link(&itemlist, &doc, url)
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
+    map_itemlist_link(&itemlist, &document, url)
 }
 
 /// Map child URLs from JSON-LD ItemList using a pre-parsed document.
-pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
-    let itemlist = map_jsonld_itemlist_from_doc(doc);
-    map_itemlist_link(&itemlist, doc, url)
+pub(super) fn map_itemlist_from_document(document: &scraper::Html, url: &str) -> Vec<String> {
+    let itemlist = map_jsonld_itemlist_from_document(document);
+    map_itemlist_link(&itemlist, document, url)
 }
 
 /// Map body content to sibling HTML fragments.
@@ -129,13 +129,13 @@ pub(super) fn map_itemlist_from_doc(doc: &Html, url: &str) -> Vec<String> {
 ///
 #[cfg(test)]
 pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
-    let doc = Html::parse_document(html);
-    map_body_siblings_from_doc(&doc)
+    let document = scraper::Html::parse_document(html);
+    map_body_siblings_from_document(&document)
 }
 
 /// Same as `map_body_siblings` but reuses an already-parsed document.
-pub(super) fn map_body_siblings_from_doc(doc: &Html) -> Vec<String> {
-    let root = doc.root_element();
+pub(super) fn map_body_siblings_from_document(document: &scraper::Html) -> Vec<String> {
+    let root = document.root_element();
 
     // Scan entire tree and find ALL sibling groups at ALL levels
     let mut all_sibling_groups: Vec<SiblingGroup> = Vec::new();
@@ -189,7 +189,7 @@ fn is_valid_scheme(url: &Url) -> bool {
 /// resolve against and yields no links.
 fn parse_base_url(url: &str) -> Option<Url> {
     Url::parse(url)
-        .map_err(|e| log::warn!("invalid URL '{}': {}", url, e))
+        .map_err(|error| log::warn!("invalid URL '{}': {}", url, error))
         .ok()
 }
 
@@ -197,8 +197,8 @@ fn parse_base_url(url: &str) -> Option<Url> {
 fn is_inside_tag(element: &ElementRef, tag_name: &str) -> bool {
     let mut ancestor = element.parent();
     while let Some(node) = ancestor {
-        if let Some(elem) = ElementRef::wrap(node) {
-            if elem.value().name() == tag_name {
+        if let Some(ancestor_element) = ElementRef::wrap(node) {
+            if ancestor_element.value().name() == tag_name {
                 return true;
             }
         }
@@ -212,7 +212,7 @@ fn map_structure_pattern(element: &ElementRef) -> StructurePattern {
     let tags: Vec<String> = element
         .children()
         .filter_map(ElementRef::wrap)
-        .map(|e| e.value().name().to_string())
+        .map(|child| child.value().name().to_string())
         .collect();
     StructurePattern { tags }
 }
@@ -551,17 +551,17 @@ pub(super) fn map_sibling_link(siblings: &[String], url: &str) -> Vec<String> {
     siblings
         .iter()
         .filter_map(|html| {
-            let doc = Html::parse_fragment(html);
-            select_primary_link_in_document(&doc, &base)
+            let document = scraper::Html::parse_fragment(html);
+            select_primary_link_in_document(&document, &base)
         })
         .collect()
 }
 
 /// The `ItemList` entities a document's JSON-LD declares, at the top or under
 /// a page's `mainEntity`, read by the same reader as `scrape_jsonld`.
-pub(super) fn map_jsonld_itemlist_from_doc(doc: &Html) -> Vec<Value> {
+pub(super) fn map_jsonld_itemlist_from_document(document: &scraper::Html) -> Vec<Value> {
     let mut itemlists = Vec::new();
-    for entity in jsonld_entities(doc) {
+    for entity in jsonld_entities(document) {
         collect_itemlists(&entity, &mut itemlists);
     }
     itemlists
@@ -598,7 +598,11 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
 /// 1. Full external URLs - Return as-is
 /// 2. Anchor references (#id) - Find element and extract link
 /// 3. Relative URLs - Resolve to absolute
-pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Vec<String> {
+pub(super) fn map_itemlist_link(
+    itemlist: &[Value],
+    document: &scraper::Html,
+    url: &str,
+) -> Vec<String> {
     let Some(base) = parse_base_url(url) else {
         return Vec::new();
     };
@@ -606,17 +610,17 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
     itemlist
         .iter()
         .filter_map(|item| {
-            let elements = item.get("itemListElement")?.as_array()?;
+            let item_list_elements = item.get("itemListElement")?.as_array()?;
 
             Some(
-                elements
+                item_list_elements
                     .iter()
-                    .filter_map(|elem| {
-                        let url_str = elem.get("url")?.as_str()?;
+                    .filter_map(|item_list_element| {
+                        let url_str = item_list_element.get("url")?.as_str()?;
 
                         // Case 1: Anchor reference (#id)
                         if let Some(anchor_id) = url_str.strip_prefix('#') {
-                            if let Some(resolved) = map_anchor_to_link(anchor_id, doc, &base) {
+                            if let Some(resolved) = map_anchor_to_link(anchor_id, document, &base) {
                                 return Some(resolved);
                             }
                             return None;
@@ -633,7 +637,7 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
                         match url.fragment() {
                             Some(fragment) if is_this_page => {
                                 let anchor_id = urlencoding::decode(fragment).ok()?;
-                                map_anchor_to_link(&anchor_id, doc, &base)
+                                map_anchor_to_link(&anchor_id, document, &base)
                             }
                             // Case 3: any other URL, absolute or relative
                             _ => Some(url.to_string()),
@@ -651,8 +655,8 @@ pub(super) fn map_itemlist_link(itemlist: &[Value], doc: &Html, url: &str) -> Ve
 /// # Performance Note
 /// Selector must be dynamically created per anchor_id (cannot reuse a static Lazy value).
 /// This is acceptable because anchor resolution is rare compared to other operations.
-fn map_anchor_to_link(anchor_id: &str, doc: &Html, base: &Url) -> Option<String> {
-    let element = doc
+fn map_anchor_to_link(anchor_id: &str, document: &scraper::Html, base: &Url) -> Option<String> {
+    let element = document
         .root_element()
         .descendants()
         .filter_map(ElementRef::wrap)
@@ -677,8 +681,8 @@ fn is_heading_link(link: &ElementRef, text: &str) -> bool {
     }
 
     for descendant in link.descendants() {
-        if let Some(elem) = ElementRef::wrap(descendant) {
-            match elem.value().name() {
+        if let Some(element) = ElementRef::wrap(descendant) {
+            match element.value().name() {
                 // `text` is already known non-blank (checked at entry).
                 "h1" | "h2" | "h3" | "h4" | "strong" | "b" => return true,
                 _ => {}
@@ -719,8 +723,8 @@ fn collect_heading_texts(element: &ElementRef) -> Vec<String> {
     element
         .descendants()
         .filter_map(ElementRef::wrap)
-        .filter(|el| matches!(el.value().name(), "h1" | "h2" | "h3" | "h4"))
-        .map(|el| match_text(&el.text().collect::<String>()))
+        .filter(|heading| matches!(heading.value().name(), "h1" | "h2" | "h3" | "h4"))
+        .map(|heading| match_text(&heading.text().collect::<String>()))
         .filter(|text| !text.is_empty())
         .collect()
 }
@@ -809,8 +813,8 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
     heading_link.or(primary_text).or(fallback)
 }
 
-fn select_primary_link_in_document(doc: &Html, base: &Url) -> Option<String> {
-    for node in doc.tree.nodes() {
+fn select_primary_link_in_document(document: &scraper::Html, base: &Url) -> Option<String> {
+    for node in document.tree.nodes() {
         if let Some(element) = ElementRef::wrap(node) {
             if let Some(link) = select_primary_link_in_element(&element, base) {
                 return Some(link);

@@ -1,6 +1,6 @@
 //! Shared Macros
 
-/// Compose tools into one crawl. `chain! { urls, ctx => a -> b -> c }` threads a
+/// Compose tools into one crawl. `chain! { urls, context => a -> b -> c }` threads a
 /// collection through each step, fanning per-item work out with bounded
 /// concurrency and feeding each step's output into the next. Each `a -> b` is
 /// type-checked by the compiler (feeding a URL list where pages are expected
@@ -46,9 +46,9 @@
 /// ```
 #[macro_export]
 macro_rules! chain {
-    ($urls:expr, $ctx:expr => $($rest:tt)+) => {{
+    ($urls:expr, $context:expr => $($rest:tt)+) => {{
         let urls = $urls;
-        $ctx.scope(async move { $crate::chain!(@run urls, $($rest)+) }).await
+        $context.scope(async move { $crate::chain!(@run urls, $($rest)+) }).await
     }};
 
     // Thread the collection through each step, left to right. A step is either a

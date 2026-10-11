@@ -1,7 +1,6 @@
 #![cfg(test)]
 use crate::tools::map::utils::*;
 use crate::tools::map::*;
-use scraper::Html;
 
 #[tokio::test]
 async fn test_map_all_links() {
@@ -170,8 +169,8 @@ fn test_map_jsonld_itemlist() {
             </html>
         "##;
 
-    let doc = Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_doc(&doc);
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
     assert_eq!(itemlist.len(), 1);
     assert_eq!(
         itemlist[0].get("@type").unwrap().as_str().unwrap(),
@@ -193,9 +192,9 @@ fn test_map_itemlist_link_full_urls() {
             </script>
         "##;
 
-    let doc = Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_doc(&doc);
-    let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
+    let urls = map_itemlist_link(&itemlist, &document, "https://example.com");
 
     assert_eq!(urls.len(), 2);
     assert_eq!(urls[0], "https://example.com/recipe/1");
@@ -224,9 +223,9 @@ fn test_map_itemlist_link_anchors() {
             </html>
         "##;
 
-    let doc = Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_doc(&doc);
-    let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
+    let urls = map_itemlist_link(&itemlist, &document, "https://example.com");
 
     assert_eq!(urls.len(), 2);
     assert_eq!(urls[0], "https://site.com/choc-chip");
@@ -257,9 +256,9 @@ fn test_map_itemlist_link_multiple() {
             </html>
         "##;
 
-    let doc = Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_doc(&doc);
-    let urls = map_itemlist_link(&itemlist, &doc, "https://example.com");
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
+    let urls = map_itemlist_link(&itemlist, &document, "https://example.com");
 
     assert_eq!(urls.len(), 1);
     assert_eq!(urls[0], "https://site.com/recipe");

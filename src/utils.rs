@@ -406,11 +406,11 @@ impl TreeSink for DepthBounded {
     fn create_element(
         &mut self,
         name: QualName,
-        attrs: Vec<Attribute>,
+        attributes: Vec<Attribute>,
         flags: ElementFlags,
     ) -> NodeId {
         self.operations += 1;
-        self.sink.create_element(name, attrs, flags)
+        self.sink.create_element(name, attributes, flags)
     }
 
     fn create_comment(&mut self, text: StrTendril) -> NodeId {
@@ -434,12 +434,12 @@ impl TreeSink for DepthBounded {
     fn append_based_on_parent_node(
         &mut self,
         element: &NodeId,
-        prev_element: &NodeId,
+        previous_element: &NodeId,
         child: NodeOrText<NodeId>,
     ) {
         self.operations += 1;
         self.moving(&child);
-        // Beside `element` when it has a parent, else under `prev_element`.
+        // Beside `element` when it has a parent, else under `previous_element`.
         let has_parent = self
             .sink
             .tree
@@ -448,11 +448,11 @@ impl TreeSink for DepthBounded {
         let depth = if has_parent {
             self.depth_of(element)
         } else {
-            self.depth_of(prev_element) + 1
+            self.depth_of(previous_element) + 1
         };
         self.place_at(&child, depth);
         self.sink
-            .append_based_on_parent_node(element, prev_element, child)
+            .append_based_on_parent_node(element, previous_element, child)
     }
 
     fn append_doctype_to_document(
@@ -494,9 +494,9 @@ impl TreeSink for DepthBounded {
         self.sink.append_before_sibling(sibling, new_node)
     }
 
-    fn add_attrs_if_missing(&mut self, target: &NodeId, attrs: Vec<Attribute>) {
+    fn add_attrs_if_missing(&mut self, target: &NodeId, attributes: Vec<Attribute>) {
         self.operations += 1;
-        self.sink.add_attrs_if_missing(target, attrs)
+        self.sink.add_attrs_if_missing(target, attributes)
     }
 
     fn associate_with_form(

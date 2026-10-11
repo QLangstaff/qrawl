@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 use crate::errors::QrawlError;
 use crate::tools::extract::{extract_preview, extract_social_parts};
 use crate::tools::fetch::{fetch_embed, fetch_strategy};
-use crate::tools::map::{map_children_from_doc, map_page_from_doc};
+use crate::tools::map::{map_children_from_document, map_page_from_document};
 use crate::tools::normalize::{absolute_url, normalize_urls, CanonicalUrl};
-use crate::tools::scrape::{scrape_embed, scrape_from_doc};
+use crate::tools::scrape::{scrape_embed, scrape_from_document};
 use crate::types::{Context, Html, SocialKind};
 use crate::utils::with_document;
 
@@ -70,7 +70,7 @@ pub(super) async fn page_content(
         Ok(fetched) => (Some(fetched), None),
         // A filtered page is not stood in for by its embed.
         Err(blocked @ QrawlError::BlockedDomain(_)) => return Err(blocked),
-        Err(e) => (None, Some(e)),
+        Err(error) => (None, Some(error)),
     };
 
     // normalize: the page is the URL that served it. A shortlink redirects
@@ -97,25 +97,25 @@ pub(super) async fn page_content(
 
     // scrape: the embed and the page into the same layers.
     let embed_metadata = embed.map_or_else(Vec::new, |embed| scrape_embed(&embed));
-    if let Some(e) = page_error {
+    if let Some(error) = page_error {
         if embed_metadata.is_empty() {
-            return Err(e);
+            return Err(error);
         }
-        log::debug!("{} served only its embed: {}", target.address, e);
+        log::debug!("{} served only its embed: {}", target.address, error);
     }
     // scrape + map, from one parse: the layers, every link, and the children
     // when asked.
     let ((body, page_metadata, structured), links, children) = match &fetched {
         Some(fetched) => {
             let served_by = fetched.url.clone();
-            with_document(&fetched.html, move |doc| {
+            with_document(&fetched.html, move |document| {
                 let children = match children {
-                    Children::Map => map_children_from_doc(doc, &served_by),
+                    Children::Map => map_children_from_document(document, &served_by),
                     Children::Skip => Vec::new(),
                 };
                 (
-                    scrape_from_doc(doc),
-                    map_page_from_doc(doc, &served_by),
+                    scrape_from_document(document),
+                    map_page_from_document(document, &served_by),
                     children,
                 )
             })
@@ -237,10 +237,10 @@ pub(super) struct Visited<T> {
 /// filters every URL before its visit, and the URL a redirect served after it.
 ///
 /// Yields `(level, item)` in completion order within a level. Every visit of
-/// a level shares one pool of `ctx.concurrency` ([`drive`]), and dropping the
+/// a level shares one pool of `context.concurrency` ([`drive`]), and dropping the
 /// stream stops the crawl at once.
 pub(super) fn crawl<T, Admit, Visit, Fut>(
-    ctx: Context,
+    context: Context,
     seeds: Vec<String>,
     depth: usize,
     admit: Admit,
@@ -252,9 +252,9 @@ where
     Visit: Fn(Target, usize) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Option<Visited<T>>> + Send + 'static,
 {
-    let concurrency = ctx.concurrency.get();
+    let concurrency = context.concurrency.get();
     let (tx, rx) = mpsc::channel(concurrency);
-    tokio::spawn(ctx.scope(async move {
+    tokio::spawn(context.scope(async move {
         // Every URL ever queued, and every page yielded. Pulling a target
         // reads `yielded` and finishing a visit writes it, from two closures,
         // so a lock shares it; it's never held across an await.

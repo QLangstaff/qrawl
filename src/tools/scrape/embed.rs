@@ -22,7 +22,7 @@ type Fields = Vec<(&'static str, Option<String>)>;
 
 fn parse(body: &str) -> Option<Value> {
     serde_json::from_str(body)
-        .map_err(|e| log::debug!("embed is not JSON: {}", e))
+        .map_err(|error| log::debug!("embed is not JSON: {}", error))
         .ok()
 }
 

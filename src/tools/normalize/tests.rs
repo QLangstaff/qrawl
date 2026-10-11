@@ -1324,3 +1324,8 @@ fn absolute_url_refuses_text_that_only_resembles_a_host() {
         Some("http://example.com/")
     );
 }
+
+#[test]
+fn test_normalize_email_rejects_a_file_extension() {
+    assert_eq!(normalize_email("report@files.doc"), "");
+}

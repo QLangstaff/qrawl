@@ -162,7 +162,7 @@ mod local_site {
     use crate::tools::scrape::scrape_all;
     use crate::types::Context;
 
-    fn ctx(concurrency: usize) -> Context {
+    fn context(concurrency: usize) -> Context {
         Context::fast().with_concurrency(NonZeroUsize::new(concurrency).unwrap())
     }
 
@@ -202,7 +202,7 @@ mod local_site {
 
         let pages = tokio::time::timeout(
             Duration::from_secs(30),
-            qrawl_many_urls(parents, depth(1), ctx(8)),
+            qrawl_many_urls(parents, depth(1), context(8)),
         )
         .await
         .expect("the crawl finishes");
@@ -218,7 +218,7 @@ mod local_site {
             .map(|page| site.url(&format!("/leaf{page}")))
             .collect();
 
-        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), ctx(4)).await;
+        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), context(4)).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         assert_eq!(pages.len(), 1);
@@ -241,7 +241,7 @@ mod local_site {
             .map(|page| site.url(&format!("/leaf{page}")))
             .collect();
 
-        let mut pages = Box::pin(crawl(ctx(2), urls, 0, |_url| true, fetch_address));
+        let mut pages = Box::pin(crawl(context(2), urls, 0, |_url| true, fetch_address));
         let mut received = 0;
         while pages.next().await.is_some() {
             received += 1;
@@ -262,7 +262,7 @@ mod local_site {
             .collect();
 
         let pages: Vec<(usize, String)> = crawl(
-            ctx(4),
+            context(4),
             urls,
             0,
             |_url| true,
@@ -302,7 +302,7 @@ mod local_site {
             let site = TestSite::serve(diamond).await;
             let seeds = seeds.iter().map(|seed| site.url(seed)).collect();
 
-            let pages = qrawl_many_urls(seeds, depth(2), ctx(1)).await;
+            let pages = qrawl_many_urls(seeds, depth(2), context(1)).await;
 
             let crawled = paths(&pages, site.port());
             assert!(crawled.contains("/x"), "{crawled:?}");
@@ -315,19 +315,19 @@ mod local_site {
         let site = TestSite::serve(diamond).await;
         let seeds = || vec![site.url("/a"), site.url("/b")];
 
-        let depth_zero = qrawl_many_urls(seeds(), CrawlOptions::default(), ctx(4)).await;
+        let depth_zero = qrawl_many_urls(seeds(), CrawlOptions::default(), context(4)).await;
         assert_eq!(paths(&depth_zero, site.port()), set(&["/a", "/b"]));
 
-        let limited = qrawl_many_urls(seeds(), depth(2).with_limit(3), ctx(4)).await;
+        let limited = qrawl_many_urls(seeds(), depth(2).with_limit(3), context(4)).await;
         assert_eq!(limited.len(), 3);
 
-        let none = qrawl_many_urls(seeds(), depth(2).with_limit(0), ctx(4)).await;
+        let none = qrawl_many_urls(seeds(), depth(2).with_limit(0), context(4)).await;
         assert!(none.is_empty());
 
         let blocked = qrawl_many_urls(
             seeds(),
             depth(2).with_block_urls(vec![site.url("/x")]),
-            ctx(4),
+            context(4),
         )
         .await;
         let crawled = paths(&blocked, site.port());
@@ -340,7 +340,7 @@ mod local_site {
         let allowed = qrawl_many_urls(
             seeds(),
             depth(2).with_allow_urls(vec![site.url("/a"), site.url("/c")]),
-            ctx(4),
+            context(4),
         )
         .await;
         assert_eq!(paths(&allowed, site.port()), set(&["/a", "/c"]));
@@ -377,7 +377,7 @@ mod local_site {
         let recipes = qrawl_many_urls(
             seeds(),
             depth(1).with_include_schemas(vec!["recipe".to_string()]),
-            ctx(4),
+            context(4),
         )
         .await;
         assert_eq!(paths(&recipes, site.port()), set(&["/soup", "/stew"]));
@@ -385,7 +385,7 @@ mod local_site {
         let not_articles = qrawl_many_urls(
             seeds(),
             depth(1).with_exclude_schemas(vec!["Article".to_string()]),
-            ctx(4),
+            context(4),
         )
         .await;
         assert_eq!(
@@ -398,7 +398,7 @@ mod local_site {
             depth(1)
                 .with_include_schemas(vec!["Recipe".to_string()])
                 .with_limit(1),
-            ctx(1),
+            context(1),
         )
         .await;
         assert_eq!(one_recipe.len(), 1);
@@ -409,7 +409,7 @@ mod local_site {
     async fn a_blocked_domain_is_never_requested() {
         let site = TestSite::serve(diamond).await;
 
-        let allowed = qrawl_any_url(&site.url("/a"), ctx(4)).await;
+        let allowed = qrawl_any_url(&site.url("/a"), context(4)).await;
         assert!(allowed.is_ok());
         let hits = site.hits();
         assert!(hits > 0);
@@ -417,7 +417,7 @@ mod local_site {
         for listed in ["127.0.0.1", "http://127.0.0.1/"] {
             let blocked = qrawl_any_url(
                 &site.url("/b"),
-                ctx(4).with_block_domains(vec![listed.to_string()]),
+                context(4).with_block_domains(vec![listed.to_string()]),
             )
             .await;
             assert!(
@@ -427,7 +427,7 @@ mod local_site {
         }
         let allow_other = qrawl_any_url(
             &site.url("/b"),
-            ctx(4).with_allow_domains(vec!["example.com".to_string()]),
+            context(4).with_allow_domains(vec!["example.com".to_string()]),
         )
         .await;
         assert!(matches!(allow_other, Err(QrawlError::BlockedDomain(_))));
@@ -440,14 +440,14 @@ mod local_site {
         let target = format!("http://localhost:{}/a", site.port());
         let redirecting = TestSite::serve(move |_path| Reply::Redirect(target.clone())).await;
 
-        let followed = qrawl_any_url(&redirecting.url("/go"), ctx(4)).await;
+        let followed = qrawl_any_url(&redirecting.url("/go"), context(4)).await;
         assert!(followed.is_ok(), "{followed:?}");
         let hits = site.hits();
         assert!(hits > 0);
 
         let blocked = qrawl_any_url(
             &redirecting.url("/go"),
-            ctx(4).with_block_domains(vec!["localhost".to_string()]),
+            context(4).with_block_domains(vec!["localhost".to_string()]),
         )
         .await;
         assert!(
@@ -474,7 +474,7 @@ mod local_site {
         })
         .await;
 
-        let pages = qrawl_many_urls(vec![site.url("/blog")], depth(1), ctx(4)).await;
+        let pages = qrawl_many_urls(vec![site.url("/blog")], depth(1), context(4)).await;
 
         assert_eq!(
             paths(&pages, site.port()),
@@ -520,7 +520,7 @@ mod local_site {
         })
         .await;
 
-        let page = qrawl_any_url(&site.url("/soup/"), ctx(4))
+        let page = qrawl_any_url(&site.url("/soup/"), context(4))
             .await
             .expect("fetches");
 
@@ -560,11 +560,11 @@ mod local_site {
         .await;
         let seeds = || vec![site.url("/old"), site.url("/new"), site.url("/old2")];
 
-        let pages = qrawl_many_urls(seeds(), CrawlOptions::default(), ctx(1)).await;
+        let pages = qrawl_many_urls(seeds(), CrawlOptions::default(), context(1)).await;
         assert_eq!(paths(&pages, site.port()), set(&["/new"]));
         assert_eq!(pages.len(), 1);
 
-        let moved = qrawl_any_url(&site.url("/old"), ctx(1))
+        let moved = qrawl_any_url(&site.url("/old"), context(1))
             .await
             .expect("fetches");
         assert_eq!(
@@ -575,7 +575,7 @@ mod local_site {
         let blocked = qrawl_many_urls(
             vec![site.url("/old")],
             CrawlOptions::default().with_block_urls(vec![site.url("/new")]),
-            ctx(1),
+            context(1),
         )
         .await;
         assert!(blocked.is_empty());
@@ -591,7 +591,7 @@ mod local_site {
         );
         let site = TestSite::serve(move |_path| Reply::Html(deep.clone())).await;
 
-        let pages = qrawl_many_urls(vec![site.url("/deep")], depth(1), ctx(1)).await;
+        let pages = qrawl_many_urls(vec![site.url("/deep")], depth(1), context(1)).await;
 
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].title, None);
@@ -634,7 +634,7 @@ mod local_site {
         let hits_before = site.hits();
 
         let emails = crate::chain! {
-            vec![site.url("/")], ctx(4) =>
+            vec![site.url("/")], context(4) =>
             all(dedupe_urls) -> fetch -> map(map_children) ->
             all(dedupe_urls) -> fetch ->
             filter(|html: Html| async move { html.as_str().contains("mailto:") }) ->
@@ -674,7 +674,7 @@ mod local_site {
         for seeds in [["/p", "/s"], ["/s", "/p"]] {
             let site = TestSite::serve(site_reply).await;
             let seeds = seeds.iter().map(|seed| site.url(seed)).collect();
-            let pages = qrawl_many_urls(seeds, depth(1), ctx(1)).await;
+            let pages = qrawl_many_urls(seeds, depth(1), context(1)).await;
             let crawled = paths(&pages, site.port());
             assert_eq!(pages.len(), crawled.len(), "a page was returned twice");
             results.push(crawled);
@@ -699,7 +699,7 @@ mod local_site {
         let pages = qrawl_many_urls(
             vec![site.url("/old"), site.url("/new/")],
             CrawlOptions::default(),
-            ctx(1),
+            context(1),
         )
         .await;
 
@@ -927,7 +927,7 @@ mod local_site {
         .await;
         let urls: Vec<String> = (0..200).map(|n| site.url(&format!("/short{n}"))).collect();
 
-        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), ctx(2)).await;
+        let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), context(2)).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         assert_eq!(pages.len(), 1);
@@ -946,7 +946,7 @@ mod local_site {
         let pages = qrawl_many_urls(
             vec![site.url("/a"), site.url("/c")],
             CrawlOptions::default(),
-            ctx(1),
+            context(1),
         )
         .await;
 

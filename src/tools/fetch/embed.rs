@@ -29,8 +29,8 @@ pub async fn fetch_embed(url: &str) -> Option<Embed> {
     let (request, embed) = embed_request(url)?;
     match fetch_bytes(&request, None).await {
         Ok(bytes) => Some(embed(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) => {
-            log::debug!("embed fetch failed {}: {}", url, e);
+        Err(error) => {
+            log::debug!("embed fetch failed {}: {}", url, error);
             None
         }
     }

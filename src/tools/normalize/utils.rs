@@ -21,7 +21,7 @@ static PHONE_EXTENSION_REGEX: LazyLock<Regex> =
 
 // HTML normalization
 
-static JUNK_ATTR_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+static JUNK_ATTRIBUTE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?ix)^(?:
             class|id|style|
@@ -555,7 +555,7 @@ pub(super) fn normalize_markup(html: &str) -> String {
 /// accessibility wiring, not content, or one whose name a tag's stray `<`,
 /// quote, `=`, or `>` made, which would re-parse as something else.
 fn is_junk_attribute(name: &str) -> bool {
-    JUNK_ATTR_NAME_REGEX.is_match(name) || name.contains(['<', '>', '"', '\'', '='])
+    JUNK_ATTRIBUTE_NAME_REGEX.is_match(name) || name.contains(['<', '>', '"', '\'', '='])
 }
 
 /// Append `text` with each run of whitespace as one space, and none doubled
