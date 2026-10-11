@@ -375,7 +375,8 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // listing whose first item alone uses another heading tag, followed by
         // a link under the items' tag, reads as the rotation: its tags can't
         // tell it from the unit; so can a lone item before a block of other
-        // elements, since a run of one looks like a stray.
+        // elements, since a run of one looks like a stray. An item with an
+        // extra element that has children matches no group and is lost alone.
         let mut kept: HashMap<Vec<StructurePattern>, KeptGroup> = HashMap::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
@@ -412,6 +413,10 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                                 .all(|&start| children[start + offset].value().name() == tag)
                         })
                         .count();
+                    // An instance is adjacent to the one before when it starts where
+                    // that one ends, or less than a unit after it with only the
+                    // unit's own structures between: one listing's items can
+                    // differ by some elements, and an ad shaped like one passes.
                     let runs = adjacent_runs(&non_overlapping, |previous, start| {
                         (pattern_len..2 * pattern_len).contains(&(start - previous))
                             && structures[previous + pattern_len..start]
@@ -513,11 +518,8 @@ fn canonical_rotation(pattern: &[StructurePattern]) -> Vec<StructurePattern> {
         .expect("a pattern has an element")
 }
 
-/// The lengths of the runs of instances, each `is_adjacent` to the one before:
-/// starting where it ends, or less than a unit after it with only the unit's
-/// own structures between, since one listing's items can differ by some
-/// elements. An instance past an ad, or in another listing whose elements
-/// happen to continue the pattern, starts a run of its own.
+/// The lengths of the runs of instances, each `is_adjacent` to the one before;
+/// an instance that isn't starts a run of its own.
 fn adjacent_runs(starts: &[usize], is_adjacent: impl Fn(usize, usize) -> bool) -> Vec<usize> {
     let mut runs = Vec::new();
     for (index, &start) in starts.iter().enumerate() {
