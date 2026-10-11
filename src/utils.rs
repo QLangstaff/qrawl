@@ -302,8 +302,8 @@ pub(crate) fn tokenize_until<Sink: TokenSink>(
 /// element or a text node per tag or run of text. One that leaves dozens of
 /// formatting tags open and then starts paragraph after paragraph makes the
 /// parser rebuild every one of them in each: twenty operations a byte, a tree
-/// a hundred times the markup, and no depth to show for it. Such a page is
-/// built to stall the parser, and its parse stops.
+/// of ten nodes a byte, and no depth to show for it. Such a page is built to
+/// exhaust the parser's memory, and its parse stops.
 const TREE_OPERATIONS_PER_BYTE: usize = 4;
 
 /// The tree operations every document may make, however small its markup.
@@ -360,13 +360,17 @@ impl DepthBounded {
                 .get(*node)
                 .is_some_and(|node| node.parent().is_some());
             if stands_in_tree {
-                self.depth.clear();
+                // A fresh map: clearing one keeps its capacity and sweeps it all.
+                self.depth = HashMap::new();
             }
         }
     }
 
-    /// Note a node about to stand at `depth`.
-    fn place_at(&mut self, depth: usize) {
+    /// Note `child` about to stand at `depth`, and remember it there.
+    fn place_at(&mut self, child: &NodeOrText<NodeId>, depth: usize) {
+        if let NodeOrText::AppendNode(node) = child {
+            self.depth.insert(*node, depth);
+        }
         if depth > MAX_DOM_DEPTH {
             self.too_deep = true;
         }
@@ -423,7 +427,7 @@ impl TreeSink for DepthBounded {
         self.operations += 1;
         self.moving(&child);
         let depth = self.depth_of(parent) + 1;
-        self.place_at(depth);
+        self.place_at(&child, depth);
         self.sink.append(parent, child)
     }
 
@@ -446,7 +450,7 @@ impl TreeSink for DepthBounded {
         } else {
             self.depth_of(prev_element) + 1
         };
-        self.place_at(depth);
+        self.place_at(&child, depth);
         self.sink
             .append_based_on_parent_node(element, prev_element, child)
     }
@@ -486,7 +490,7 @@ impl TreeSink for DepthBounded {
         self.operations += 1;
         self.moving(&new_node);
         let depth = self.depth_of(sibling);
-        self.place_at(depth);
+        self.place_at(&new_node, depth);
         self.sink.append_before_sibling(sibling, new_node)
     }
 
@@ -506,13 +510,15 @@ impl TreeSink for DepthBounded {
 
     fn remove_from_parent(&mut self, target: &NodeId) {
         self.operations += 1;
-        self.depth.clear();
+        // A fresh map: clearing one keeps its capacity and sweeps it all.
+        self.depth = HashMap::new();
         self.sink.remove_from_parent(target)
     }
 
     fn reparent_children(&mut self, node: &NodeId, new_parent: &NodeId) {
         self.operations += 1;
-        self.depth.clear();
+        // A fresh map: clearing one keeps its capacity and sweeps it all.
+        self.depth = HashMap::new();
         self.sink.reparent_children(node, new_parent)
     }
 

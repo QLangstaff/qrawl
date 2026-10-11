@@ -828,7 +828,7 @@ mod local_site {
     {
         use crate::utils::parse_document_bounded;
         // Fourteen formatting tags left open three times each, then short
-        // paragraphs: each rebuilds all forty-two, twenty operations a byte,
+        // paragraphs: each rebuilds dozens of them, twenty operations a byte,
         // while the tree stays shallow.
         let formatting = "<a><b><big><code><em><font><i><nobr><s><small><strike><strong><tt><u>";
         let storm = format!(
