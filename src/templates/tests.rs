@@ -156,7 +156,7 @@ mod local_site {
     use crate::errors::QrawlError;
     use crate::templates::utils::{crawl, Target, Visited};
     use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions, PageContent};
-    use crate::test_site::{listing_page, Reply, TestSite};
+    use crate::test_site::{listing_page, Reply, Request, TestSite};
     use crate::tools::fetch::fetch_strategy;
     use crate::tools::normalize::normalize_html;
     use crate::tools::scrape::scrape_all;
@@ -771,7 +771,7 @@ mod local_site {
     }
 
     #[tokio::test]
-    async fn a_redirect_loop_is_followed_by_one_profile_only() {
+    async fn a_redirect_loop_ends_with_the_first_profile_that_keeps_cookies() {
         let site = TestSite::serve(|_path| Reply::Redirect("/loop".to_string())).await;
 
         let looped = Context::auto()
@@ -781,7 +781,28 @@ mod local_site {
             matches!(looped, Err(QrawlError::TooManyRedirects(_))),
             "{looped:?}"
         );
-        assert!(site.hits() <= 11, "{} requests for one loop", site.hits());
+        // Minimal follows 5, Windows 10; a third profile would make it 20 or more.
+        assert!(
+            (6..=16).contains(&site.hits()),
+            "{} requests for one loop",
+            site.hits()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_that_waits_for_its_cookie_is_followed_by_a_profile_that_keeps_it() {
+        let site = TestSite::serve_requests(|request: &Request| match request.cookie {
+            Some(cookie) if cookie.contains("consent=yes") => {
+                Reply::Html(listing_page(request.path, "", &[]))
+            }
+            _ => Reply::RedirectWithCookie(request.path.to_string(), "consent=yes"),
+        })
+        .await;
+
+        let page = Context::auto()
+            .scope(fetch_strategy(&site.url("/wall")))
+            .await;
+        assert!(page.is_ok(), "{page:?}");
     }
 
     #[tokio::test]
@@ -802,10 +823,42 @@ mod local_site {
             "{:?}",
             started.elapsed()
         );
-        // Unclosed tags the parser closes itself don't nest.
-        let flat = format!("<html><body>{}x</body></html>", "<p>".repeat(5_000));
-        let (body, _, _) = scrape_all(&flat.as_str().into()).await;
-        assert!(body.as_str().contains("<p>x</p>"));
+    }
+
+    #[test]
+    fn markup_the_parser_flattens_is_not_too_deep_and_what_it_nests_is() {
+        use crate::utils::is_too_deep_markup;
+        // Each of these the parser closes by implication: a flat document.
+        for flat in [
+            "<p>".repeat(5_000),
+            format!("<ul>{}</ul>", "<li><span>x</li>".repeat(600)),
+            "<p><b>x".repeat(600),
+            format!("<table><tr>{}</tr></table>", "<td><span>x</td>".repeat(600)),
+            format!("<table>{}</table>", "<tr><td><em>x".repeat(600)),
+            "<a href=x>".repeat(600),
+            format!("<select>{}</select>", "<option><span>x".repeat(600)),
+            "<p>x<div>y</div>".repeat(600),
+            format!("<svg>{}</svg>", "<path d=\"M0\"/>".repeat(1_000)),
+            "<br>".repeat(1_000),
+            // Inside a script, a style, or a textarea, tags are text.
+            format!("<script>var s = '{}';</script>", "<div>".repeat(600)),
+            format!("<style>{}</style>", "<div>".repeat(600)),
+            format!("<textarea>{}</textarea>", "<div>".repeat(600)),
+            format!("<title>{}</title>", "<div>".repeat(600)),
+        ] {
+            assert!(!is_too_deep_markup(&flat), "{}", &flat[..40]);
+        }
+        // Each of these the parser nests as written.
+        for deep in [
+            "<div>".repeat(600),
+            "<div/>".repeat(600),
+            "<ul><li>".repeat(600),
+            "<dl><dt><span>x<dd><span>y".repeat(300),
+            "<b>".repeat(600),
+            "<table><tr><td>".repeat(300),
+        ] {
+            assert!(is_too_deep_markup(&deep), "{}", &deep[..40]);
+        }
     }
 
     #[tokio::test]

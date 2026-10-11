@@ -375,6 +375,19 @@ async fn itemlist_anchor_is_followed_only_on_this_exact_page() {
 }
 
 #[tokio::test]
+async fn map_children_reads_an_itemlist_in_a_graph_under_the_main_entity() {
+    let html = r#"<html><head><script type="application/ld+json">{
+        "@type": "WebPage",
+        "mainEntity": {"@graph": [{"@type": "ItemList", "itemListElement": [
+            {"@type": "ListItem", "url": "/d"},
+            {"@type": "ListItem", "url": "https://example.com/e"}
+        ]}]}
+    }</script></head><body></body></html>"#;
+    let urls = map_children(&html.into(), "https://example.com/list").await;
+    assert_eq!(urls, ["https://example.com/d", "https://example.com/e"]);
+}
+
+#[tokio::test]
 async fn map_children_stays_fast_on_a_thousand_siblings() {
     let links: Vec<String> = (0..1_200).map(|n| format!("/item{n}")).collect();
     let html = crate::test_site::listing_page("many", "", &links);

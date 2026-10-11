@@ -12,7 +12,15 @@ use tokio::net::TcpListener;
 pub(crate) enum Reply {
     Html(String),
     Redirect(String),
+    /// A redirect that sets a cookie, the way a consent wall does.
+    RedirectWithCookie(String, &'static str),
     NotFound,
+}
+
+/// What a request told the site: its path and query, and the cookie it sent.
+pub(crate) struct Request<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) cookie: Option<&'a str>,
 }
 
 pub(crate) struct TestSite {
@@ -23,6 +31,14 @@ pub(crate) struct TestSite {
 impl TestSite {
     /// Serve `reply(path_and_query)` on a free local port.
     pub(crate) async fn serve(reply: impl Fn(&str) -> Reply + Send + Sync + 'static) -> Self {
+        Self::serve_requests(move |request| reply(request.path)).await
+    }
+
+    /// Serve `reply(request)` on a free local port, for a reply that reads
+    /// more of the request than its path.
+    pub(crate) async fn serve_requests(
+        reply: impl Fn(&Request) -> Reply + Send + Sync + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let hits = Arc::new(AtomicUsize::new(0));
@@ -44,7 +60,11 @@ impl TestSite {
                         hits.fetch_add(1, Ordering::SeqCst);
                         let request = String::from_utf8_lossy(&request);
                         let path = request.split_whitespace().nth(1).unwrap_or("/");
-                        let response = match reply(path) {
+                        let cookie = request.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                        });
+                        let response = match reply(&Request { path, cookie }) {
                             Reply::Html(body) => format!(
                                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                 body.len(),
@@ -52,6 +72,9 @@ impl TestSite {
                             ),
                             Reply::Redirect(location) => format!(
                                 "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            ),
+                            Reply::RedirectWithCookie(location, cookie) => format!(
+                                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nSet-Cookie: {cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                             ),
                             Reply::NotFound => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
                         };

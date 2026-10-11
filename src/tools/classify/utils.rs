@@ -14,13 +14,14 @@ pub(super) fn has_schema_type(jsonld: &Jsonld, schema_type: &str) -> bool {
             .any(|declared| target.iter().any(|t| t.eq_ignore_ascii_case(&declared)))
 }
 
-/// Every `@type` declared in `value` and the values under it.
+/// Every `@type` declared in `value` and the values under it. A `@value`
+/// object is a typed literal (`xsd:date`), not an entity.
 fn declared_types(value: &serde_json::Value) -> Vec<String> {
     let mut types = Vec::new();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         match value {
-            serde_json::Value::Object(fields) => {
+            serde_json::Value::Object(fields) if !fields.contains_key("@value") => {
                 types.extend(schema_types(value));
                 pending.extend(fields.values());
             }

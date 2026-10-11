@@ -81,7 +81,7 @@ enum Commands {
         input: String,
     },
 
-    /// Check if a Page Includes a schema.org Type
+    /// Check if a Page Includes a schema.org Type, at Any Depth
     HasSchema {
         /// URL, file path, or `-` for stdin
         input: String,
@@ -89,7 +89,7 @@ enum Commands {
         schema_type: String,
     },
 
-    /// A Page and Its Children That Carry a schema.org Type
+    /// A Page and Its Children That Carry a schema.org Type, at Any Depth
     Schema {
         /// URL
         url: String,
@@ -144,10 +144,10 @@ enum Commands {
         /// Exclude this exact URL from the crawl (repeatable)
         #[arg(long = "block-url")]
         block_urls: Vec<String>,
-        /// Keep only results with this schema.org type (repeatable); empty = any
+        /// Keep only results with this schema.org type at any depth (repeatable); empty = any
         #[arg(long = "include-schema")]
         include_schemas: Vec<String>,
-        /// Drop results with this schema.org type (repeatable)
+        /// Drop results with this schema.org type at any depth (repeatable)
         #[arg(long = "exclude-schema")]
         exclude_schemas: Vec<String>,
     },

@@ -30,6 +30,12 @@ fn has_schema_type_reads_nested_entities() {
         );
     }
     assert!(!classify_has_schema_type(&jsonld, "Product"));
+    // A typed literal's `@type` is a datatype, not an entity.
+    let dated = vec![serde_json::json!({
+        "@type": "Recipe",
+        "datePublished": {"@value": "2020-01-01", "@type": "xsd:date"}
+    })];
+    assert!(!classify_has_schema_type(&dated, "date"));
 }
 
 #[test]

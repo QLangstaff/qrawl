@@ -53,8 +53,9 @@ pub struct PageContent {
     pub metadata: Metadata,
     /// Canonical URLs of the social profiles and items the page links to.
     pub socials: Vec<String>,
-    /// The page `<body>`, or `None` when only the embed could be fetched.
-    /// Render it with `transform_markdown` for LLM-ready text.
+    /// The page `<body>`, or `None` when only the embed could be fetched or
+    /// the body holds nothing. Render it with `transform_markdown` for
+    /// LLM-ready text.
     pub body: Option<Html>,
 }
 
@@ -99,13 +100,16 @@ impl CrawlOptions {
         self
     }
 
-    /// Return only pages with one of these schema.org types. Empty = any.
+    /// Return only pages whose structured data carries one of these schema.org
+    /// types, on any entity at any depth. Empty = any.
     pub fn with_include_schemas(mut self, schemas: Vec<String>) -> Self {
         self.include_schemas = schemas;
         self
     }
 
-    /// Don't return pages with one of these schema.org types.
+    /// Don't return pages whose structured data carries one of these schema.org
+    /// types, on any entity at any depth: an `ImageObject` excludes a recipe
+    /// page whose `image` is one.
     pub fn with_exclude_schemas(mut self, schemas: Vec<String>) -> Self {
         self.exclude_schemas = schemas;
         self

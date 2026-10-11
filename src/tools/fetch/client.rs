@@ -26,7 +26,7 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
     // Minimal profile: simpler client
     let builder = match profile {
         FetchProfile::Minimal => builder
-            .cookie_store(false) // No cookies for minimal
+            .cookie_store(profile.keeps_cookies())
             .redirect(redirect_policy(5)), // Fewer redirects
         _ => builder,
     };

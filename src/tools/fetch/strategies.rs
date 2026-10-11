@@ -110,10 +110,12 @@ fn declared_encoding(response: &Response) -> &'static Encoding {
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|content_type| {
-            content_type
-                .split(';')
-                .map(str::trim)
-                .find_map(|parameter| parameter.strip_prefix("charset="))
+            content_type.split(';').find_map(|parameter| {
+                let (name, value) = parameter.split_once('=')?;
+                name.trim()
+                    .eq_ignore_ascii_case("charset")
+                    .then_some(value.trim())
+            })
         })
         .and_then(|charset| Encoding::for_label(charset.trim_matches('"').as_bytes()))
         .unwrap_or(UTF_8)
@@ -211,9 +213,10 @@ where
                 return Ok(value);
             }
             // A missing page is missing under every profile, a redirect the
-            // domain filter refused stays refused, and a loop or a size are
-            // the server's.
+            // domain filter refused stays refused, a size is the server's, and
+            // a loop a cookie-keeping client ran into is a loop.
             Err(e) if e.is_final() => return Err(e),
+            Err(e @ QrawlError::TooManyRedirects(_)) if profile.keeps_cookies() => return Err(e),
             Err(e) => {
                 log::debug!("{} via {:?} failed: {}", url, profile, e);
                 errors.push(e);

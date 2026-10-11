@@ -94,7 +94,7 @@ Small, focused functions — async where they fetch or parse, sync where they do
 | **scrape** | Pull the body, `<meta>` tags, and schema.org data (JSON-LD, Microdata, RDFa, Microformats — merged) out of HTML, and metadata out of an embed |
 | **extract** | Surface structured signal: emails, phones, schema.org types, a preview, a URL's social platform and ids |
 | **map** | Discover URLs from a page: every link, or just the children |
-| **classify** | Answer yes/no: does this page carry a schema.org type |
+| **classify** | Answer yes/no: does this page carry a schema.org type, at any depth |
 | **normalize** | Canonicalize and dedupe URLs, strip junk HTML, normalize text, dedupe emails / phones |
 | **transform** | Render HTML to Markdown |
 | **batch** | Run any async op across a `Vec` with bounded concurrency |
@@ -143,11 +143,11 @@ Commands marked `<input>` take a URL, a file path, or `-` for stdin.
 | `qrawl markdown <input>` | the page as Markdown |
 | `qrawl jsonld <input>` | schema.org data — JSON-LD, Microdata, RDFa, and Microformats, merged |
 | `qrawl schemas <input>` | schema.org types on the page |
-| `qrawl has-schema <input> <type>` | whether the page carries a schema.org type |
+| `qrawl has-schema <input> <type>` | whether the page carries a schema.org type, at any depth |
 | `qrawl phones <input>` | phone numbers |
 | `qrawl page <url>` | every link on the page |
 | `qrawl children <url>` | the page's children: the items of its main listing |
-| `qrawl schema <url> <type>` | the addresses of the page and its children that carry a schema.org type |
+| `qrawl schema <url> <type>` | the addresses of the page and its children that carry a schema.org type, at any depth |
 | `qrawl emails <input>` | email addresses |
 | `qrawl socials <url>` | deduped social links on the page and two levels of its children |
 

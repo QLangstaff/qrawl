@@ -61,11 +61,12 @@ static P_SELECTOR: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("p").expect("valid p selector"));
 
 pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
-    let markup = document
-        .select(&BODY_SELECTOR)
-        .next()
-        .map(|body| body.html())
-        .unwrap_or_else(|| document.html());
+    let markup = match document.select(&BODY_SELECTOR).next() {
+        // A body with nothing in it is no body: a page read as empty has none.
+        Some(body) if !body.has_children() => String::new(),
+        Some(body) => body.html(),
+        None => document.html(),
+    };
     Html::new(markup)
 }
 

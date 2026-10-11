@@ -19,3 +19,11 @@ pub(crate) enum FetchProfile {
     /// Safari on iPhone.
     Ios,
 }
+
+impl FetchProfile {
+    /// Whether the profile's client keeps cookies, as a browser does: the one
+    /// way out of a redirect that sets a cookie and waits for it back.
+    pub(crate) fn keeps_cookies(self) -> bool {
+        self != Self::Minimal
+    }
+}

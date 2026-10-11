@@ -25,8 +25,8 @@ use super::utils::{crawl, page_content, Children, Visited};
 /// - allow/block URLs: filter seeds and children before their fetch.
 /// - include/exclude schemas: filter the *results*. A page counts (toward the
 ///   limit too) only if its structured data includes an include-type (empty =
-///   any) and none of the exclude-types; a page that doesn't count is still
-///   expanded for its children.
+///   any) and none of the exclude-types, on any entity at any depth; a page
+///   that doesn't count is still expanded for its children.
 /// - limit: stop once this many pages are returned, cancelling the fetches in
 ///   flight.
 ///

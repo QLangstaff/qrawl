@@ -4,6 +4,7 @@
 //! this.
 
 use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::states::RawKind;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
@@ -294,38 +295,180 @@ pub(crate) fn tokenize_until<Sink: TokenSink>(
     tokenizer.sink
 }
 
-/// Elements a run of whose start tags doesn't nest: void ones, and ones whose
-/// end tag is optional, which the parser closes when the next opens.
-const FLAT_ELEMENTS: [&str; 33] = [
+/// Elements that hold nothing, so a start tag of one opens nothing: the void
+/// elements, and the three the parser keeps one of.
+const UNNESTED_ELEMENTS: [&str; 16] = [
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-    "wbr", "html", "head", "body", "li", "dt", "dd", "p", "rt", "rp", "optgroup", "option",
-    "colgroup", "caption", "thead", "tbody", "tfoot", "tr", "td", "th", "a",
+    "wbr", "html", "head", "body",
 ];
 
-/// A token sink that follows how deep the open elements nest.
+/// Elements the parser closes before another of their group opens, as long as
+/// none of the group's `scope` elements stands between, the way `<li>` ends
+/// the `<li>` before it unless a nested list does.
+struct ImpliedEnd {
+    group: &'static [&'static str],
+    scope: &'static [&'static str],
+}
+
+const IMPLIED_ENDS: [ImpliedEnd; 9] = [
+    ImpliedEnd {
+        group: &["li"],
+        scope: &["ul", "ol", "menu"],
+    },
+    ImpliedEnd {
+        group: &["dt", "dd"],
+        scope: &["dl"],
+    },
+    ImpliedEnd {
+        group: &["p"],
+        scope: &["table", "td", "th", "button", "template"],
+    },
+    ImpliedEnd {
+        group: &["option"],
+        scope: &["select", "datalist"],
+    },
+    ImpliedEnd {
+        group: &["optgroup"],
+        scope: &["select"],
+    },
+    ImpliedEnd {
+        group: &["tr"],
+        scope: &["table"],
+    },
+    ImpliedEnd {
+        group: &["td", "th"],
+        scope: &["table"],
+    },
+    ImpliedEnd {
+        group: &["thead", "tbody", "tfoot"],
+        scope: &["table"],
+    },
+    ImpliedEnd {
+        group: &["rt", "rp"],
+        scope: &["ruby"],
+    },
+];
+
+/// A start tag of one of these ends an open `<p>` first.
+const BLOCK_ELEMENTS: [&str; 30] = [
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "details",
+    "dialog",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "pre",
+    "section",
+    "table",
+    "ul",
+    "p",
+];
+
+/// Where a nested `<a>` ends the `<a>` before it.
+const FORMATTING_SCOPE: [&str; 4] = ["table", "td", "th", "template"];
+
+/// A token sink that follows how deep the open elements nest, closing what
+/// the parser closes by implication, so an unclosed `<span>` in each `<li>`
+/// doesn't read as nesting.
 struct Nesting {
     open: Vec<LocalName>,
     deepest: usize,
+}
+
+impl Nesting {
+    /// Whether an element of `names` is open with none of `scope` above it.
+    fn opens_in_scope(&self, names: &[&str], scope: &[&str]) -> Option<usize> {
+        self.open
+            .iter()
+            .rposition(|open| names.contains(&&**open) || scope.contains(&&**open))
+            .filter(|&position| names.contains(&&*self.open[position]))
+    }
+
+    /// Close the element at `position` and everything opened since.
+    fn close(&mut self, position: usize) {
+        self.open.truncate(position);
+    }
+
+    /// Whether a self-closing tag closes: inside `<svg>` or `<math>` it does,
+    /// as in XML; in HTML the parser ignores the slash.
+    fn in_foreign_content(&self) -> bool {
+        self.open
+            .iter()
+            .any(|open| &**open == "svg" || &**open == "math")
+    }
 }
 
 impl TokenSink for Nesting {
     type Handle = ();
 
     fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
-        if let Token::TagToken(tag) = token {
-            if FLAT_ELEMENTS.contains(&&*tag.name) {
-                return TokenSinkResult::Continue;
-            }
-            match tag.kind {
-                TagKind::StartTag if !tag.self_closing => {
-                    self.open.push(tag.name);
-                    self.deepest = self.deepest.max(self.open.len());
+        let Token::TagToken(tag) = token else {
+            return TokenSinkResult::Continue;
+        };
+        let name = &*tag.name;
+        if UNNESTED_ELEMENTS.contains(&name) {
+            return TokenSinkResult::Continue;
+        }
+        match tag.kind {
+            TagKind::StartTag => {
+                if tag.self_closing && self.in_foreign_content() {
+                    return TokenSinkResult::Continue;
                 }
-                TagKind::StartTag => {}
-                TagKind::EndTag => {
-                    if let Some(position) = self.open.iter().rposition(|open| *open == tag.name) {
-                        self.open.truncate(position);
+                if BLOCK_ELEMENTS.contains(&name) {
+                    let paragraph = &IMPLIED_ENDS[2];
+                    if let Some(position) = self.opens_in_scope(paragraph.group, paragraph.scope) {
+                        self.close(position);
                     }
+                }
+                if let Some(implied) = IMPLIED_ENDS
+                    .iter()
+                    .find(|implied| implied.group.contains(&name))
+                {
+                    if let Some(position) = self.opens_in_scope(implied.group, implied.scope) {
+                        self.close(position);
+                    }
+                }
+                if name == "a" {
+                    if let Some(position) = self.opens_in_scope(&["a"], &FORMATTING_SCOPE) {
+                        self.close(position);
+                    }
+                }
+                // Inside these the tokenizer reads text, not tags, as the tree
+                // builder tells it to.
+                let next = match name {
+                    "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+                    "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
+                        TokenSinkResult::RawData(RawKind::Rawtext)
+                    }
+                    "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+                    _ => TokenSinkResult::Continue,
+                };
+                self.open.push(tag.name);
+                self.deepest = self.deepest.max(self.open.len());
+                return next;
+            }
+            TagKind::EndTag => {
+                if let Some(position) = self.open.iter().rposition(|open| **open == *tag.name) {
+                    self.close(position);
                 }
             }
         }
