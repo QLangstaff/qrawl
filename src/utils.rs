@@ -3,13 +3,15 @@
 //! What more than one tool needs. A tool never calls another tool; it calls
 //! this.
 
-use html5ever::tendril::StrTendril;
-use html5ever::tokenizer::states::RawKind;
-use html5ever::tokenizer::{
-    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
-};
-use html5ever::LocalName;
+use ego_tree::NodeId;
+use html5ever::driver::Parser;
+use html5ever::tendril::{StrTendril, TendrilSink};
+use html5ever::tokenizer::{BufferQueue, TokenSink, Tokenizer, TokenizerOpts};
+use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
+use html5ever::{namespace_url, ns, Attribute, ExpandedName, LocalName, ParseOpts, QualName};
 use scraper::Selector;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::types::{Html, SocialPlatform};
@@ -295,196 +297,209 @@ pub(crate) fn tokenize_until<Sink: TokenSink>(
     tokenizer.sink
 }
 
-/// Elements that hold nothing, so a start tag of one opens nothing: the void
-/// elements, and the three the parser keeps one of.
-const UNNESTED_ELEMENTS: [&str; 16] = [
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-    "wbr", "html", "head", "body",
-];
-
-/// Elements the parser closes before another of their group opens, as long as
-/// none of the group's `scope` elements stands between, the way `<li>` ends
-/// the `<li>` before it unless a nested list does.
-struct ImpliedEnd {
-    group: &'static [&'static str],
-    scope: &'static [&'static str],
+/// A tree sink that builds a [`scraper::Html`] and measures how deep it
+/// nests as it does, so a parse can stop once the tree passes
+/// [`MAX_DOM_DEPTH`]: the parser's cost grows with the square of the depth,
+/// and the tree it builds is the one measure of depth it can't disagree with.
+struct DepthBounded {
+    sink: scraper::Html,
+    /// Each node's depth, as it was placed.
+    depth: HashMap<NodeId, usize>,
+    too_deep: bool,
 }
 
-const IMPLIED_ENDS: [ImpliedEnd; 9] = [
-    ImpliedEnd {
-        group: &["li"],
-        scope: &["ul", "ol", "menu"],
-    },
-    ImpliedEnd {
-        group: &["dt", "dd"],
-        scope: &["dl"],
-    },
-    ImpliedEnd {
-        group: &["p"],
-        scope: &["table", "td", "th", "button", "template"],
-    },
-    ImpliedEnd {
-        group: &["option"],
-        scope: &["select", "datalist"],
-    },
-    ImpliedEnd {
-        group: &["optgroup"],
-        scope: &["select"],
-    },
-    ImpliedEnd {
-        group: &["tr"],
-        scope: &["table"],
-    },
-    ImpliedEnd {
-        group: &["td", "th"],
-        scope: &["table"],
-    },
-    ImpliedEnd {
-        group: &["thead", "tbody", "tfoot"],
-        scope: &["table"],
-    },
-    ImpliedEnd {
-        group: &["rt", "rp"],
-        scope: &["ruby"],
-    },
-];
-
-/// A start tag of one of these ends an open `<p>` first.
-const BLOCK_ELEMENTS: [&str; 30] = [
-    "address",
-    "article",
-    "aside",
-    "blockquote",
-    "details",
-    "dialog",
-    "div",
-    "dl",
-    "fieldset",
-    "figcaption",
-    "figure",
-    "footer",
-    "form",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "header",
-    "hgroup",
-    "main",
-    "menu",
-    "nav",
-    "ol",
-    "pre",
-    "section",
-    "table",
-    "ul",
-    "p",
-];
-
-/// Where a nested `<a>` ends the `<a>` before it.
-const FORMATTING_SCOPE: [&str; 4] = ["table", "td", "th", "template"];
-
-/// A token sink that follows how deep the open elements nest, closing what
-/// the parser closes by implication, so an unclosed `<span>` in each `<li>`
-/// doesn't read as nesting.
-struct Nesting {
-    open: Vec<LocalName>,
-    deepest: usize,
-}
-
-impl Nesting {
-    /// Whether an element of `names` is open with none of `scope` above it.
-    fn opens_in_scope(&self, names: &[&str], scope: &[&str]) -> Option<usize> {
-        self.open
-            .iter()
-            .rposition(|open| names.contains(&&**open) || scope.contains(&&**open))
-            .filter(|&position| names.contains(&&*self.open[position]))
-    }
-
-    /// Close the element at `position` and everything opened since.
-    fn close(&mut self, position: usize) {
-        self.open.truncate(position);
-    }
-
-    /// Whether a self-closing tag closes: inside `<svg>` or `<math>` it does,
-    /// as in XML; in HTML the parser ignores the slash.
-    fn in_foreign_content(&self) -> bool {
-        self.open
-            .iter()
-            .any(|open| &**open == "svg" || &**open == "math")
-    }
-}
-
-impl TokenSink for Nesting {
-    type Handle = ();
-
-    fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
-        let Token::TagToken(tag) = token else {
-            return TokenSinkResult::Continue;
-        };
-        let name = &*tag.name;
-        if UNNESTED_ELEMENTS.contains(&name) {
-            return TokenSinkResult::Continue;
+impl DepthBounded {
+    fn new(sink: scraper::Html) -> Self {
+        Self {
+            sink,
+            depth: HashMap::new(),
+            too_deep: false,
         }
-        match tag.kind {
-            TagKind::StartTag => {
-                if tag.self_closing && self.in_foreign_content() {
-                    return TokenSinkResult::Continue;
-                }
-                if BLOCK_ELEMENTS.contains(&name) {
-                    let paragraph = &IMPLIED_ENDS[2];
-                    if let Some(position) = self.opens_in_scope(paragraph.group, paragraph.scope) {
-                        self.close(position);
-                    }
-                }
-                if let Some(implied) = IMPLIED_ENDS
-                    .iter()
-                    .find(|implied| implied.group.contains(&name))
-                {
-                    if let Some(position) = self.opens_in_scope(implied.group, implied.scope) {
-                        self.close(position);
-                    }
-                }
-                if name == "a" {
-                    if let Some(position) = self.opens_in_scope(&["a"], &FORMATTING_SCOPE) {
-                        self.close(position);
-                    }
-                }
-                // Inside these the tokenizer reads text, not tags, as the tree
-                // builder tells it to.
-                let next = match name {
-                    "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
-                    "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
-                        TokenSinkResult::RawData(RawKind::Rawtext)
-                    }
-                    "script" => TokenSinkResult::RawData(RawKind::ScriptData),
-                    _ => TokenSinkResult::Continue,
-                };
-                self.open.push(tag.name);
-                self.deepest = self.deepest.max(self.open.len());
-                return next;
-            }
-            TagKind::EndTag => {
-                if let Some(position) = self.open.iter().rposition(|open| **open == *tag.name) {
-                    self.close(position);
-                }
+    }
+
+    fn depth_of(&self, node: &NodeId) -> usize {
+        self.depth.get(node).copied().unwrap_or(0)
+    }
+
+    fn place(&mut self, child: &NodeOrText<NodeId>, depth: usize) {
+        if let NodeOrText::AppendNode(node) = child {
+            self.depth.insert(*node, depth);
+            if depth > MAX_DOM_DEPTH {
+                self.too_deep = true;
             }
         }
-        TokenSinkResult::Continue
     }
 }
 
-/// Whether `html` nests elements deeper than [`MAX_DOM_DEPTH`], by its tokens:
-/// the parser's cost grows with the square of the depth, so a page that deep
-/// is refused before it's parsed.
-pub(crate) fn is_too_deep_markup(html: &str) -> bool {
-    let nesting = Nesting {
-        open: Vec::new(),
-        deepest: 0,
-    };
-    tokenize_until(html, nesting, |nesting| nesting.deepest > MAX_DOM_DEPTH).deepest > MAX_DOM_DEPTH
+impl TreeSink for DepthBounded {
+    type Handle = NodeId;
+    type Output = scraper::Html;
+
+    fn finish(self) -> scraper::Html {
+        self.sink.finish()
+    }
+
+    fn parse_error(&mut self, msg: Cow<'static, str>) {
+        self.sink.parse_error(msg)
+    }
+
+    fn get_document(&mut self) -> NodeId {
+        self.sink.get_document()
+    }
+
+    fn elem_name<'a>(&'a self, target: &'a NodeId) -> ExpandedName<'a> {
+        self.sink.elem_name(target)
+    }
+
+    fn create_element(
+        &mut self,
+        name: QualName,
+        attrs: Vec<Attribute>,
+        flags: ElementFlags,
+    ) -> NodeId {
+        self.sink.create_element(name, attrs, flags)
+    }
+
+    fn create_comment(&mut self, text: StrTendril) -> NodeId {
+        self.sink.create_comment(text)
+    }
+
+    fn create_pi(&mut self, target: StrTendril, data: StrTendril) -> NodeId {
+        self.sink.create_pi(target, data)
+    }
+
+    fn append(&mut self, parent: &NodeId, child: NodeOrText<NodeId>) {
+        self.place(&child, self.depth_of(parent) + 1);
+        self.sink.append(parent, child)
+    }
+
+    fn append_based_on_parent_node(
+        &mut self,
+        element: &NodeId,
+        prev_element: &NodeId,
+        child: NodeOrText<NodeId>,
+    ) {
+        // Beside `element` when it has a parent, else under `prev_element`.
+        let depth = self.depth_of(element).max(self.depth_of(prev_element) + 1);
+        self.place(&child, depth);
+        self.sink
+            .append_based_on_parent_node(element, prev_element, child)
+    }
+
+    fn append_doctype_to_document(
+        &mut self,
+        name: StrTendril,
+        public_id: StrTendril,
+        system_id: StrTendril,
+    ) {
+        self.sink
+            .append_doctype_to_document(name, public_id, system_id)
+    }
+
+    fn mark_script_already_started(&mut self, node: &NodeId) {
+        self.sink.mark_script_already_started(node)
+    }
+
+    fn pop(&mut self, node: &NodeId) {
+        self.sink.pop(node)
+    }
+
+    fn get_template_contents(&mut self, target: &NodeId) -> NodeId {
+        self.sink.get_template_contents(target)
+    }
+
+    fn same_node(&self, x: &NodeId, y: &NodeId) -> bool {
+        self.sink.same_node(x, y)
+    }
+
+    fn set_quirks_mode(&mut self, mode: QuirksMode) {
+        self.sink.set_quirks_mode(mode)
+    }
+
+    fn append_before_sibling(&mut self, sibling: &NodeId, new_node: NodeOrText<NodeId>) {
+        self.place(&new_node, self.depth_of(sibling));
+        self.sink.append_before_sibling(sibling, new_node)
+    }
+
+    fn add_attrs_if_missing(&mut self, target: &NodeId, attrs: Vec<Attribute>) {
+        self.sink.add_attrs_if_missing(target, attrs)
+    }
+
+    fn associate_with_form(
+        &mut self,
+        target: &NodeId,
+        form: &NodeId,
+        nodes: (&NodeId, Option<&NodeId>),
+    ) {
+        self.sink.associate_with_form(target, form, nodes)
+    }
+
+    fn remove_from_parent(&mut self, target: &NodeId) {
+        self.sink.remove_from_parent(target)
+    }
+
+    fn reparent_children(&mut self, node: &NodeId, new_parent: &NodeId) {
+        self.sink.reparent_children(node, new_parent)
+    }
+
+    fn is_mathml_annotation_xml_integration_point(&self, handle: &NodeId) -> bool {
+        self.sink.is_mathml_annotation_xml_integration_point(handle)
+    }
+}
+
+/// The parser's options for a bounded parse: the one leading byte order mark
+/// is stripped here, since the tokenizer's option would drop one at the start
+/// of every piece fed to it.
+fn bounded_parse_options() -> ParseOpts {
+    ParseOpts {
+        tokenizer: TokenizerOpts {
+            discard_bom: false,
+            ..TokenizerOpts::default()
+        },
+        ..ParseOpts::default()
+    }
+}
+
+/// Feed `html` to `parser` a piece at a time, and stop with `None` as soon as
+/// the tree it builds nests deeper than [`MAX_DOM_DEPTH`].
+fn parse_bounded(mut parser: Parser<DepthBounded>, html: &str) -> Option<scraper::Html> {
+    let mut rest = html.strip_prefix('\u{feff}').unwrap_or(html);
+    while !rest.is_empty() {
+        let mut end = TOKENIZE_CHUNK_BYTES.min(rest.len());
+        while !rest.is_char_boundary(end) {
+            end += 1;
+        }
+        let (piece, tail) = rest.split_at(end);
+        parser.process(StrTendril::from(piece));
+        if parser.tokenizer.sink.sink.too_deep {
+            return None;
+        }
+        rest = tail;
+    }
+    Some(parser.finish())
+}
+
+/// Parse `html` as a document, or `None` when it nests deeper than
+/// [`MAX_DOM_DEPTH`], found as soon as it does rather than after a parse the
+/// depth makes slow.
+pub(crate) fn parse_document_bounded(html: &str) -> Option<scraper::Html> {
+    let parser = html5ever::parse_document(
+        DepthBounded::new(scraper::Html::new_document()),
+        bounded_parse_options(),
+    );
+    parse_bounded(parser, html)
+}
+
+/// Parse `html` as a fragment standing inside a `context` element, or `None`
+/// when it nests deeper than [`MAX_DOM_DEPTH`].
+pub(crate) fn parse_fragment_bounded(html: &str, context: &str) -> Option<scraper::Html> {
+    let parser = html5ever::parse_fragment(
+        DepthBounded::new(scraper::Html::new_fragment()),
+        bounded_parse_options(),
+        QualName::new(None, ns!(html), LocalName::from(context)),
+        Vec::new(),
+    );
+    parse_bounded(parser, html)
 }
 
 fn is_too_deep(document: &scraper::Html) -> bool {
@@ -500,8 +515,8 @@ fn is_too_deep(document: &scraper::Html) -> bool {
 
 /// Parse `html` and read it with `read`, off the async runtime: building a DOM
 /// is CPU-bound, and a parsed document can't cross an `await`. A document
-/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one, without
-/// being parsed when its tokens already show it.
+/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one, and its parse
+/// stops as soon as it gets that deep.
 pub(crate) async fn with_document<T: Send + 'static>(
     html: &Html,
     read: impl FnOnce(&scraper::Html) -> T + Send + 'static,
@@ -512,13 +527,13 @@ pub(crate) async fn with_document<T: Send + 'static>(
             std::thread::Builder::new()
                 .stack_size(READ_STACK_BYTES)
                 .spawn_scoped(scope, move || {
-                    if is_too_deep_markup(&html) {
+                    let Some(document) = parse_document_bounded(&html) else {
                         log::warn!(
                             "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"
                         );
                         return read(&scraper::Html::parse_document(""));
-                    }
-                    let document = scraper::Html::parse_document(&html);
+                    };
+                    // The parser can move a subtree deeper after placing it.
                     if is_too_deep(&document) {
                         log::warn!(
                             "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"

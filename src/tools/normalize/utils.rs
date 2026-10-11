@@ -7,8 +7,8 @@ use url::Url;
 use html5ever::tokenizer::{TagKind, Token, TokenSink, TokenSinkResult};
 
 use crate::utils::{
-    absolute_url, canonical_domain, host_of_url, is_too_deep_markup, social_platform,
-    tokenize_until, PHONE_EXTENSION, TLD_LEN,
+    absolute_url, canonical_domain, host_of_url, parse_document_bounded, parse_fragment_bounded,
+    social_platform, tokenize_until, PHONE_EXTENSION, TLD_LEN,
 };
 
 // Lazy static regex for whitespace normalization
@@ -462,20 +462,6 @@ fn fragment_context(opening: &Opening) -> &'static str {
     }
 }
 
-/// Parse a fragment as if it stood inside a `context` element.
-fn parse_fragment_in(html: &str, context: &str) -> scraper::Html {
-    use html5ever::tendril::TendrilSink;
-    use html5ever::{namespace_url, ns, LocalName, QualName};
-
-    html5ever::parse_fragment(
-        scraper::Html::new_fragment(),
-        html5ever::ParseOpts::default(),
-        QualName::new(None, ns!(html), LocalName::from(context)),
-        Vec::new(),
-    )
-    .one(html)
-}
-
 /// Normalize HTML by parsing it and writing back what is content: no comments,
 /// no junk elements or attributes, text whitespace collapsed. JSON-LD scripts
 /// are data, so each stays where it is with its text untouched. A parser
@@ -485,11 +471,6 @@ pub(super) fn normalize_markup(html: &str) -> String {
     use ego_tree::iter::Edge;
     use scraper::node::Node;
 
-    // Too deep to parse in reasonable time: nothing, as every other reader has it.
-    if is_too_deep_markup(html) {
-        return String::new();
-    }
-
     // A fragment (`<p>a</p>`) stays a fragment: no `<html>` is added to it.
     let opening = opening(html);
     let is_document = match &opening {
@@ -498,9 +479,13 @@ pub(super) fn normalize_markup(html: &str) -> String {
         Opening::Other => false,
     };
     let parsed = if is_document {
-        scraper::Html::parse_document(html)
+        parse_document_bounded(html)
     } else {
-        parse_fragment_in(html, fragment_context(&opening))
+        parse_fragment_bounded(html, fragment_context(&opening))
+    };
+    // Too deep to parse in reasonable time: nothing, as every other reader has it.
+    let Some(parsed) = parsed else {
+        return String::new();
     };
     let root = if is_document {
         parsed.tree.root()

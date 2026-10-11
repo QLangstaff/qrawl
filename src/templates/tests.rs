@@ -827,7 +827,8 @@ mod local_site {
 
     #[test]
     fn markup_the_parser_flattens_is_not_too_deep_and_what_it_nests_is() {
-        use crate::utils::is_too_deep_markup;
+        use crate::utils::parse_document_bounded;
+        let is_too_deep_markup = |html: &str| parse_document_bounded(html).is_none();
         // Each of these the parser closes by implication: a flat document.
         for flat in [
             "<p>".repeat(5_000),
@@ -845,6 +846,12 @@ mod local_site {
             format!("<style>{}</style>", "<div>".repeat(600)),
             format!("<textarea>{}</textarea>", "<div>".repeat(600)),
             format!("<title>{}</title>", "<div>".repeat(600)),
+            format!("<noscript>{}</noscript>", "<div>".repeat(600)),
+            // A heading ends the heading before it.
+            "<h2>x".repeat(600),
+            "<h1>a<h2>b<h3>c".repeat(200),
+            format!("<button>{}</button>", "<p>x".repeat(600)),
+            format!("<select>{}</select>", "<option><optgroup>".repeat(300)),
         ] {
             assert!(!is_too_deep_markup(&flat), "{}", &flat[..40]);
         }
@@ -856,6 +863,11 @@ mod local_site {
             "<dl><dt><span>x<dd><span>y".repeat(300),
             "<b>".repeat(600),
             "<table><tr><td>".repeat(300),
+            "<p>x<div>y".repeat(600),
+            "<li><ul>".repeat(600),
+            format!("<template>{}</template>", "<div>".repeat(600)),
+            format!("<svg>{}</svg>", "<g>".repeat(600)),
+            "<span>x".repeat(600),
         ] {
             assert!(is_too_deep_markup(&deep), "{}", &deep[..40]);
         }

@@ -110,11 +110,10 @@ fn declared_encoding(response: &Response) -> &'static Encoding {
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|content_type| {
+            // As `reqwest` reads it: no space on either side of the `=`.
             content_type.split(';').find_map(|parameter| {
-                let (name, value) = parameter.split_once('=')?;
-                name.trim()
-                    .eq_ignore_ascii_case("charset")
-                    .then_some(value.trim())
+                let (name, value) = parameter.trim_start().split_once('=')?;
+                name.eq_ignore_ascii_case("charset").then_some(value)
             })
         })
         .and_then(|charset| Encoding::for_label(charset.trim_matches('"').as_bytes()))
