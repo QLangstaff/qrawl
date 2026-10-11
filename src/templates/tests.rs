@@ -823,6 +823,28 @@ mod local_site {
         );
     }
 
+    #[test]
+    fn a_page_that_makes_the_parser_rebuild_dozens_of_formatting_elements_per_paragraph_is_refused()
+    {
+        use crate::utils::parse_document_bounded;
+        // Fourteen formatting tags left open three times each, then short
+        // paragraphs: each rebuilds all forty-two, twenty operations a byte,
+        // while the tree stays shallow.
+        let formatting = "<a><b><big><code><em><font><i><nobr><s><small><strike><strong><tt><u>";
+        let storm = format!(
+            "<html><body><p>{}{}</body></html>",
+            formatting.repeat(3),
+            "<p>x".repeat(200_000)
+        );
+        let started = std::time::Instant::now();
+        assert!(parse_document_bounded(&storm).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn a_page_nested_far_too_deep_is_refused_before_it_is_parsed() {
         // 50,000 levels take the parser seconds; the tokens show the depth at once.

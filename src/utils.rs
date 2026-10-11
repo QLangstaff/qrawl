@@ -11,6 +11,7 @@ use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{namespace_url, ns, Attribute, ExpandedName, LocalName, ParseOpts, QualName};
 use scraper::Selector;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::types::{Html, SocialPlatform};
@@ -298,10 +299,11 @@ pub(crate) fn tokenize_until<Sink: TokenSink>(
 
 /// Tree operations the parser may make per byte of markup, over
 /// [`TREE_OPERATIONS_FLOOR`]. A page's tree grows in step with its markup, an
-/// element or a text node per tag or run of text; one that makes the parser
-/// move subtrees around many times per byte (misnested formatting tags, which
-/// its adoption agency untangles over the whole open stack each time) is one
-/// built to stall it, and its parse stops.
+/// element or a text node per tag or run of text. One that leaves dozens of
+/// formatting tags open and then starts paragraph after paragraph makes the
+/// parser rebuild every one of them in each: twenty operations a byte, a tree
+/// a hundred times the markup, and no depth to show for it. Such a page is
+/// built to stall the parser, and its parse stops.
 const TREE_OPERATIONS_PER_BYTE: usize = 4;
 
 /// The tree operations every document may make, however small its markup.
@@ -315,6 +317,10 @@ const TREE_OPERATIONS_FLOOR: usize = 16 * 1024;
 /// with.
 struct DepthBounded {
     sink: scraper::Html,
+    /// Each node's depth, once read off the tree. Cleared whenever the parser
+    /// moves a node that already stands in the tree, which only misnested
+    /// markup makes it do; a page that nests as written pays one walk a node.
+    depth: HashMap<NodeId, usize>,
     operations: usize,
     too_deep: bool,
 }
@@ -323,6 +329,7 @@ impl DepthBounded {
     fn new(sink: scraper::Html) -> Self {
         Self {
             sink,
+            depth: HashMap::new(),
             operations: 0,
             too_deep: false,
         }
@@ -330,11 +337,32 @@ impl DepthBounded {
 
     /// How deep `node` stands in the tree, the root at 1, as [`is_too_deep`]
     /// counts it.
-    fn depth_of(&self, node: &NodeId) -> usize {
-        self.sink
+    fn depth_of(&mut self, node: &NodeId) -> usize {
+        if let Some(depth) = self.depth.get(node) {
+            return *depth;
+        }
+        let depth = self
+            .sink
             .tree
             .get(*node)
-            .map_or(0, |node| node.ancestors().count() + 1)
+            .map_or(0, |node| node.ancestors().count() + 1);
+        self.depth.insert(*node, depth);
+        depth
+    }
+
+    /// Forget every depth before `child`, a node that may already stand in the
+    /// tree, is placed: its subtree's depths change with it.
+    fn moving(&mut self, child: &NodeOrText<NodeId>) {
+        if let NodeOrText::AppendNode(node) = child {
+            let stands_in_tree = self
+                .sink
+                .tree
+                .get(*node)
+                .is_some_and(|node| node.parent().is_some());
+            if stands_in_tree {
+                self.depth.clear();
+            }
+        }
     }
 
     /// Note a node about to stand at `depth`.
@@ -393,7 +421,9 @@ impl TreeSink for DepthBounded {
 
     fn append(&mut self, parent: &NodeId, child: NodeOrText<NodeId>) {
         self.operations += 1;
-        self.place_at(self.depth_of(parent) + 1);
+        self.moving(&child);
+        let depth = self.depth_of(parent) + 1;
+        self.place_at(depth);
         self.sink.append(parent, child)
     }
 
@@ -404,6 +434,7 @@ impl TreeSink for DepthBounded {
         child: NodeOrText<NodeId>,
     ) {
         self.operations += 1;
+        self.moving(&child);
         // Beside `element` when it has a parent, else under `prev_element`.
         let has_parent = self
             .sink
@@ -453,7 +484,9 @@ impl TreeSink for DepthBounded {
 
     fn append_before_sibling(&mut self, sibling: &NodeId, new_node: NodeOrText<NodeId>) {
         self.operations += 1;
-        self.place_at(self.depth_of(sibling));
+        self.moving(&new_node);
+        let depth = self.depth_of(sibling);
+        self.place_at(depth);
         self.sink.append_before_sibling(sibling, new_node)
     }
 
@@ -473,11 +506,13 @@ impl TreeSink for DepthBounded {
 
     fn remove_from_parent(&mut self, target: &NodeId) {
         self.operations += 1;
+        self.depth.clear();
         self.sink.remove_from_parent(target)
     }
 
     fn reparent_children(&mut self, node: &NodeId, new_parent: &NodeId) {
         self.operations += 1;
+        self.depth.clear();
         self.sink.reparent_children(node, new_parent)
     }
 
