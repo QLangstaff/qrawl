@@ -368,13 +368,14 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // most instances, and whatever follows the listing in the last. Then
         // the one with the longer run of adjacent instances; a rotation never
         // trades instances for tags, so a listing whose first heading differs
-        // keeps its first item. Then the one with fewer instances outside that
-        // run: a rotation picks up stray instances from another listing's
-        // elements. When all tie, the one that starts first. A
+        // keeps its first item. Then the one with fewer instances standing
+        // alone: a rotation picks up stray instances from another listing's
+        // elements, while a listing split by a block of other elements keeps
+        // its runs. When all tie, the one that starts first. A
         // listing whose first item alone uses another heading tag, followed by
         // a link under the items' tag, reads as the rotation: its tags can't
-        // tell it from the unit; so can one whose items differ in length by a
-        // whole unit or more, since its runs break like a second listing's.
+        // tell it from the unit; so can a lone item before a block of other
+        // elements, since a run of one looks like a stray.
         let mut kept: HashMap<Vec<StructurePattern>, KeptGroup> = HashMap::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
@@ -411,8 +412,14 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                                 .all(|&start| children[start + offset].value().name() == tag)
                         })
                         .count();
-                    let adjacent_run = longest_adjacent_run(&non_overlapping, pattern_len);
-                    let stragglers = non_overlapping.len() - adjacent_run;
+                    let runs = adjacent_runs(&non_overlapping, |previous, start| {
+                        (pattern_len..2 * pattern_len).contains(&(start - previous))
+                            && structures[previous + pattern_len..start]
+                                .iter()
+                                .all(|structure| pattern.contains(structure))
+                    });
+                    let adjacent_run = runs.iter().copied().max().unwrap_or(0);
+                    let stragglers = runs.iter().filter(|&&run| run == 1).count();
                     let rotation = canonical_rotation(pattern);
                     let replaces = match kept.get(&rotation) {
                         Some(group)
@@ -468,9 +475,9 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 }
 
 /// A multi-element group of one parent, as far as telling its rotations apart
-/// needs: its longest run of adjacent instances, its instances outside that
-/// run, how many of its positions keep one tag across every instance, and
-/// where it sits in `all_groups`.
+/// needs: its longest run of adjacent instances, its instances standing alone,
+/// how many of its positions keep one tag across every instance, and where it
+/// sits in `all_groups`.
 struct KeptGroup {
     adjacent_run: usize,
     stragglers: usize,
@@ -506,23 +513,22 @@ fn canonical_rotation(pattern: &[StructurePattern]) -> Vec<StructurePattern> {
         .expect("a pattern has an element")
 }
 
-/// The most instances in a row, each starting where the one before ends, or
-/// less than a unit after it, since one listing's items can differ by some
-/// elements. Instances further on, past an ad or in another listing whose
-/// elements happen to continue the pattern a whole unit later, don't make it
-/// longer.
-fn longest_adjacent_run(starts: &[usize], pattern_len: usize) -> usize {
-    let adjacent = pattern_len..2 * pattern_len;
-    let mut longest = 0;
-    let mut run = 0;
+/// The lengths of the runs of instances, each `is_adjacent` to the one before:
+/// starting where it ends, or less than a unit after it with only the unit's
+/// own structures between, since one listing's items can differ by some
+/// elements. An instance past an ad, or in another listing whose elements
+/// happen to continue the pattern, starts a run of its own.
+fn adjacent_runs(starts: &[usize], is_adjacent: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut runs = Vec::new();
     for (index, &start) in starts.iter().enumerate() {
-        run = match index.checked_sub(1) {
-            Some(previous) if adjacent.contains(&(start - starts[previous])) => run + 1,
-            _ => 1,
-        };
-        longest = longest.max(run);
+        match index.checked_sub(1) {
+            Some(previous) if is_adjacent(starts[previous], start) => {
+                *runs.last_mut().expect("a run before an adjacent instance") += 1
+            }
+            _ => runs.push(1),
+        }
     }
-    longest
+    runs
 }
 
 /// Map sibling HTML fragment to URL.

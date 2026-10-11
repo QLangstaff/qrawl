@@ -495,6 +495,48 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings_whichever_c
 }
 
 #[tokio::test]
+async fn map_children_keeps_both_runs_of_a_listing_split_by_a_block() {
+    let item = |n: usize| {
+        format!(
+            "<h2><a href=\"/item{n}\">I</a></h2><div><img src=\"/i{n}.png\"></div><p>a</p><p>b</p>"
+        )
+    };
+    let block = format!("<h1>More</h1>{}", "<p>text</p>".repeat(3));
+    for trailing in ["", "<h2><a href=\"/more\">More</a></h2>"] {
+        let html = format!(
+            "<html><body><main>{}{block}{}{trailing}</main></body></html>",
+            (0..3).map(item).collect::<String>(),
+            (3..8).map(item).collect::<String>()
+        );
+        let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+        let expected: Vec<String> = (0..8)
+            .map(|n| format!("https://example.com/item{n}"))
+            .collect();
+        assert_eq!(urls, expected, "trailing {trailing:?}");
+    }
+}
+
+#[tokio::test]
+async fn map_children_keeps_a_plain_listing_before_a_richer_one_within_a_unit() {
+    let plain: String = (0..20)
+        .map(|n| format!("<h2><a href=\"/a{n}\">A {n}</a></h2><p>text</p>"))
+        .collect();
+    let richer: String = (0..3)
+        .map(|n| {
+            format!(
+                "<h2><a href=\"/b{n}\">B {n}</a></h2><div><img src=\"/b{n}.png\"></div><p>text</p>"
+            )
+        })
+        .collect();
+    let html = format!("<html><body><main>{plain}{richer}</main></body></html>");
+    let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+    let expected: Vec<String> = (0..20)
+        .map(|n| format!("https://example.com/a{n}"))
+        .collect();
+    assert_eq!(urls, expected);
+}
+
+#[tokio::test]
 async fn map_children_keeps_a_first_item_whose_heading_differs() {
     let item = |n: usize| {
         let heading = if n == 0 { "h3" } else { "h2" };
