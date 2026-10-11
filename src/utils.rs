@@ -11,7 +11,6 @@ use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{namespace_url, ns, Attribute, ExpandedName, LocalName, ParseOpts, QualName};
 use scraper::Selector;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::types::{Html, SocialPlatform};
@@ -297,14 +296,26 @@ pub(crate) fn tokenize_until<Sink: TokenSink>(
     tokenizer.sink
 }
 
-/// A tree sink that builds a [`scraper::Html`] and measures how deep it
-/// nests as it does, so a parse can stop once the tree passes
-/// [`MAX_DOM_DEPTH`]: the parser's cost grows with the square of the depth,
-/// and the tree it builds is the one measure of depth it can't disagree with.
+/// Tree operations the parser may make per byte of markup, over
+/// [`TREE_OPERATIONS_FLOOR`]. A page's tree grows in step with its markup, an
+/// element or a text node per tag or run of text; one that makes the parser
+/// move subtrees around many times per byte (misnested formatting tags, which
+/// its adoption agency untangles over the whole open stack each time) is one
+/// built to stall it, and its parse stops.
+const TREE_OPERATIONS_PER_BYTE: usize = 4;
+
+/// The tree operations every document may make, however small its markup.
+const TREE_OPERATIONS_FLOOR: usize = 16 * 1024;
+
+/// A tree sink that builds a [`scraper::Html`] and watches the parser build
+/// it: how deep each node is placed, read off the tree it stands in, and how
+/// many operations the parser makes. A parse past [`MAX_DOM_DEPTH`] or the
+/// operations budget stops: the parser's cost grows with the square of the
+/// depth, and the tree it builds is the one measure of depth it can't disagree
+/// with.
 struct DepthBounded {
     sink: scraper::Html,
-    /// Each node's depth, as it was placed.
-    depth: HashMap<NodeId, usize>,
+    operations: usize,
     too_deep: bool,
 }
 
@@ -312,22 +323,31 @@ impl DepthBounded {
     fn new(sink: scraper::Html) -> Self {
         Self {
             sink,
-            depth: HashMap::new(),
+            operations: 0,
             too_deep: false,
         }
     }
 
+    /// How deep `node` stands in the tree, the root at 1, as [`is_too_deep`]
+    /// counts it.
     fn depth_of(&self, node: &NodeId) -> usize {
-        self.depth.get(node).copied().unwrap_or(0)
+        self.sink
+            .tree
+            .get(*node)
+            .map_or(0, |node| node.ancestors().count() + 1)
     }
 
-    fn place(&mut self, child: &NodeOrText<NodeId>, depth: usize) {
-        if let NodeOrText::AppendNode(node) = child {
-            self.depth.insert(*node, depth);
-            if depth > MAX_DOM_DEPTH {
-                self.too_deep = true;
-            }
+    /// Note a node about to stand at `depth`.
+    fn place_at(&mut self, depth: usize) {
+        if depth > MAX_DOM_DEPTH {
+            self.too_deep = true;
         }
+    }
+
+    /// Whether the parser has made more operations than the markup fed so far
+    /// accounts for.
+    fn over_budget(&self, bytes_fed: usize) -> bool {
+        self.operations > bytes_fed * TREE_OPERATIONS_PER_BYTE + TREE_OPERATIONS_FLOOR
     }
 }
 
@@ -357,19 +377,23 @@ impl TreeSink for DepthBounded {
         attrs: Vec<Attribute>,
         flags: ElementFlags,
     ) -> NodeId {
+        self.operations += 1;
         self.sink.create_element(name, attrs, flags)
     }
 
     fn create_comment(&mut self, text: StrTendril) -> NodeId {
+        self.operations += 1;
         self.sink.create_comment(text)
     }
 
     fn create_pi(&mut self, target: StrTendril, data: StrTendril) -> NodeId {
+        self.operations += 1;
         self.sink.create_pi(target, data)
     }
 
     fn append(&mut self, parent: &NodeId, child: NodeOrText<NodeId>) {
-        self.place(&child, self.depth_of(parent) + 1);
+        self.operations += 1;
+        self.place_at(self.depth_of(parent) + 1);
         self.sink.append(parent, child)
     }
 
@@ -379,9 +403,19 @@ impl TreeSink for DepthBounded {
         prev_element: &NodeId,
         child: NodeOrText<NodeId>,
     ) {
+        self.operations += 1;
         // Beside `element` when it has a parent, else under `prev_element`.
-        let depth = self.depth_of(element).max(self.depth_of(prev_element) + 1);
-        self.place(&child, depth);
+        let has_parent = self
+            .sink
+            .tree
+            .get(*element)
+            .is_some_and(|element| element.parent().is_some());
+        let depth = if has_parent {
+            self.depth_of(element)
+        } else {
+            self.depth_of(prev_element) + 1
+        };
+        self.place_at(depth);
         self.sink
             .append_based_on_parent_node(element, prev_element, child)
     }
@@ -392,6 +426,7 @@ impl TreeSink for DepthBounded {
         public_id: StrTendril,
         system_id: StrTendril,
     ) {
+        self.operations += 1;
         self.sink
             .append_doctype_to_document(name, public_id, system_id)
     }
@@ -417,11 +452,13 @@ impl TreeSink for DepthBounded {
     }
 
     fn append_before_sibling(&mut self, sibling: &NodeId, new_node: NodeOrText<NodeId>) {
-        self.place(&new_node, self.depth_of(sibling));
+        self.operations += 1;
+        self.place_at(self.depth_of(sibling));
         self.sink.append_before_sibling(sibling, new_node)
     }
 
     fn add_attrs_if_missing(&mut self, target: &NodeId, attrs: Vec<Attribute>) {
+        self.operations += 1;
         self.sink.add_attrs_if_missing(target, attrs)
     }
 
@@ -435,10 +472,12 @@ impl TreeSink for DepthBounded {
     }
 
     fn remove_from_parent(&mut self, target: &NodeId) {
+        self.operations += 1;
         self.sink.remove_from_parent(target)
     }
 
     fn reparent_children(&mut self, node: &NodeId, new_parent: &NodeId) {
+        self.operations += 1;
         self.sink.reparent_children(node, new_parent)
     }
 
@@ -461,27 +500,31 @@ fn bounded_parse_options() -> ParseOpts {
 }
 
 /// Feed `html` to `parser` a piece at a time, and stop with `None` as soon as
-/// the tree it builds nests deeper than [`MAX_DOM_DEPTH`].
+/// the tree it builds nests deeper than [`MAX_DOM_DEPTH`] or the parser works
+/// past its operations budget. The finished tree is measured once more: the
+/// parser can move a subtree deeper after placing it.
 fn parse_bounded(mut parser: Parser<DepthBounded>, html: &str) -> Option<scraper::Html> {
-    let mut rest = html.strip_prefix('\u{feff}').unwrap_or(html);
-    while !rest.is_empty() {
-        let mut end = TOKENIZE_CHUNK_BYTES.min(rest.len());
-        while !rest.is_char_boundary(end) {
+    let html = html.strip_prefix('\u{feff}').unwrap_or(html);
+    let mut fed = 0;
+    while fed < html.len() {
+        let mut end = (fed + TOKENIZE_CHUNK_BYTES).min(html.len());
+        while !html.is_char_boundary(end) {
             end += 1;
         }
-        let (piece, tail) = rest.split_at(end);
-        parser.process(StrTendril::from(piece));
-        if parser.tokenizer.sink.sink.too_deep {
+        parser.process(StrTendril::from(&html[fed..end]));
+        fed = end;
+        let sink = &parser.tokenizer.sink.sink;
+        if sink.too_deep || sink.over_budget(fed) {
             return None;
         }
-        rest = tail;
     }
-    Some(parser.finish())
+    let document = parser.finish();
+    (!is_too_deep(&document)).then_some(document)
 }
 
 /// Parse `html` as a document, or `None` when it nests deeper than
-/// [`MAX_DOM_DEPTH`], found as soon as it does rather than after a parse the
-/// depth makes slow.
+/// [`MAX_DOM_DEPTH`] or makes the parser work past its budget, found as soon
+/// as it does rather than after a parse the depth makes slow.
 pub(crate) fn parse_document_bounded(html: &str) -> Option<scraper::Html> {
     let parser = html5ever::parse_document(
         DepthBounded::new(scraper::Html::new_document()),
@@ -491,7 +534,7 @@ pub(crate) fn parse_document_bounded(html: &str) -> Option<scraper::Html> {
 }
 
 /// Parse `html` as a fragment standing inside a `context` element, or `None`
-/// when it nests deeper than [`MAX_DOM_DEPTH`].
+/// on what refuses a document.
 pub(crate) fn parse_fragment_bounded(html: &str, context: &str) -> Option<scraper::Html> {
     let parser = html5ever::parse_fragment(
         DepthBounded::new(scraper::Html::new_fragment()),
@@ -515,8 +558,7 @@ fn is_too_deep(document: &scraper::Html) -> bool {
 
 /// Parse `html` and read it with `read`, off the async runtime: building a DOM
 /// is CPU-bound, and a parsed document can't cross an `await`. A document
-/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one, and its parse
-/// stops as soon as it gets that deep.
+/// [`parse_document_bounded`] refuses is read as an empty one.
 pub(crate) async fn with_document<T: Send + 'static>(
     html: &Html,
     read: impl FnOnce(&scraper::Html) -> T + Send + 'static,
@@ -528,18 +570,9 @@ pub(crate) async fn with_document<T: Send + 'static>(
                 .stack_size(READ_STACK_BYTES)
                 .spawn_scoped(scope, move || {
                     let Some(document) = parse_document_bounded(&html) else {
-                        log::warn!(
-                            "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"
-                        );
+                        log::warn!("document too deep or too costly to parse read as empty");
                         return read(&scraper::Html::parse_document(""));
                     };
-                    // The parser can move a subtree deeper after placing it.
-                    if is_too_deep(&document) {
-                        log::warn!(
-                            "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"
-                        );
-                        return read(&scraper::Html::parse_document(""));
-                    }
                     read(&document)
                 })
                 .expect("spawning the document reader")

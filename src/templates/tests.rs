@@ -805,6 +805,24 @@ mod local_site {
         assert!(page.is_ok(), "{page:?}");
     }
 
+    #[test]
+    fn a_page_that_makes_the_parser_untangle_formatting_over_and_over_is_refused_early() {
+        use crate::utils::parse_document_bounded;
+        // The parser's cost grows with the square of this: at 30,000 it took
+        // eight seconds to parse in full.
+        let storm = format!(
+            "<html><body>{}</body></html>",
+            "<b><i><div></b>".repeat(30_000)
+        );
+        let started = std::time::Instant::now();
+        assert!(parse_document_bounded(&storm).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn a_page_nested_far_too_deep_is_refused_before_it_is_parsed() {
         // 50,000 levels take the parser seconds; the tokens show the depth at once.
@@ -868,6 +886,11 @@ mod local_site {
             format!("<template>{}</template>", "<div>".repeat(600)),
             format!("<svg>{}</svg>", "<g>".repeat(600)),
             "<span>x".repeat(600),
+            // The adoption agency moves these deeper after placing them.
+            "<b><i><div></b>".repeat(300),
+            "<a><b><div></a>".repeat(300),
+            // Exactly past the bound, counting the root and a text node.
+            format!("{}x", "<div>".repeat(510)),
         ] {
             assert!(is_too_deep_markup(&deep), "{}", &deep[..40]);
         }

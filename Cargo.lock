@@ -1497,6 +1497,7 @@ dependencies = [
  "html5ever 0.27.0",
  "idna 1.1.0",
  "log",
+ "mime",
  "regex",
  "reqwest",
  "scraper",

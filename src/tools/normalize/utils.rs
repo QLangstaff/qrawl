@@ -483,7 +483,7 @@ pub(super) fn normalize_markup(html: &str) -> String {
     } else {
         parse_fragment_bounded(html, fragment_context(&opening))
     };
-    // Too deep to parse in reasonable time: nothing, as every other reader has it.
+    // Too deep or too costly to parse: nothing, as every other reader has it.
     let Some(parsed) = parsed else {
         return String::new();
     };

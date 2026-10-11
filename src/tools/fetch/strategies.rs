@@ -109,14 +109,8 @@ fn declared_encoding(response: &Response) -> &'static Encoding {
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .and_then(|content_type| {
-            // As `reqwest` reads it: no space on either side of the `=`.
-            content_type.split(';').find_map(|parameter| {
-                let (name, value) = parameter.trim_start().split_once('=')?;
-                name.eq_ignore_ascii_case("charset").then_some(value)
-            })
-        })
-        .and_then(|charset| Encoding::for_label(charset.trim_matches('"').as_bytes()))
+        .and_then(|content_type| content_type.parse::<mime::Mime>().ok())
+        .and_then(|mime| Encoding::for_label(mime.get_param(mime::CHARSET)?.as_str().as_bytes()))
         .unwrap_or(UTF_8)
 }
 
