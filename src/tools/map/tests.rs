@@ -466,6 +466,35 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings() {
 }
 
 #[tokio::test]
+async fn map_children_keeps_every_item_of_the_richer_of_two_listings_whichever_comes_first() {
+    for (heading, second_count) in [("h3", 5usize), ("h2", 5), ("h3", 20), ("h2", 20)] {
+        let richer: String = (0..3)
+            .map(|n| {
+                format!(
+                    "<{heading}><a href=\"/b{n}\">B {n}</a></{heading}><div><img src=\"/b{n}.png\"></div><ul><li>x</li></ul><p>text</p>"
+                )
+            })
+            .collect();
+        let plainer: String = (0..second_count)
+            .map(|n| format!("<h2><a href=\"/a{n}\">A {n}</a></h2><p>text</p>"))
+            .collect();
+        let html = format!("<html><body><main>{richer}{plainer}</main></body></html>");
+        let urls = map_children(&html.as_str().into(), "https://example.com/").await;
+        // The richer listing by coverage up to 5 plain items; the longer one past that.
+        let expected: Vec<String> = if second_count * 2 > 3 * 4 {
+            (0..second_count)
+                .map(|n| format!("https://example.com/a{n}"))
+                .collect()
+        } else {
+            (0..3)
+                .map(|n| format!("https://example.com/b{n}"))
+                .collect()
+        };
+        assert_eq!(urls, expected, "{heading} then {second_count}");
+    }
+}
+
+#[tokio::test]
 async fn map_children_keeps_a_first_item_whose_heading_differs() {
     let item = |n: usize| {
         let heading = if n == 0 { "h3" } else { "h2" };

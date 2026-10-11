@@ -18,16 +18,17 @@ static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .expect("valid regex")
 });
-/// A North American number in text, in ASCII digits.
+/// A North American number in text, in ASCII digits, grouped by any space.
 static PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?-u)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}").expect("valid regex")
+    Regex::new(r"(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}")
+        .expect("valid regex")
 });
 /// One phone number as written, in any country's format: 5 to 15 digits, up to
 /// three grouping characters between any two (`555 - 1212`), then an extension
 /// or RFC 3966 parameters (`;ext=12`) if any.
 static ONE_PHONE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(?i)^\+?(?:\(?\d\)?[\s.\-]{{0,3}}){{5,15}}(?:;.*|{PHONE_EXTENSION})?$"
+        r"(?i)^\+?(?:\(?[0-9]\)?[\s.\-]{{0,3}}){{5,15}}(?:;.*|{PHONE_EXTENSION})?$"
     ))
     .expect("valid regex")
 });
@@ -88,7 +89,8 @@ fn find_phones(text: &str) -> Vec<String> {
     let mut from = 0;
     while let Some(found) = PHONE_REGEX.find_at(text, from) {
         if is_digit_at(found.start().checked_sub(1)) {
-            // The match is ASCII, so the next byte is a character boundary.
+            // The match's first character is ASCII, so the next byte is a
+            // character boundary.
             from = found.start() + 1;
             continue;
         }

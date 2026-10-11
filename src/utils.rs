@@ -305,4 +305,4 @@ pub(crate) const TLD_LEN: std::ops::RangeInclusive<usize> = 2..=24;
 /// A phone number's extension, as a regex: ` ext. 12`, `, extension 12`,
 /// `extn 12`, `x12`, `x-12`, `ext: 12`, `ext #12`, `(x12)`. A number is read
 /// (`extract`) and stripped of it (`normalize`) by the same rule.
-pub(crate) const PHONE_EXTENSION: &str = r"[\s,(]*(?:ext(?:ension|n)?\.?|x\.?)[\s:#.\-]*\d+\)?";
+pub(crate) const PHONE_EXTENSION: &str = r"[\s,(]*(?:ext(?:ension|n)?\.?|x\.?)[\s:#.\-]*[0-9]+\)?";

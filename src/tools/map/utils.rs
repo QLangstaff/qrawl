@@ -2,6 +2,7 @@ use crate::utils::{canonical_domain, schema_types};
 use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
 use scraper::{ElementRef, Html};
 use serde_json::Value;
+use std::cmp::Reverse;
 use url::Url;
 
 /// Minimum number of siblings required to form a valid group.
@@ -42,7 +43,7 @@ const NAV_TAGS: &[&str] = &["nav", "footer", "aside", "header"];
 
 /// Structure pattern for sibling detection: an element's child tag names, so
 /// a list of `<h2>` and `<h3>` items is one list.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct StructurePattern {
     pub tags: Vec<String>,
 }
@@ -359,18 +360,22 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         // the same way.
         let mut pattern_groups: Vec<_> = multi_pattern_groups.into_iter().collect();
         pattern_groups.sort_by_key(|(_, start_indices)| start_indices[0]);
-        // Each group kept, to tell a rotation of it: the same unit read from
-        // another of its elements on (`div, p, p, h2` for `h2, div, p, p`), a
-        // cyclic shift of its structures. Of the two, the unit is the one
-        // whose elements keep their tags in every instance: a rotation's last
-        // element is the unit's first in most instances, and whatever follows
-        // the listing in the last. Then the one with the longer run of
-        // adjacent instances; a rotation never trades instances for tags, so a
-        // listing whose first heading differs keeps its first item. When both
-        // tie, the one that starts first. A listing whose first item alone
-        // uses another heading tag, followed by a link under the items' tag,
-        // reads as the rotation: its tags can't tell it from the unit.
-        let mut kept: Vec<KeptGroup> = Vec::new();
+        // Each group kept, by the rotation its structures are a cyclic shift
+        // of, to tell a unit from a rotation of it: the same unit read from
+        // another of its elements on (`div, p, p, h2` for `h2, div, p, p`).
+        // Of the two, the unit is the one whose elements keep their tags in
+        // every instance: a rotation's last element is the unit's first in
+        // most instances, and whatever follows the listing in the last. Then
+        // the one with the longer run of adjacent instances; a rotation never
+        // trades instances for tags, so a listing whose first heading differs
+        // keeps its first item. Then the one with fewer instances outside that
+        // run: a rotation picks up stray instances from another listing's
+        // elements. When all tie, the one that starts first. A
+        // listing whose first item alone uses another heading tag, followed by
+        // a link under the items' tag, reads as the rotation: its tags can't
+        // tell it from the unit; so can one whose items differ in length by a
+        // whole unit or more, since its runs break like a second listing's.
+        let mut kept: HashMap<Vec<StructurePattern>, KeptGroup> = HashMap::new();
         for (pattern, start_indices) in pattern_groups {
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
                 // Skip homogeneous patterns (handled by single-element detection)
@@ -407,17 +412,15 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                         })
                         .count();
                     let adjacent_run = longest_adjacent_run(&non_overlapping, pattern_len);
-                    let rotated = kept
-                        .iter()
-                        .position(|group| is_cyclic_shift(group.pattern, pattern));
-                    let replaces = match rotated {
-                        Some(index)
-                            if kept[index].instances <= non_overlapping.len()
-                                && kept[index].adjacent_run <= adjacent_run
-                                && (kept[index].tag_consistency, kept[index].adjacent_run)
-                                    < (tag_consistency, adjacent_run) =>
+                    let stragglers = non_overlapping.len() - adjacent_run;
+                    let rotation = canonical_rotation(pattern);
+                    let replaces = match kept.get(&rotation) {
+                        Some(group)
+                            if group.adjacent_run <= adjacent_run
+                                && group.rank()
+                                    < (tag_consistency, adjacent_run, Reverse(stragglers)) =>
                         {
-                            Some(index)
+                            Some(group.group_index)
                         }
                         Some(_) => continue,
                         None => None,
@@ -439,25 +442,25 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                         pattern_len,
                         siblings,
                     };
-                    match replaces {
-                        Some(index) => {
-                            all_groups[kept[index].group_index] = group;
-                            kept[index].pattern = pattern;
-                            kept[index].instances = non_overlapping.len();
-                            kept[index].adjacent_run = adjacent_run;
-                            kept[index].tag_consistency = tag_consistency;
+                    let group_index = match replaces {
+                        Some(group_index) => {
+                            all_groups[group_index] = group;
+                            group_index
                         }
                         None => {
-                            kept.push(KeptGroup {
-                                pattern,
-                                instances: non_overlapping.len(),
-                                adjacent_run,
-                                tag_consistency,
-                                group_index: all_groups.len(),
-                            });
                             all_groups.push(group);
+                            all_groups.len() - 1
                         }
-                    }
+                    };
+                    kept.insert(
+                        rotation,
+                        KeptGroup {
+                            adjacent_run,
+                            stragglers,
+                            tag_consistency,
+                            group_index,
+                        },
+                    );
                 }
             }
         }
@@ -465,39 +468,56 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
 }
 
 /// A multi-element group of one parent, as far as telling its rotations apart
-/// needs: its structures, how often it repeats, its longest run of adjacent
-/// instances, how many of its positions keep one tag across every instance,
-/// and where it sits in `all_groups`.
-struct KeptGroup<'a> {
-    pattern: &'a [StructurePattern],
-    instances: usize,
+/// needs: its longest run of adjacent instances, its instances outside that
+/// run, how many of its positions keep one tag across every instance, and
+/// where it sits in `all_groups`.
+struct KeptGroup {
     adjacent_run: usize,
+    stragglers: usize,
     tag_consistency: usize,
     group_index: usize,
 }
 
-/// Whether `other` is `pattern` read from another of its elements on.
-fn is_cyclic_shift(pattern: &[StructurePattern], other: &[StructurePattern]) -> bool {
-    pattern.len() == other.len()
-        && (1..pattern.len()).any(|shift| {
+impl KeptGroup {
+    /// What ranks a group above a rotation of it, best first.
+    fn rank(&self) -> (usize, usize, Reverse<usize>) {
+        (
+            self.tag_consistency,
+            self.adjacent_run,
+            Reverse(self.stragglers),
+        )
+    }
+}
+
+/// The least of a pattern's cyclic shifts: one key for a unit and every
+/// rotation of it.
+fn canonical_rotation(pattern: &[StructurePattern]) -> Vec<StructurePattern> {
+    (0..pattern.len())
+        .map(|shift| {
             pattern
                 .iter()
                 .cycle()
                 .skip(shift)
                 .take(pattern.len())
-                .eq(other.iter())
+                .cloned()
+                .collect::<Vec<_>>()
         })
+        .min()
+        .expect("a pattern has an element")
 }
 
-/// The most instances in a row, each right after the one before: a listing's
-/// own items. Instances further on, past an ad or in another listing whose
-/// elements happen to continue the pattern, don't make it longer.
+/// The most instances in a row, each starting where the one before ends, or
+/// less than a unit after it, since one listing's items can differ by some
+/// elements. Instances further on, past an ad or in another listing whose
+/// elements happen to continue the pattern a whole unit later, don't make it
+/// longer.
 fn longest_adjacent_run(starts: &[usize], pattern_len: usize) -> usize {
+    let adjacent = pattern_len..2 * pattern_len;
     let mut longest = 0;
     let mut run = 0;
     for (index, &start) in starts.iter().enumerate() {
         run = match index.checked_sub(1) {
-            Some(previous) if starts[previous] + pattern_len == start => run + 1,
+            Some(previous) if adjacent.contains(&(start - starts[previous])) => run + 1,
             _ => 1,
         };
         longest = longest.max(run);

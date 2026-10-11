@@ -624,7 +624,8 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
             "tel:+1-212-555-1212;ext=12",
             "+1-212-555-1313 (sales), +1-212-555-1414 (support)",
             "212-555-1212 (24/7)",
-            "12", 12, 12.5, "TEL:TEL:555", "<b>555</b>", "call us", "1234567890123456"
+            "12", 12, 12.5, "TEL:TEL:555", "<b>555</b>", "call us", "1234567890123456",
+            "２１２５５５１２１２"
         ]
     }</script></head><body></body></html>"#;
     let mut phones = extract_phones(&html.into()).await;
@@ -644,6 +645,19 @@ async fn jsonld_telephones_that_are_not_one_number_are_read_like_text() {
 async fn a_number_inside_a_longer_run_of_digits_is_not_a_phone_in_text_either() {
     let html = "<html><body><p>ref 1234567890123456</p><p>call 212-555-1212</p></body></html>";
     assert_eq!(extract_phones(&html.into()).await, ["212-555-1212"]);
+}
+
+#[tokio::test]
+async fn a_number_grouped_by_non_breaking_spaces_is_found() {
+    let html = "<html><body><p>Call (212)&nbsp;555-1212 or +1\u{a0}212-555-1313 or 212\u{2009}555\u{2009}1414</p></body></html>";
+    assert_eq!(
+        extract_phones(&html.into()).await,
+        [
+            "(212)\u{a0}555-1212",
+            "+1\u{a0}212-555-1313",
+            "212\u{2009}555\u{2009}1414"
+        ]
+    );
 }
 
 #[tokio::test]

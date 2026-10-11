@@ -19,7 +19,7 @@ static WHITESPACE_REGEX: LazyLock<Regex> =
 
 /// A phone number's extension after its last digit, which is kept.
 static PHONE_EXTENSION_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!(r"(?i)\d{PHONE_EXTENSION}")).expect("valid regex"));
+    LazyLock::new(|| Regex::new(&format!(r"(?i)[0-9]{PHONE_EXTENSION}")).expect("valid regex"));
 
 // HTML normalization
 
