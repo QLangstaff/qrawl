@@ -6,6 +6,8 @@ use crate::errors::QrawlError;
 use crate::types::FetchStrategy;
 use crate::utils::host_of;
 use dashmap::DashMap;
+use encoding_rs::{Encoding, UTF_8};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::{Client, Response};
 use std::future::Future;
 use std::sync::Arc;
@@ -31,6 +33,10 @@ pub(super) const PER_HOST_CONCURRENCY: usize = 8;
 /// Hosts the two per-host maps remember before forgetting the idle ones, so a
 /// long-running process that crawls the open web doesn't grow without bound.
 const MAX_TRACKED_HOSTS: usize = 10_000;
+
+/// Bytes a response body may carry. A body is held whole before it's read, so
+/// one past this is refused, not cut: a cut page would read as a broken one.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// The profiles a strategy tries, in order.
 fn profiles(strategy: FetchStrategy) -> &'static [FetchProfile] {
@@ -84,17 +90,55 @@ pub(super) async fn fetch_html(
     url: &str,
     strategy: FetchStrategy,
 ) -> Result<(String, String), QrawlError> {
-    cascade(url, strategy, None, |response| async move {
+    cascade(url, strategy, None, |mut response| async move {
         let status = response.status();
         let served_by = response.url().to_string();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?;
+        let encoding = declared_encoding(&response);
+        let bytes = read_body(&mut response).await?;
+        let (body, _, _) = encoding.decode(&bytes);
         validate_response(status, &body)?;
-        Ok((served_by, body))
+        Ok((served_by, body.into_owned()))
     })
     .await
+}
+
+/// The character encoding the `Content-Type` header declares, as `reqwest`
+/// reads it; UTF-8 when it declares none it knows.
+fn declared_encoding(response: &Response) -> &'static Encoding {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|content_type| {
+            content_type
+                .split(';')
+                .map(str::trim)
+                .find_map(|parameter| parameter.strip_prefix("charset="))
+        })
+        .and_then(|charset| Encoding::for_label(charset.trim_matches('"').as_bytes()))
+        .unwrap_or(UTF_8)
+}
+
+/// The body, up to [`MAX_RESPONSE_BYTES`]: one declared or found longer is
+/// refused as it arrives, so a page can't be made to hold more than that.
+async fn read_body(response: &mut Response) -> Result<Vec<u8>, QrawlError> {
+    if let Some(length) = response.content_length() {
+        if length > MAX_RESPONSE_BYTES as u64 {
+            return Err(QrawlError::TooLarge(MAX_RESPONSE_BYTES));
+        }
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?
+    {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(QrawlError::TooLarge(MAX_RESPONSE_BYTES));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Fetch raw bytes (images, PDFs, JSON). Skips the HTML validation, and sends
@@ -104,13 +148,9 @@ pub(super) async fn fetch_bytes(
     strategy: FetchStrategy,
     referer: Option<&str>,
 ) -> Result<Vec<u8>, QrawlError> {
-    cascade(url, strategy, referer, |response| async move {
+    cascade(url, strategy, referer, |mut response| async move {
         check_status(response.status())?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| QrawlError::Request(format!("reading the response: {}", e)))?;
-        Ok(bytes.to_vec())
+        read_body(&mut response).await
     })
     .await
 }
@@ -170,8 +210,9 @@ where
                 );
                 return Ok(value);
             }
-            // A missing page is missing under every profile, and a redirect the
-            // domain filter refused stays refused.
+            // A missing page is missing under every profile, a redirect the
+            // domain filter refused stays refused, and a loop or a size are
+            // the server's.
             Err(e) if e.is_final() => return Err(e),
             Err(e) => {
                 log::debug!("{} via {:?} failed: {}", url, profile, e);
@@ -208,6 +249,7 @@ async fn send(
             // A redirect the domain filter refused surfaces as a reqwest error.
             match std::error::Error::source(&e).and_then(|s| s.downcast_ref::<QrawlError>()) {
                 Some(blocked) => blocked.clone(),
+                None if e.is_redirect() => QrawlError::TooManyRedirects(url.to_string()),
                 None => QrawlError::Request(e.to_string()),
             }
         })

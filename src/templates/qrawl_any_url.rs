@@ -2,7 +2,7 @@ use crate::errors::QrawlError;
 use crate::types::Context;
 
 use super::types::PageContent;
-use super::utils::{page_content, parse_url};
+use super::utils::{page_content, parse_url, Children};
 
 /// Turn **any** URL into a [`PageContent`]: the one template, a plain
 /// composition of the tools that runs the same steps for a blog post, a store
@@ -35,6 +35,6 @@ use super::utils::{page_content, parse_url};
 /// ```
 pub async fn qrawl_any_url(url: &str, ctx: Context) -> Result<PageContent, QrawlError> {
     let target = parse_url(url)?;
-    let (page, _html) = ctx.scope(page_content(&target)).await?;
+    let (page, _children) = ctx.scope(page_content(&target, Children::Skip)).await?;
     Ok(page)
 }

@@ -11,11 +11,12 @@ use tokio::sync::mpsc;
 
 use crate::errors::QrawlError;
 use crate::tools::extract::{extract_preview, extract_social_parts};
-use crate::tools::fetch::{fetch_embed, fetch_strategy, Fetched};
-use crate::tools::map::map_page;
+use crate::tools::fetch::{fetch_embed, fetch_strategy};
+use crate::tools::map::{map_children_from_doc, map_page_from_doc};
 use crate::tools::normalize::{absolute_url, normalize_urls, CanonicalUrl};
-use crate::tools::scrape::{scrape_all, scrape_embed};
+use crate::tools::scrape::{scrape_embed, scrape_from_doc};
 use crate::types::{Context, Html, SocialKind};
+use crate::utils::with_document;
 
 use super::types::PageContent;
 
@@ -41,15 +42,24 @@ pub(super) fn parse_url(input: &str) -> Result<Target, QrawlError> {
     })
 }
 
+/// Whether a visit maps the page's children, for a crawl to go on to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Children {
+    Map,
+    Skip,
+}
+
 /// Fetch one [`Target`] and compose its [`PageContent`] from the tools, the
-/// same steps for every URL. Also returns the fetched page, when it fetched,
-/// for a crawl to map children from.
+/// same steps for every URL, in one parse of the page. Also returns the
+/// page's children when asked to map them; empty when not, or when only the
+/// embed could be fetched.
 ///
 /// Fails when the domain filter rejects the page, or when neither the page
 /// nor an embed could be fetched.
 pub(super) async fn page_content(
     target: &Target,
-) -> Result<(PageContent, Option<Fetched>), QrawlError> {
+    children: Children,
+) -> Result<(PageContent, Vec<String>), QrawlError> {
     // fetch: the page, and the platform's embed when the URL has one.
     let (fetched, embed) = futures_util::future::join(
         fetch_strategy(&target.address),
@@ -93,17 +103,33 @@ pub(super) async fn page_content(
         }
         log::debug!("{} served only its embed: {}", target.address, e);
     }
-    let (body, page_metadata, structured) = match &fetched {
-        Some(fetched) => scrape_all(&fetched.html).await,
-        None => (Html::new(String::new()), Vec::new(), Vec::new()),
+    // scrape + map, from one parse: the layers, every link, and the children
+    // when asked.
+    let ((body, page_metadata, structured), links, children) = match &fetched {
+        Some(fetched) => {
+            let served_by = fetched.url.clone();
+            with_document(&fetched.html, move |doc| {
+                let children = match children {
+                    Children::Map => map_children_from_doc(doc, &served_by),
+                    Children::Skip => Vec::new(),
+                };
+                (
+                    scrape_from_doc(doc),
+                    map_page_from_doc(doc, &served_by),
+                    children,
+                )
+            })
+            .await
+        }
+        None => (
+            (Html::new(String::new()), Vec::new(), Vec::new()),
+            Vec::new(),
+            Vec::new(),
+        ),
     };
     let metadata = [embed_metadata, page_metadata].concat();
 
-    // map + normalize + extract: the social URLs the page links to.
-    let links = match &fetched {
-        Some(fetched) => map_page(&fetched.html, &fetched.url).await,
-        None => Vec::new(),
-    };
+    // normalize + extract: the social URLs among the page's links.
     let socials = normalize_urls(&links)
         .into_iter()
         .filter(|link| extract_social_parts(link).is_some_and(|social| social.kind.is_some()))
@@ -131,7 +157,7 @@ pub(super) async fn page_content(
         socials,
         body: (!body.as_str().is_empty()).then_some(body),
     };
-    Ok((page, fetched))
+    Ok((page, children))
 }
 
 /// Run `work` over `source`, at most `concurrency` at once, and send what

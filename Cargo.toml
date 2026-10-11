@@ -45,6 +45,8 @@ regex = "1.10"
 futures-util = "0.3"
 dashmap = "6.0"
 urlencoding = "2.1"
+# The decoder `reqwest` uses, for a body read under the size cap.
+encoding_rs = "0.8"
 html-escape = "0.2"
 unicode-normalization = "0.1"
 thiserror = "2.0"

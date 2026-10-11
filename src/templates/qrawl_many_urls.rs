@@ -3,12 +3,11 @@ use std::collections::HashSet;
 use futures_util::stream::StreamExt;
 
 use crate::tools::classify::classify_has_schema_type;
-use crate::tools::map::map_children;
 use crate::tools::normalize::CanonicalUrl;
 use crate::types::{Context, Jsonld};
 
 use super::types::{CrawlOptions, PageContent};
-use super::utils::{crawl, page_content, Visited};
+use super::utils::{crawl, page_content, Children, Visited};
 
 /// [`qrawl_any_url`](super::qrawl_any_url) over **many** URLs — concurrent,
 /// best-effort, and optionally crawling their children.
@@ -71,15 +70,16 @@ pub async fn qrawl_many_urls(
     };
 
     let pages = crawl(ctx, urls, depth, admit, move |target, level| async move {
-        let (page, fetched) = page_content(&target)
+        let children = if level < depth {
+            Children::Map
+        } else {
+            Children::Skip
+        };
+        let (page, children) = page_content(&target, children)
             .await
             .map_err(|e| log::debug!("{} failed: {}", target.address, e))
             .ok()?;
         log::info!("crawled {}", page.address);
-        let children = match fetched {
-            Some(fetched) if level < depth => map_children(&fetched.html, &fetched.url).await,
-            _ => Vec::new(),
-        };
         Some(Visited {
             url: page.url.clone(),
             item: page,

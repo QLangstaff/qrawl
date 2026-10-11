@@ -1,5 +1,6 @@
+use crate::tools::scrape::jsonld_entities;
+use crate::utils::LINK_SELECTOR;
 use crate::utils::{canonical_domain, schema_types};
-use crate::utils::{JSONLD_SELECTOR, LINK_SELECTOR};
 use scraper::{ElementRef, Html};
 use serde_json::Value;
 use std::cmp::Reverse;
@@ -557,16 +558,13 @@ pub(super) fn map_sibling_link(siblings: &[String], url: &str) -> Vec<String> {
 }
 
 /// Map JSON-LD script tags to ItemList objects from parsed HTML document.
+/// The `ItemList` entities a document's JSON-LD declares, at the top or as a
+/// page's `mainEntity`, read by the same reader as `scrape_jsonld`.
 pub(super) fn map_jsonld_itemlist_from_doc(doc: &Html) -> Vec<Value> {
     let mut itemlists = Vec::new();
-
-    for script in doc.select(&JSONLD_SELECTOR) {
-        let json_str = script.inner_html();
-        if let Ok(value) = serde_json::from_str::<Value>(&json_str) {
-            collect_itemlists(&value, &mut itemlists);
-        }
+    for entity in jsonld_entities(doc) {
+        collect_itemlists(&entity, &mut itemlists);
     }
-
     itemlists
 }
 
@@ -584,11 +582,6 @@ fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
             {
                 out.push(Value::Object(obj.clone()));
             }
-
-            if let Some(graph) = obj.get("@graph") {
-                collect_itemlists(graph, out);
-            }
-
             if let Some(main_entity) = obj.get("mainEntity") {
                 collect_itemlists(main_entity, out);
             }

@@ -10,6 +10,7 @@ mod utils;
 mod tests;
 
 pub use embed::fetch_embed;
+pub use strategies::MAX_RESPONSE_BYTES;
 pub use types::Fetched;
 
 use crate::errors::QrawlError;

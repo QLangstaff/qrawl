@@ -1,7 +1,9 @@
 //! CLI
 
+mod tests;
+
 use clap::{Parser, Subcommand};
-use std::io::Read;
+use std::io::{Read, Write};
 
 use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions};
 use crate::tools::fetch::Fetched;
@@ -156,9 +158,9 @@ fn fail(message: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
-fn print_json<T: serde::Serialize>(value: &T) {
+fn write_json<T: serde::Serialize>(out: &mut impl Write, value: &T) {
     match serde_json::to_string_pretty(value) {
-        Ok(json) => println!("{}", json),
+        Ok(json) => writeln!(out, "{}", json).unwrap_or_else(|e| fail(e)),
         Err(e) => fail(format!("serializing to JSON: {}", e)),
     }
 }
@@ -202,10 +204,11 @@ pub fn run() {
     } else {
         Context::auto()
     };
-    runtime::block_on(run_command(cli.command, ctx));
+    runtime::block_on(run_command(cli.command, ctx, &mut std::io::stdout()));
 }
 
-async fn run_command(command: Commands, ctx: Context) {
+/// Run `command`, writing its result to `out`; progress goes to stderr.
+async fn run_command(command: Commands, ctx: Context, out: &mut (impl Write + Send)) {
     match command {
         Commands::Fetch { url } => {
             eprintln!(
@@ -222,48 +225,64 @@ async fn run_command(command: Commands, ctx: Context) {
 
         Commands::Children { url } => {
             let fetched = fetch(&url, ctx).await;
-            print_json(&tools::map::map_children(&fetched.html, &fetched.url).await);
+            write_json(
+                out,
+                &tools::map::map_children(&fetched.html, &fetched.url).await,
+            );
         }
 
         Commands::Page { url } => {
             let fetched = fetch(&url, ctx).await;
-            print_json(&tools::map::map_page(&fetched.html, &fetched.url).await);
+            write_json(
+                out,
+                &tools::map::map_page(&fetched.html, &fetched.url).await,
+            );
         }
 
         Commands::Body { input } => {
-            print_json(&tools::scrape::scrape_body(&load(&input, ctx).await).await);
+            write_json(
+                out,
+                &tools::scrape::scrape_body(&load(&input, ctx).await).await,
+            );
         }
 
         Commands::Markdown { input } => {
             // Markdown is terminal, LLM-ready text — print it raw, not JSON-quoted.
             let html = load(&input, ctx).await;
-            println!("{}", tools::transform::transform_markdown(&html).await);
+            writeln!(out, "{}", tools::transform::transform_markdown(&html).await)
+                .unwrap_or_else(|e| fail(e));
         }
 
         Commands::Jsonld { input } => {
-            print_json(&tools::scrape::scrape_jsonld(&load(&input, ctx).await).await);
+            write_json(
+                out,
+                &tools::scrape::scrape_jsonld(&load(&input, ctx).await).await,
+            );
         }
 
         Commands::Metadata { input } => {
-            print_json(&tools::scrape::scrape_metadata(&load(&input, ctx).await).await);
+            write_json(
+                out,
+                &tools::scrape::scrape_metadata(&load(&input, ctx).await).await,
+            );
         }
 
         Commands::Preview { url } => match qrawl_any_url(&url, ctx).await {
-            Ok(page) => print_json(&tools::extract::extract_preview(&page.metadata)),
+            Ok(page) => write_json(out, &tools::extract::extract_preview(&page.metadata)),
             Err(e) => fail(e),
         },
 
         Commands::Schemas { input } => {
             let jsonld = tools::scrape::scrape_jsonld(&load(&input, ctx).await).await;
-            print_json(&tools::extract::extract_schema_types(&jsonld));
+            write_json(out, &tools::extract::extract_schema_types(&jsonld));
         }
 
         Commands::HasSchema { input, schema_type } => {
             let jsonld = tools::scrape::scrape_jsonld(&load(&input, ctx).await).await;
-            print_json(&tools::classify::classify_has_schema_type(
-                &jsonld,
-                &schema_type,
-            ));
+            write_json(
+                out,
+                &tools::classify::classify_has_schema_type(&jsonld, &schema_type),
+            );
         }
 
         Commands::Schema { url, schema_type } => {
@@ -271,7 +290,8 @@ async fn run_command(command: Commands, ctx: Context) {
                 .with_depth(1)
                 .with_include_schemas(vec![schema_type]);
             let pages = qrawl_many_urls(vec![url], options, ctx).await;
-            print_json(
+            write_json(
+                out,
                 &pages
                     .into_iter()
                     .map(|page| page.address)
@@ -281,23 +301,23 @@ async fn run_command(command: Commands, ctx: Context) {
 
         Commands::Emails { input } => {
             let emails = tools::extract::extract_emails(&load(&input, ctx).await).await;
-            print_json(&tools::normalize::normalize_emails(&emails));
+            write_json(out, &tools::normalize::normalize_emails(&emails));
         }
 
         Commands::Phones { input } => {
             let phones = tools::extract::extract_phones(&load(&input, ctx).await).await;
-            print_json(&tools::normalize::normalize_phones(&phones));
+            write_json(out, &tools::normalize::normalize_phones(&phones));
         }
 
         Commands::Socials { url } => {
             let options = CrawlOptions::default().with_depth(2);
             let pages = qrawl_many_urls(vec![url], options, ctx).await;
             let socials: Vec<String> = pages.into_iter().flat_map(|page| page.socials).collect();
-            print_json(&tools::normalize::normalize_urls(&socials));
+            write_json(out, &tools::normalize::normalize_urls(&socials));
         }
 
         Commands::Url { url } => match qrawl_any_url(&url, ctx).await {
-            Ok(page) => print_json(&page),
+            Ok(page) => write_json(out, &page),
             Err(e) => fail(e),
         },
 
@@ -325,7 +345,7 @@ async fn run_command(command: Commands, ctx: Context) {
                 Some(limit) => options.with_limit(limit),
                 None => options,
             };
-            print_json(&qrawl_many_urls(urls, options, ctx).await);
+            write_json(out, &qrawl_many_urls(urls, options, ctx).await);
         }
     }
 }

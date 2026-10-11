@@ -17,6 +17,22 @@ fn has_schema_type_matches_any_entity_type() {
 }
 
 #[test]
+fn has_schema_type_reads_nested_entities() {
+    let jsonld = vec![serde_json::json!({
+        "@type": "WebPage",
+        "mainEntity": {"@type": "Recipe", "name": "Soup", "author": {"@type": "Person"}},
+        "hasPart": [{"@type": "ImageObject"}]
+    })];
+    for schema_type in ["WebPage", "Recipe", "Person", "ImageObject"] {
+        assert!(
+            classify_has_schema_type(&jsonld, schema_type),
+            "{schema_type}"
+        );
+    }
+    assert!(!classify_has_schema_type(&jsonld, "Product"));
+}
+
+#[test]
 fn has_schema_type_normalizes_both_sides() {
     // Stored as a full IRI; queried as a bare term and a CURIE.
     let jsonld = vec![serde_json::json!({"@type": "https://schema.org/Recipe"})];

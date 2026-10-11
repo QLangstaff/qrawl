@@ -16,6 +16,12 @@ pub enum QrawlError {
     /// The body isn't a page: too short, or no HTML markers.
     #[error("invalid content - {0}")]
     NotHtml(&'static str),
+    /// The body is larger than [`MAX_RESPONSE_BYTES`](crate::tools::fetch::MAX_RESPONSE_BYTES).
+    #[error("response larger than {0} bytes")]
+    TooLarge(usize),
+    /// The URL redirects more times than a browser would follow.
+    #[error("too many redirects: {0}")]
+    TooManyRedirects(String),
     /// The body is a bot challenge; the marker found.
     #[error("suspicious content - {0}")]
     BotChallenge(&'static str),
@@ -32,6 +38,12 @@ pub enum QrawlError {
 impl QrawlError {
     /// Whether another fetch profile could not change the outcome.
     pub(crate) fn is_final(&self) -> bool {
-        matches!(self, Self::BlockedDomain(_) | Self::Status(404 | 410))
+        matches!(
+            self,
+            Self::BlockedDomain(_)
+                | Self::Status(404 | 410)
+                | Self::TooLarge(_)
+                | Self::TooManyRedirects(_)
+        )
     }
 }

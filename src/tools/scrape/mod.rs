@@ -7,6 +7,8 @@ mod embed;
 mod tests;
 mod utils;
 
+pub(crate) use utils::{jsonld_entities, scrape_from_doc};
+
 /// Scrape the page body as [`Html`] — the `<body>` subtree. A scrape leaf: it
 /// yields HTML, so it composes into [`transform_markdown`](crate::tools::transform::transform_markdown)
 /// for LLM-ready Markdown.

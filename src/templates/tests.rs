@@ -158,6 +158,8 @@ mod local_site {
     use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions, PageContent};
     use crate::test_site::{listing_page, Reply, TestSite};
     use crate::tools::fetch::fetch_strategy;
+    use crate::tools::normalize::normalize_html;
+    use crate::tools::scrape::scrape_all;
     use crate::types::Context;
 
     fn ctx(concurrency: usize) -> Context {
@@ -747,6 +749,63 @@ mod local_site {
             map_children(html, "https://example.com/").await;
             transform_markdown(html).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_size_cap_is_refused_once() {
+        let site = TestSite::serve(|path| match path {
+            "/huge" => Reply::Html(format!(
+                "<html><body>{}</body></html>",
+                "x".repeat(crate::tools::fetch::MAX_RESPONSE_BYTES)
+            )),
+            _ => Reply::Html(listing_page(path, "", &[])),
+        })
+        .await;
+
+        let huge = Context::auto()
+            .scope(fetch_strategy(&site.url("/huge")))
+            .await;
+        assert!(matches!(huge, Err(QrawlError::TooLarge(_))), "{huge:?}");
+        // Final: the cascade didn't try its other two profiles.
+        assert_eq!(site.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_loop_is_followed_by_one_profile_only() {
+        let site = TestSite::serve(|_path| Reply::Redirect("/loop".to_string())).await;
+
+        let looped = Context::auto()
+            .scope(fetch_strategy(&site.url("/loop")))
+            .await;
+        assert!(
+            matches!(looped, Err(QrawlError::TooManyRedirects(_))),
+            "{looped:?}"
+        );
+        assert!(site.hits() <= 11, "{} requests for one loop", site.hits());
+    }
+
+    #[tokio::test]
+    async fn a_page_nested_far_too_deep_is_refused_before_it_is_parsed() {
+        // 50,000 levels take the parser seconds; the tokens show the depth at once.
+        let deep = format!(
+            "<!DOCTYPE html><html><head><title>deep</title></head><body>{}x{}</body></html>",
+            "<div>".repeat(50_000),
+            "</div>".repeat(50_000)
+        );
+        let started = std::time::Instant::now();
+        let (body, _, structured) = scrape_all(&deep.as_str().into()).await;
+        assert!(!body.as_str().contains("<div>"), "{}", body.as_str().len());
+        assert!(structured.is_empty());
+        assert_eq!(normalize_html(&deep.as_str().into()).await.as_str(), "");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        // Unclosed tags the parser closes itself don't nest.
+        let flat = format!("<html><body>{}x</body></html>", "<p>".repeat(5_000));
+        let (body, _, _) = scrape_all(&flat.as_str().into()).await;
+        assert!(body.as_str().contains("<p>x</p>"));
     }
 
     #[tokio::test]

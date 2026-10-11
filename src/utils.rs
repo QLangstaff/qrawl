@@ -3,6 +3,11 @@
 //! What more than one tool needs. A tool never calls another tool; it calls
 //! this.
 
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::{
+    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
+use html5ever::LocalName;
 use scraper::Selector;
 use std::sync::LazyLock;
 
@@ -256,6 +261,89 @@ const MAX_DOM_DEPTH: usize = 512;
 /// runtime gives its blocking threads.
 const READ_STACK_BYTES: usize = 32 * 1024 * 1024;
 
+/// Markup fed to the tokenizer at a time, so a page is read only as far as
+/// the sink needs.
+pub(crate) const TOKENIZE_CHUNK_BYTES: usize = 4 * 1024;
+
+/// Run `sink` over `html`'s tokens, a piece at a time, until `is_done` or the
+/// end; the sink after. The parser drops one byte order mark, at the start;
+/// the tokenizer's own option would drop one at the start of every piece.
+pub(crate) fn tokenize_until<Sink: TokenSink>(
+    html: &str,
+    sink: Sink,
+    is_done: impl Fn(&Sink) -> bool,
+) -> Sink {
+    let options = TokenizerOpts {
+        discard_bom: false,
+        ..TokenizerOpts::default()
+    };
+    let mut tokenizer = Tokenizer::new(sink, options);
+    let mut queue = BufferQueue::default();
+    let mut rest = html.strip_prefix('\u{feff}').unwrap_or(html);
+    while !rest.is_empty() && !is_done(&tokenizer.sink) {
+        let mut end = TOKENIZE_CHUNK_BYTES.min(rest.len());
+        while !rest.is_char_boundary(end) {
+            end += 1;
+        }
+        let (piece, tail) = rest.split_at(end);
+        queue.push_back(StrTendril::from(piece));
+        let _ = tokenizer.feed(&mut queue);
+        rest = tail;
+    }
+    tokenizer.end();
+    tokenizer.sink
+}
+
+/// Elements a run of whose start tags doesn't nest: void ones, and ones whose
+/// end tag is optional, which the parser closes when the next opens.
+const FLAT_ELEMENTS: [&str; 33] = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr", "html", "head", "body", "li", "dt", "dd", "p", "rt", "rp", "optgroup", "option",
+    "colgroup", "caption", "thead", "tbody", "tfoot", "tr", "td", "th", "a",
+];
+
+/// A token sink that follows how deep the open elements nest.
+struct Nesting {
+    open: Vec<LocalName>,
+    deepest: usize,
+}
+
+impl TokenSink for Nesting {
+    type Handle = ();
+
+    fn process_token(&mut self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+        if let Token::TagToken(tag) = token {
+            if FLAT_ELEMENTS.contains(&&*tag.name) {
+                return TokenSinkResult::Continue;
+            }
+            match tag.kind {
+                TagKind::StartTag if !tag.self_closing => {
+                    self.open.push(tag.name);
+                    self.deepest = self.deepest.max(self.open.len());
+                }
+                TagKind::StartTag => {}
+                TagKind::EndTag => {
+                    if let Some(position) = self.open.iter().rposition(|open| *open == tag.name) {
+                        self.open.truncate(position);
+                    }
+                }
+            }
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+/// Whether `html` nests elements deeper than [`MAX_DOM_DEPTH`], by its tokens:
+/// the parser's cost grows with the square of the depth, so a page that deep
+/// is refused before it's parsed.
+pub(crate) fn is_too_deep_markup(html: &str) -> bool {
+    let nesting = Nesting {
+        open: Vec::new(),
+        deepest: 0,
+    };
+    tokenize_until(html, nesting, |nesting| nesting.deepest > MAX_DOM_DEPTH).deepest > MAX_DOM_DEPTH
+}
+
 fn is_too_deep(document: &scraper::Html) -> bool {
     let mut depth = 0usize;
     document.tree.root().traverse().any(|edge| {
@@ -269,7 +357,8 @@ fn is_too_deep(document: &scraper::Html) -> bool {
 
 /// Parse `html` and read it with `read`, off the async runtime: building a DOM
 /// is CPU-bound, and a parsed document can't cross an `await`. A document
-/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one.
+/// nested deeper than [`MAX_DOM_DEPTH`] is read as an empty one, without
+/// being parsed when its tokens already show it.
 pub(crate) async fn with_document<T: Send + 'static>(
     html: &Html,
     read: impl FnOnce(&scraper::Html) -> T + Send + 'static,
@@ -280,6 +369,12 @@ pub(crate) async fn with_document<T: Send + 'static>(
             std::thread::Builder::new()
                 .stack_size(READ_STACK_BYTES)
                 .spawn_scoped(scope, move || {
+                    if is_too_deep_markup(&html) {
+                        log::warn!(
+                            "document nested deeper than {MAX_DOM_DEPTH} nodes read as empty"
+                        );
+                        return read(&scraper::Html::parse_document(""));
+                    }
                     let document = scraper::Html::parse_document(&html);
                     if is_too_deep(&document) {
                         log::warn!(

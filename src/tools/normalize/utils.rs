@@ -4,13 +4,11 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use html5ever::tendril::StrTendril;
-use html5ever::tokenizer::{
-    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
-};
+use html5ever::tokenizer::{TagKind, Token, TokenSink, TokenSinkResult};
 
 use crate::utils::{
-    absolute_url, canonical_domain, host_of_url, social_platform, PHONE_EXTENSION, TLD_LEN,
+    absolute_url, canonical_domain, host_of_url, is_too_deep_markup, social_platform,
+    tokenize_until, PHONE_EXTENSION, TLD_LEN,
 };
 
 // Lazy static regex for whitespace normalization
@@ -440,34 +438,12 @@ impl TokenSink for FirstToken {
     }
 }
 
-/// Markup fed to the tokenizer at a time, so a page is read only as far as
-/// its first tag.
-pub(super) const OPENING_CHUNK_BYTES: usize = 4 * 1024;
-
 /// What `html` opens with, by the parser's own tokenizer, so the two never
 /// disagree on where a comment ends.
 fn opening(html: &str) -> Opening {
-    // The parser drops one byte order mark, at the start. The tokenizer's own
-    // option would drop one at the start of every piece fed to it.
-    let options = TokenizerOpts {
-        discard_bom: false,
-        ..TokenizerOpts::default()
-    };
-    let mut tokenizer = Tokenizer::new(FirstToken(None), options);
-    let mut queue = BufferQueue::default();
-    let mut rest = html.strip_prefix('\u{feff}').unwrap_or(html);
-    while !rest.is_empty() && tokenizer.sink.0.is_none() {
-        let mut end = OPENING_CHUNK_BYTES.min(rest.len());
-        while !rest.is_char_boundary(end) {
-            end += 1;
-        }
-        let (piece, tail) = rest.split_at(end);
-        queue.push_back(StrTendril::from(piece));
-        let _ = tokenizer.feed(&mut queue);
-        rest = tail;
-    }
-    tokenizer.end();
-    tokenizer.sink.0.unwrap_or(Opening::Other)
+    tokenize_until(html, FirstToken(None), |first| first.0.is_some())
+        .0
+        .unwrap_or(Opening::Other)
 }
 
 /// The element a fragment's first tag belongs in, which decides how the
@@ -508,6 +484,11 @@ fn parse_fragment_in(html: &str, context: &str) -> scraper::Html {
 pub(super) fn normalize_markup(html: &str) -> String {
     use ego_tree::iter::Edge;
     use scraper::node::Node;
+
+    // Too deep to parse in reasonable time: nothing, as every other reader has it.
+    if is_too_deep_markup(html) {
+        return String::new();
+    }
 
     // A fragment (`<p>a</p>`) stays a fragment: no `<html>` is added to it.
     let opening = opening(html);

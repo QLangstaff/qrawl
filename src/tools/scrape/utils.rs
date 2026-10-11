@@ -73,11 +73,7 @@ pub(super) fn scrape_body_from_doc(document: &scraper::Html) -> Html {
 /// Microdata + RDFa + Microformats2, with cross-encoding entities merged (same
 /// `@type` + `name`).
 pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
-    let mut items: Jsonld = document
-        .select(&JSONLD_SELECTOR)
-        .filter_map(|el| serde_json::from_str(&el.text().collect::<String>()).ok())
-        .flat_map(flatten_jsonld)
-        .collect();
+    let mut items = jsonld_entities(document);
     // One copy budget for the three encodings.
     reset_copy_budget(document);
     merge_schema_entities(&mut items, microdata_items(document));
@@ -89,8 +85,17 @@ pub(super) fn scrape_jsonld_from_doc(document: &scraper::Html) -> Jsonld {
     items
 }
 
+/// The entities a document's JSON-LD scripts declare, each `@graph` opened.
+pub(crate) fn jsonld_entities(document: &scraper::Html) -> Jsonld {
+    document
+        .select(&JSONLD_SELECTOR)
+        .filter_map(|el| serde_json::from_str(&el.text().collect::<String>()).ok())
+        .flat_map(flatten_jsonld)
+        .collect()
+}
+
 /// Everything from one parse: body HTML, metadata, and the unified schema view.
-pub(super) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
+pub(crate) fn scrape_from_doc(document: &scraper::Html) -> (Html, Metadata, Jsonld) {
     (
         scrape_body_from_doc(document),
         scrape_metadata_from_doc(document),
