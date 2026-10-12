@@ -77,32 +77,15 @@ impl SiblingGroup {
     }
 }
 
-/// Map child URLs from HTML siblings.
-///
-/// Detects sibling patterns in HTML structure and extracts the first URL from each sibling.
-#[cfg(test)]
-pub(super) fn map_siblings(html: &str, url: &str) -> Vec<String> {
-    let siblings = map_body_siblings(html);
-    map_sibling_link(&siblings, url)
-}
-
-/// Map child URLs from HTML siblings using a pre-parsed document.
+/// Map child URLs from HTML siblings: detects sibling patterns in the HTML
+/// structure and takes the first URL from each sibling.
 pub(super) fn map_siblings_from_document(document: &scraper::Html, url: &str) -> Vec<String> {
     let siblings = map_body_siblings_from_document(document);
     map_sibling_link(&siblings, url)
 }
 
-/// Map child URLs from JSON-LD ItemList.
-///
-/// Extracts ItemList from JSON-LD and resolves URLs (including anchor references).
-#[cfg(test)]
-pub(super) fn map_itemlist(html: &str, url: &str) -> Vec<String> {
-    let document = scraper::Html::parse_document(html);
-    let itemlist = map_jsonld_itemlist_from_document(&document);
-    map_itemlist_link(&itemlist, &document, url)
-}
-
-/// Map child URLs from JSON-LD ItemList using a pre-parsed document.
+/// Map child URLs from JSON-LD ItemList: resolves its URLs, anchor references
+/// included.
 pub(super) fn map_itemlist_from_document(document: &scraper::Html, url: &str) -> Vec<String> {
     let itemlist = map_jsonld_itemlist_from_document(document);
     map_itemlist_link(&itemlist, document, url)
@@ -126,14 +109,6 @@ pub(super) fn map_itemlist_from_document(document: &scraper::Html, url: &str) ->
 /// 3. **Coverage** - pattern_len × quantity (richer patterns preferred)
 /// 4. **Quantity** - More siblings preferred
 /// 5. **Pattern length** - Longer patterns preferred (richer structure)
-///
-#[cfg(test)]
-pub(super) fn map_body_siblings(html: &str) -> Vec<String> {
-    let document = scraper::Html::parse_document(html);
-    map_body_siblings_from_document(&document)
-}
-
-/// Same as `map_body_siblings` but reuses an already-parsed document.
 pub(super) fn map_body_siblings_from_document(document: &scraper::Html) -> Vec<String> {
     let root = document.root_element();
 

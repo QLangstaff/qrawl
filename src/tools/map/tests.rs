@@ -93,7 +93,7 @@ fn test_map_body_siblings() {
             </body></html>
         "#;
 
-    let siblings = map_body_siblings(html);
+    let siblings = map_body_siblings_from_document(&scraper::Html::parse_document(html));
     assert_eq!(siblings.len(), 3);
     assert!(siblings[0].contains("Recipe 1"));
     assert!(siblings[1].contains("Recipe 2"));
@@ -143,7 +143,8 @@ fn test_map_siblings() {
             </body></html>
         "#;
 
-    let urls = map_siblings(html, "https://example.com");
+    let urls =
+        map_siblings_from_document(&scraper::Html::parse_document(html), "https://example.com");
     assert_eq!(urls.len(), 3);
     assert!(urls.contains(&"https://example.com/recipe/1".to_string()));
     assert!(urls.contains(&"https://example.com/recipe/2".to_string()));
@@ -285,7 +286,8 @@ fn test_map_itemlist() {
             </html>
         "##;
 
-    let urls = map_itemlist(html, "https://example.com");
+    let urls =
+        map_itemlist_from_document(&scraper::Html::parse_document(html), "https://example.com");
     assert_eq!(urls.len(), 2);
     assert!(urls.contains(&"https://site.com/recipe-1".to_string()));
     assert!(urls.contains(&"https://direct.com/recipe-2".to_string()));
@@ -415,7 +417,7 @@ async fn map_children_finds_long_repeating_units_every_time() {
             let urls = map_children(&html.as_str().into(), "https://example.com/").await;
             assert_eq!(urls.len(), 6, "unit of {unit} siblings");
             // The whole unit, not a slice of it that happens to hold the link.
-            let siblings = map_body_siblings(&html);
+            let siblings = map_body_siblings_from_document(&scraper::Html::parse_document(&html));
             assert_eq!(siblings.len(), 6, "unit of {unit} siblings");
             assert_eq!(siblings[0], item(0), "unit of {unit} siblings");
         }

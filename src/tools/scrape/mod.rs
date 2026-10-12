@@ -1,12 +1,13 @@
 //! Scrape Tools
 
-use crate::types::{Embed, Html, Jsonld, Metadata};
+use crate::types::{Html, Jsonld, Metadata};
 use crate::utils::with_document;
 
 mod embed;
 mod tests;
 mod utils;
 
+pub use embed::scrape_embed;
 pub(crate) use utils::{jsonld_entities, scrape_from_document};
 
 /// Scrape the page body as [`Html`] — the `<body>` subtree. A scrape leaf: it
@@ -44,12 +45,4 @@ pub async fn scrape_metadata(html: &Html) -> Metadata {
 /// times).
 pub async fn scrape_all(html: &Html) -> (Html, Metadata, Jsonld) {
     with_document(html, utils::scrape_from_document).await
-}
-
-/// Scrape a fetched [`Embed`] (`fetch_embed`) into metadata pairs, keyed
-/// `oembed:title` / `oembed:author_name` / `oembed:thumbnail_url` and
-/// `reddit:title` / `reddit:text` / `reddit:author` / `reddit:image` /
-/// `reddit:video` / `reddit:url`. Empty when the embed doesn't parse.
-pub fn scrape_embed(embed: &Embed) -> Metadata {
-    embed::scrape_embed(embed)
 }

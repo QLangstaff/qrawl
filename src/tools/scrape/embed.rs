@@ -7,7 +7,11 @@ use serde_json::Value;
 use crate::types::{Embed, Metadata};
 use crate::utils::embed_keys::*;
 
-pub(super) fn scrape_embed(embed: &Embed) -> Metadata {
+/// Scrape a fetched [`Embed`] (`fetch_embed`) into metadata pairs, keyed
+/// `oembed:title` / `oembed:author_name` / `oembed:thumbnail_url` and
+/// `reddit:title` / `reddit:text` / `reddit:author` / `reddit:image` /
+/// `reddit:video` / `reddit:url`. Empty when the embed doesn't parse.
+pub fn scrape_embed(embed: &Embed) -> Metadata {
     let fields = match embed {
         Embed::RedditJson { body, comment_id } => reddit_fields(body, comment_id.as_deref()),
         Embed::Oembed(body) => oembed_fields(body),
