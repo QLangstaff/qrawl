@@ -109,11 +109,11 @@ macro_rules! chain {
     // Pages → pages, keep those the async predicate accepts: `async fn(Html) -> bool`.
     // The predicate takes the body by value (its future owns it), so a capturing
     // closure sidesteps the borrow-across-await lifetime that `&Html` would impose.
-    (@op $items:expr, filter($pred:expr)) => {{
-        let pred = $pred;
+    (@op $items:expr, filter($predicate:expr)) => {{
+        let predicate = $predicate;
         $crate::tools::batch::batch($items, $crate::types::get_concurrency(), move |(url, html): (String, $crate::types::Html)| {
-            let pred = pred.clone();
-            async move { if pred(html.clone()).await { Some((url, html)) } else { None } }
+            let predicate = predicate.clone();
+            async move { if predicate(html.clone()).await { Some((url, html)) } else { None } }
         })
         .await
         .into_iter()

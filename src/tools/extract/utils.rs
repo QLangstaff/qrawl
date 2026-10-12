@@ -194,9 +194,9 @@ pub(super) fn extract_phone_elements(document: &scraper::Html) -> Vec<String> {
 /// Find the first non-empty value for any of the given keys in metadata pairs.
 pub(super) fn find_metadata_value(pairs: &[(String, String)], keys: &[&str]) -> Option<String> {
     for key in keys {
-        for (k, v) in pairs {
-            if k.eq_ignore_ascii_case(key) {
-                let normalized = v.trim().to_string();
+        for (metadata_key, metadata_value) in pairs {
+            if metadata_key.eq_ignore_ascii_case(key) {
+                let normalized = metadata_value.trim().to_string();
                 if !normalized.is_empty() {
                     return Some(normalized);
                 }

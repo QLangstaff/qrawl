@@ -5,7 +5,7 @@ use reqwest::{redirect, Client};
 use std::time::Duration;
 
 const REDIRECT_LIMIT: usize = 10;
-const POOL_IDLE_TIMEOUT_SEC: u64 = 90;
+const POOL_IDLE_TIMEOUT_SECONDS: u64 = 90;
 /// 2× headroom over the per-host cap, so a burst of completions can all be
 /// reused. More is wasted: the semaphore already caps in-flight requests.
 const POOL_MAX_IDLE_PER_HOST: usize = 2 * super::strategies::PER_HOST_CONCURRENCY;
@@ -20,7 +20,7 @@ pub(crate) fn build_client_for_profile(profile: FetchProfile) -> Result<Client, 
         .gzip(true)
         .brotli(true)
         .deflate(true)
-        .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SEC))
+        .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SECONDS))
         .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST);
 
     // Minimal profile: simpler client

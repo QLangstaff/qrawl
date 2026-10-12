@@ -1,1 +1,2 @@
-disallowed-names = ["doc", ".."]
+disallowed-names = ["doc", "obj", "arr", "idx", "err", "tx", "rx", "pred", "curr", "sema", "ty", "msg", "pos", "inc", "ex", ".."]
+allowed-idents-below-min-chars = ["P", "U", "E"]

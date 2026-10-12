@@ -390,7 +390,7 @@ async fn map_children_reads_an_itemlist_in_a_graph_under_the_main_entity() {
 
 #[tokio::test]
 async fn map_children_stays_fast_on_a_thousand_siblings() {
-    let links: Vec<String> = (0..1_200).map(|n| format!("/item{n}")).collect();
+    let links: Vec<String> = (0..1_200).map(|number| format!("/item{number}")).collect();
     let html = crate::test_site::listing_page("many", "", &links);
     let started = std::time::Instant::now();
     let urls = map_children(&html.as_str().into(), "https://example.com/").await;
@@ -405,9 +405,9 @@ async fn map_children_stays_fast_on_a_thousand_siblings() {
 #[tokio::test]
 async fn map_children_finds_long_repeating_units_every_time() {
     for unit in [3usize, 9, 10, 12, 16, 20, 24, 30, 48, 64] {
-        let item = |n: usize| {
+        let item = |number: usize| {
             let filler: String = (1..unit).map(|tag| format!("<x{tag}>t</x{tag}>")).collect();
-            format!("<div><a href=\"/item{n}\">Item {n}</a></div>{filler}")
+            format!("<div><a href=\"/item{number}\">Item {number}</a></div>{filler}")
         };
         let html = format!(
             "<html><body><main>{}</main></body></html>",
@@ -426,26 +426,26 @@ async fn map_children_finds_long_repeating_units_every_time() {
 
 #[tokio::test]
 async fn map_children_finds_the_unit_through_ads_and_two_item_lengths() {
-    let item = |n: usize, unit: usize| {
+    let item = |number: usize, unit: usize| {
         format!(
-            "<h2><a href=\"/item{n}\">Item {n}</a></h2><div><img src=\"/i{n}.png\"></div>{}",
+            "<h2><a href=\"/item{number}\">Item {number}</a></h2><div><img src=\"/i{number}.png\"></div>{}",
             "<p>text</p>".repeat(unit - 2)
         )
     };
     // An ad after every third item.
     let with_ads: String = (0..9)
-        .map(|n| {
-            let ad = if n % 3 == 2 {
-                format!("<aside><a href=\"/ad{n}\">Ad</a></aside>")
+        .map(|number| {
+            let ad = if number % 3 == 2 {
+                format!("<aside><a href=\"/ad{number}\">Ad</a></aside>")
             } else {
                 String::new()
             };
-            format!("{}{ad}", item(n, 5))
+            format!("{}{ad}", item(number, 5))
         })
         .collect();
     // Items of two lengths, alternating.
     let two_lengths: String = (0..10)
-        .map(|n| item(n, if n % 2 == 0 { 10 } else { 13 }))
+        .map(|number| item(number, if number % 2 == 0 { 10 } else { 13 }))
         .collect();
     for (body, items) in [(with_ads, 9), (two_lengths, 10)] {
         let html = format!("<html><body><main>{body}</main></body></html>");
@@ -461,19 +461,21 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings() {
     // `p, h?`, so the rotation repeats more often than the unit.
     for heading in ["h3", "h2"] {
         let first: String = (0..20)
-            .map(|n| format!("<{heading}><a href=\"/a{n}\">A {n}</a></{heading}><p>text</p>"))
+            .map(|number| {
+                format!("<{heading}><a href=\"/a{number}\">A {number}</a></{heading}><p>text</p>")
+            })
             .collect();
         let second: String = (0..3)
-            .map(|n| {
+            .map(|number| {
                 format!(
-                    "<h2><a href=\"/b{n}\">B {n}</a></h2><div><img src=\"/b{n}.png\"></div><ul><li>x</li></ul><p>text</p>"
+                    "<h2><a href=\"/b{number}\">B {number}</a></h2><div><img src=\"/b{number}.png\"></div><ul><li>x</li></ul><p>text</p>"
                 )
             })
             .collect();
         let html = format!("<html><body><main>{first}{second}</main></body></html>");
         let urls = map_children(&html.as_str().into(), "https://example.com/").await;
         let expected: Vec<String> = (0..20)
-            .map(|n| format!("https://example.com/a{n}"))
+            .map(|number| format!("https://example.com/a{number}"))
             .collect();
         assert_eq!(urls, expected, "{heading}");
     }
@@ -483,25 +485,25 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings() {
 async fn map_children_keeps_every_item_of_the_richer_of_two_listings_whichever_comes_first() {
     for (heading, second_count) in [("h3", 5usize), ("h2", 5), ("h3", 20), ("h2", 20)] {
         let richer: String = (0..3)
-            .map(|n| {
+            .map(|number| {
                 format!(
-                    "<{heading}><a href=\"/b{n}\">B {n}</a></{heading}><div><img src=\"/b{n}.png\"></div><ul><li>x</li></ul><p>text</p>"
+                    "<{heading}><a href=\"/b{number}\">B {number}</a></{heading}><div><img src=\"/b{number}.png\"></div><ul><li>x</li></ul><p>text</p>"
                 )
             })
             .collect();
         let plainer: String = (0..second_count)
-            .map(|n| format!("<h2><a href=\"/a{n}\">A {n}</a></h2><p>text</p>"))
+            .map(|number| format!("<h2><a href=\"/a{number}\">A {number}</a></h2><p>text</p>"))
             .collect();
         let html = format!("<html><body><main>{richer}{plainer}</main></body></html>");
         let urls = map_children(&html.as_str().into(), "https://example.com/").await;
         // The richer listing by coverage up to 5 plain items; the longer one past that.
         let expected: Vec<String> = if second_count * 2 > 3 * 4 {
             (0..second_count)
-                .map(|n| format!("https://example.com/a{n}"))
+                .map(|number| format!("https://example.com/a{number}"))
                 .collect()
         } else {
             (0..3)
-                .map(|n| format!("https://example.com/b{n}"))
+                .map(|number| format!("https://example.com/b{number}"))
                 .collect()
         };
         assert_eq!(urls, expected, "{heading} then {second_count}");
@@ -510,9 +512,9 @@ async fn map_children_keeps_every_item_of_the_richer_of_two_listings_whichever_c
 
 #[tokio::test]
 async fn map_children_keeps_both_runs_of_a_listing_split_by_a_block() {
-    let item = |n: usize| {
+    let item = |number: usize| {
         format!(
-            "<h2><a href=\"/item{n}\">I</a></h2><div><img src=\"/i{n}.png\"></div><p>a</p><p>b</p>"
+            "<h2><a href=\"/item{number}\">I</a></h2><div><img src=\"/i{number}.png\"></div><p>a</p><p>b</p>"
         )
     };
     let block = format!("<h1>More</h1>{}", "<p>text</p>".repeat(3));
@@ -524,7 +526,7 @@ async fn map_children_keeps_both_runs_of_a_listing_split_by_a_block() {
         );
         let urls = map_children(&html.as_str().into(), "https://example.com/").await;
         let expected: Vec<String> = (0..8)
-            .map(|n| format!("https://example.com/item{n}"))
+            .map(|number| format!("https://example.com/item{number}"))
             .collect();
         assert_eq!(urls, expected, "trailing {trailing:?}");
     }
@@ -533,31 +535,31 @@ async fn map_children_keeps_both_runs_of_a_listing_split_by_a_block() {
 #[tokio::test]
 async fn map_children_keeps_a_plain_listing_before_a_richer_one_within_a_unit() {
     let plain: String = (0..20)
-        .map(|n| format!("<h2><a href=\"/a{n}\">A {n}</a></h2><p>text</p>"))
+        .map(|number| format!("<h2><a href=\"/a{number}\">A {number}</a></h2><p>text</p>"))
         .collect();
     let richer: String = (0..3)
-        .map(|n| {
+        .map(|number| {
             format!(
-                "<h2><a href=\"/b{n}\">B {n}</a></h2><div><img src=\"/b{n}.png\"></div><p>text</p>"
+                "<h2><a href=\"/b{number}\">B {number}</a></h2><div><img src=\"/b{number}.png\"></div><p>text</p>"
             )
         })
         .collect();
     let html = format!("<html><body><main>{plain}{richer}</main></body></html>");
     let urls = map_children(&html.as_str().into(), "https://example.com/").await;
     let expected: Vec<String> = (0..20)
-        .map(|n| format!("https://example.com/a{n}"))
+        .map(|number| format!("https://example.com/a{number}"))
         .collect();
     assert_eq!(urls, expected);
 }
 
 #[tokio::test]
 async fn map_children_keeps_a_first_item_whose_heading_differs() {
-    let item = |n: usize| {
-        let heading = if n == 0 { "h3" } else { "h2" };
+    let item = |number: usize| {
+        let heading = if number == 0 { "h3" } else { "h2" };
         // Two item lengths, alternating.
-        let filler = "<p>b</p>".repeat(1 + n % 2);
+        let filler = "<p>b</p>".repeat(1 + number % 2);
         format!(
-            "<{heading}><a href=\"/item{n}\">I</a></{heading}><div><img src=\"/i{n}.png\"></div><p>a</p>{filler}"
+            "<{heading}><a href=\"/item{number}\">I</a></{heading}><div><img src=\"/i{number}.png\"></div><p>a</p>{filler}"
         )
     };
     for items in [4usize, 6, 8] {
@@ -567,7 +569,7 @@ async fn map_children_keeps_a_first_item_whose_heading_differs() {
         );
         let urls = map_children(&html.as_str().into(), "https://example.com/").await;
         let expected: Vec<String> = (0..items)
-            .map(|n| format!("https://example.com/item{n}"))
+            .map(|number| format!("https://example.com/item{number}"))
             .collect();
         assert_eq!(urls, expected);
     }
@@ -578,7 +580,9 @@ async fn map_children_finds_the_unit_behind_a_stray_link_before_it() {
     // The stray `<a>` and the unit's `<x1>` are both childless, so a unit read
     // from its second element on would start at the stray and tie the unit.
     let items: String = (0..3)
-        .map(|n| format!("<div><a href=\"/item{n}\">Item {n}</a></div><x1>t</x1><x2>t</x2>"))
+        .map(|number| {
+            format!("<div><a href=\"/item{number}\">Item {number}</a></div><x1>t</x1><x2>t</x2>")
+        })
         .collect();
     let html = format!(
         "<html><body><main><a href=\"/promo\">Spring sale on everything</a>{items}</main></body></html>"
@@ -599,9 +603,9 @@ async fn map_children_finds_units_of_distinct_siblings_then_filler() {
     // Two distinctive siblings, then paragraphs: every short distance matches
     // inside the paragraphs, and only the unit's length matches the whole.
     for (unit, items) in [(20usize, 3usize), (24, 4), (40, 6), (64, 10)] {
-        let item = |n: usize| {
+        let item = |number: usize| {
             format!(
-                "<h2><a href=\"/item{n}\">Item {n}</a></h2><div><img src=\"/i{n}.png\"></div>{}",
+                "<h2><a href=\"/item{number}\">Item {number}</a></h2><div><img src=\"/i{number}.png\"></div>{}",
                 "<p>text</p>".repeat(unit - 2)
             )
         };

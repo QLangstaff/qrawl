@@ -821,10 +821,10 @@ fn test_canonical_url_deserialize_strict() {
 
 #[test]
 fn test_canonical_url_from_str_and_string() {
-    let a: CanonicalUrl = "https://Example.com/".into();
-    let b: CanonicalUrl = String::from("https://Example.com/").into();
-    assert_eq!(a, b);
-    assert_eq!(a.as_str(), "https://example.com");
+    let from_str: CanonicalUrl = "https://Example.com/".into();
+    let from_string: CanonicalUrl = String::from("https://Example.com/").into();
+    assert_eq!(from_str, from_string);
+    assert_eq!(from_str.as_str(), "https://example.com");
 }
 
 #[test]

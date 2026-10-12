@@ -5,8 +5,11 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 pub(crate) fn headers_for_profile(profile: FetchProfile) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
-    for (k, v) in header_pairs_for_profile(profile) {
-        headers.insert(HeaderName::from_static(k), HeaderValue::from_static(v));
+    for (name, value) in header_pairs_for_profile(profile) {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
     }
 
     headers.insert(

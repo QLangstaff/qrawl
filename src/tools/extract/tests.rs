@@ -93,7 +93,7 @@ async fn test_extract_emails_collects_raw_results() {
         emails,
         vec!["info@example.com", "info@example.com"]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|email| email.to_string())
             .collect::<Vec<_>>()
     );
 }
@@ -129,19 +129,19 @@ fn social(url: &str) -> SocialParts {
 
 #[test]
 fn reddit_post() {
-    let s = social("https://reddit.com/r/rust/comments/abc123/some_title");
-    assert_eq!(s.platform, SocialPlatform::Reddit);
-    assert_eq!(s.kind, Some(SocialKind::Post));
-    assert_eq!(s.id.as_deref(), Some("abc123"));
-    assert_eq!(s.handle.as_deref(), Some("r/rust"));
+    let parts = social("https://reddit.com/r/rust/comments/abc123/some_title");
+    assert_eq!(parts.platform, SocialPlatform::Reddit);
+    assert_eq!(parts.kind, Some(SocialKind::Post));
+    assert_eq!(parts.id.as_deref(), Some("abc123"));
+    assert_eq!(parts.handle.as_deref(), Some("r/rust"));
 }
 
 #[test]
 fn reddit_comment() {
-    let s = social("https://reddit.com/r/rust/comments/abc123/some_title/def456");
-    assert_eq!(s.kind, Some(SocialKind::Comment));
-    assert_eq!(s.id.as_deref(), Some("def456"));
-    assert_eq!(s.handle.as_deref(), Some("r/rust"));
+    let parts = social("https://reddit.com/r/rust/comments/abc123/some_title/def456");
+    assert_eq!(parts.kind, Some(SocialKind::Comment));
+    assert_eq!(parts.id.as_deref(), Some("def456"));
+    assert_eq!(parts.handle.as_deref(), Some("r/rust"));
 }
 
 #[test]
@@ -157,43 +157,43 @@ fn reddit_subreddit_and_user() {
 
 #[test]
 fn reddit_share_link_is_opaque_but_keeps_sub() {
-    let s = social("https://reddit.com/r/rust/s/AbCdEf");
-    assert_eq!(s.platform, SocialPlatform::Reddit);
-    assert_eq!(s.kind, None);
-    assert_eq!(s.handle.as_deref(), Some("r/rust"));
+    let parts = social("https://reddit.com/r/rust/s/AbCdEf");
+    assert_eq!(parts.platform, SocialPlatform::Reddit);
+    assert_eq!(parts.kind, None);
+    assert_eq!(parts.handle.as_deref(), Some("r/rust"));
 }
 
 #[test]
 fn reddit_short_link_is_opaque() {
-    let s = social("https://redd.it/abc123");
-    assert_eq!(s.platform, SocialPlatform::Reddit);
-    assert_eq!(s.kind, None);
-    assert!(s.id.is_none());
+    let parts = social("https://redd.it/abc123");
+    assert_eq!(parts.platform, SocialPlatform::Reddit);
+    assert_eq!(parts.kind, None);
+    assert!(parts.id.is_none());
 }
 
 #[test]
 fn tiktok_video() {
-    let s = social("https://tiktok.com/@charlidamelio/video/7212345678901234567");
-    assert_eq!(s.platform, SocialPlatform::TikTok);
-    assert_eq!(s.kind, Some(SocialKind::Video));
-    assert_eq!(s.id.as_deref(), Some("7212345678901234567"));
-    assert_eq!(s.handle.as_deref(), Some("@charlidamelio"));
+    let parts = social("https://tiktok.com/@charlidamelio/video/7212345678901234567");
+    assert_eq!(parts.platform, SocialPlatform::TikTok);
+    assert_eq!(parts.kind, Some(SocialKind::Video));
+    assert_eq!(parts.id.as_deref(), Some("7212345678901234567"));
+    assert_eq!(parts.handle.as_deref(), Some("@charlidamelio"));
 }
 
 #[test]
 fn tiktok_profile() {
-    let s = social("https://tiktok.com/@charlidamelio");
-    assert_eq!(s.kind, Some(SocialKind::Profile));
-    assert_eq!(s.handle.as_deref(), Some("@charlidamelio"));
+    let parts = social("https://tiktok.com/@charlidamelio");
+    assert_eq!(parts.kind, Some(SocialKind::Profile));
+    assert_eq!(parts.handle.as_deref(), Some("@charlidamelio"));
 }
 
 #[test]
 fn tiktok_short_link_is_opaque() {
     // `vm.`/`vt.` shorteners are kept (not stripped like `m.`) — the path is an
     // opaque code, so kind is unresolved.
-    let s = social("https://vm.tiktok.com/ZMabcdef");
-    assert_eq!(s.platform, SocialPlatform::TikTok);
-    assert_eq!(s.kind, None);
+    let parts = social("https://vm.tiktok.com/ZMabcdef");
+    assert_eq!(parts.platform, SocialPlatform::TikTok);
+    assert_eq!(parts.kind, None);
 }
 
 #[test]
@@ -214,25 +214,25 @@ fn instagram_post_reel_profile() {
 
 #[test]
 fn instagram_reserved_word_is_not_a_profile() {
-    let s = social("https://instagram.com/explore");
-    assert_eq!(s.kind, None);
+    let parts = social("https://instagram.com/explore");
+    assert_eq!(parts.kind, None);
 }
 
 #[test]
 fn youtube_watch() {
     // Canonical input has sorted params (`t` before `v`); `v` is the video id.
-    let s = social("https://youtube.com/watch?t=30&v=dQw4w9WgXcQ");
-    assert_eq!(s.platform, SocialPlatform::YouTube);
-    assert_eq!(s.kind, Some(SocialKind::Video));
-    assert_eq!(s.id.as_deref(), Some("dQw4w9WgXcQ"));
+    let parts = social("https://youtube.com/watch?t=30&v=dQw4w9WgXcQ");
+    assert_eq!(parts.platform, SocialPlatform::YouTube);
+    assert_eq!(parts.kind, Some(SocialKind::Video));
+    assert_eq!(parts.id.as_deref(), Some("dQw4w9WgXcQ"));
 }
 
 #[test]
 fn youtube_short_link_classifies() {
-    let s = social("https://youtu.be/dQw4w9WgXcQ");
-    assert_eq!(s.platform, SocialPlatform::YouTube);
-    assert_eq!(s.kind, Some(SocialKind::Video));
-    assert_eq!(s.id.as_deref(), Some("dQw4w9WgXcQ"));
+    let parts = social("https://youtu.be/dQw4w9WgXcQ");
+    assert_eq!(parts.platform, SocialPlatform::YouTube);
+    assert_eq!(parts.kind, Some(SocialKind::Video));
+    assert_eq!(parts.id.as_deref(), Some("dQw4w9WgXcQ"));
 }
 
 #[test]
@@ -253,22 +253,22 @@ fn youtube_shorts_and_handle_and_channel() {
 
 #[test]
 fn twitter_status_on_both_domains() {
-    let t = social("https://twitter.com/jack/status/20");
-    assert_eq!(t.platform, SocialPlatform::Twitter);
-    assert_eq!(t.kind, Some(SocialKind::Post));
-    assert_eq!(t.id.as_deref(), Some("20"));
-    assert_eq!(t.handle.as_deref(), Some("@jack"));
+    let twitter_parts = social("https://twitter.com/jack/status/20");
+    assert_eq!(twitter_parts.platform, SocialPlatform::Twitter);
+    assert_eq!(twitter_parts.kind, Some(SocialKind::Post));
+    assert_eq!(twitter_parts.id.as_deref(), Some("20"));
+    assert_eq!(twitter_parts.handle.as_deref(), Some("@jack"));
 
-    let x = social("https://x.com/jack/status/20");
-    assert_eq!(x.platform, SocialPlatform::Twitter);
-    assert_eq!(x.id.as_deref(), Some("20"));
+    let x_parts = social("https://x.com/jack/status/20");
+    assert_eq!(x_parts.platform, SocialPlatform::Twitter);
+    assert_eq!(x_parts.id.as_deref(), Some("20"));
 }
 
 #[test]
 fn twitter_profile() {
-    let s = social("https://x.com/nasa");
-    assert_eq!(s.kind, Some(SocialKind::Profile));
-    assert_eq!(s.handle.as_deref(), Some("@nasa"));
+    let parts = social("https://x.com/nasa");
+    assert_eq!(parts.kind, Some(SocialKind::Profile));
+    assert_eq!(parts.handle.as_deref(), Some("@nasa"));
 }
 
 #[test]
@@ -309,9 +309,9 @@ fn system_routes_and_bare_separators_are_not_items() {
         "https://reddit.com/r/_",
         "https://tiktok.com/@",
     ] {
-        let s = social(url);
-        assert_eq!(s.kind, None, "{url}");
-        assert_eq!(s.handle, None, "{url}");
+        let parts = social(url);
+        assert_eq!(parts.kind, None, "{url}");
+        assert_eq!(parts.handle, None, "{url}");
     }
 }
 
@@ -322,10 +322,10 @@ fn an_item_under_a_bare_separator_has_no_handle() {
         ("https://twitter.com/_/status/1", SocialKind::Post),
         ("https://facebook.com/_/posts/1", SocialKind::Post),
     ] {
-        let s = social(url);
-        assert_eq!(s.kind, Some(kind), "{url}");
-        assert_eq!(s.id.as_deref(), Some("1"), "{url}");
-        assert_eq!(s.handle, None, "{url}");
+        let parts = social(url);
+        assert_eq!(parts.kind, Some(kind), "{url}");
+        assert_eq!(parts.id.as_deref(), Some("1"), "{url}");
+        assert_eq!(parts.handle, None, "{url}");
     }
 }
 
@@ -336,18 +336,18 @@ fn pinterest_profile_tabs_are_the_profile() {
         "https://www.pinterest.com/someuser/_created/",
         "https://www.pinterest.com/someuser/pins/",
     ] {
-        let s = social(url);
-        assert_eq!(s.kind, Some(SocialKind::Profile), "{url}");
-        assert_eq!(s.handle.as_deref(), Some("someuser"), "{url}");
-        assert_eq!(s.id, None, "{url}");
+        let parts = social(url);
+        assert_eq!(parts.kind, Some(SocialKind::Profile), "{url}");
+        assert_eq!(parts.handle.as_deref(), Some("someuser"), "{url}");
+        assert_eq!(parts.id, None, "{url}");
     }
 }
 
 #[test]
 fn pinterest_international_tld() {
-    let s = social("https://pinterest.co.uk/pin/999");
-    assert_eq!(s.platform, SocialPlatform::Pinterest);
-    assert_eq!(s.kind, Some(SocialKind::Post));
+    let parts = social("https://pinterest.co.uk/pin/999");
+    assert_eq!(parts.platform, SocialPlatform::Pinterest);
+    assert_eq!(parts.kind, Some(SocialKind::Post));
 }
 
 #[test]
@@ -366,26 +366,26 @@ fn linkedin_profile_and_company() {
 
 #[test]
 fn vimeo_video_and_profile() {
-    let v = social("https://vimeo.com/123456789");
-    assert_eq!(v.platform, SocialPlatform::Vimeo);
-    assert_eq!(v.kind, Some(SocialKind::Video));
-    assert_eq!(v.id.as_deref(), Some("123456789"));
+    let video = social("https://vimeo.com/123456789");
+    assert_eq!(video.platform, SocialPlatform::Vimeo);
+    assert_eq!(video.kind, Some(SocialKind::Video));
+    assert_eq!(video.id.as_deref(), Some("123456789"));
 
-    let p = social("https://vimeo.com/johndoe");
-    assert_eq!(p.kind, Some(SocialKind::Profile));
-    assert_eq!(p.handle.as_deref(), Some("johndoe"));
+    let profile = social("https://vimeo.com/johndoe");
+    assert_eq!(profile.kind, Some(SocialKind::Profile));
+    assert_eq!(profile.handle.as_deref(), Some("johndoe"));
 }
 
 #[test]
 fn facebook_watch_and_profile() {
-    let w = social("https://facebook.com/watch?v=123456");
-    assert_eq!(w.platform, SocialPlatform::Facebook);
-    assert_eq!(w.kind, Some(SocialKind::Video));
-    assert_eq!(w.id.as_deref(), Some("123456"));
+    let watch = social("https://facebook.com/watch?v=123456");
+    assert_eq!(watch.platform, SocialPlatform::Facebook);
+    assert_eq!(watch.kind, Some(SocialKind::Video));
+    assert_eq!(watch.id.as_deref(), Some("123456"));
 
-    let p = social("https://facebook.com/zuck");
-    assert_eq!(p.kind, Some(SocialKind::Profile));
-    assert_eq!(p.handle.as_deref(), Some("zuck"));
+    let profile = social("https://facebook.com/zuck");
+    assert_eq!(profile.kind, Some(SocialKind::Profile));
+    assert_eq!(profile.handle.as_deref(), Some("zuck"));
 }
 
 #[test]
@@ -399,8 +399,8 @@ fn non_social_and_unparseable_are_none() {
 
 #[test]
 fn social_serializes_with_camel_case() {
-    let s = social("https://tiktok.com/@user/video/123");
-    let json = serde_json::to_value(&s).unwrap();
+    let parts = social("https://tiktok.com/@user/video/123");
+    let json = serde_json::to_value(&parts).unwrap();
     assert_eq!(json["platform"], "TikTok");
     assert_eq!(json["kind"], "Video");
     assert_eq!(json["id"], "123");
@@ -422,12 +422,18 @@ fn extract_og_maps_all_fields() {
         ),
         ("author".to_string(), "Jane Doe".to_string()),
     ];
-    let r = extract_preview(&metadata);
-    assert_eq!(r.title.as_deref(), Some("OG Title"));
-    assert_eq!(r.text.as_deref(), Some("OG Desc"));
-    assert_eq!(r.image_url.as_deref(), Some("https://img.example/a.jpg"));
-    assert_eq!(r.video_url.as_deref(), Some("https://vid.example/v.mp4"));
-    assert_eq!(r.author.as_deref(), Some("Jane Doe"));
+    let preview = extract_preview(&metadata);
+    assert_eq!(preview.title.as_deref(), Some("OG Title"));
+    assert_eq!(preview.text.as_deref(), Some("OG Desc"));
+    assert_eq!(
+        preview.image_url.as_deref(),
+        Some("https://img.example/a.jpg")
+    );
+    assert_eq!(
+        preview.video_url.as_deref(),
+        Some("https://vid.example/v.mp4")
+    );
+    assert_eq!(preview.author.as_deref(), Some("Jane Doe"));
 }
 
 #[test]

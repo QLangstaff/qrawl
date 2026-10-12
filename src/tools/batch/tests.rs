@@ -6,11 +6,9 @@ use std::num::NonZeroUsize;
 async fn test_batch_basic() {
     let items = vec![1, 2, 3, 4, 5];
 
-    let results = batch(
-        items,
-        NonZeroUsize::new(2).unwrap(),
-        |n| async move { n * 2 },
-    )
+    let results = batch(items, NonZeroUsize::new(2).unwrap(), |number| async move {
+        number * 2
+    })
     .await;
 
     assert_eq!(results.len(), 5);
@@ -24,9 +22,9 @@ async fn test_batch_basic() {
 async fn test_batch_with_delay() {
     let items = vec![10, 20, 30];
 
-    let results = batch(items, NonZeroUsize::new(2).unwrap(), |n| async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(n)).await;
-        n
+    let results = batch(items, NonZeroUsize::new(2).unwrap(), |number| async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(number)).await;
+        number
     })
     .await;
 
@@ -39,7 +37,10 @@ async fn test_batch_with_delay() {
 #[tokio::test]
 async fn test_batch_empty() {
     let items: Vec<i32> = vec![];
-    let results = batch(items, NonZeroUsize::new(5).unwrap(), |n| async move { n }).await;
+    let results = batch(items, NonZeroUsize::new(5).unwrap(), |number| async move {
+        number
+    })
+    .await;
     assert_eq!(results.len(), 0);
 }
 
@@ -63,10 +64,10 @@ async fn test_batch_concurrency_limit() {
         async move {
             // Increment current
             {
-                let mut curr = current.lock().await;
-                *curr += 1;
+                let mut current_count = current.lock().await;
+                *current_count += 1;
                 let mut max = max_concurrent.lock().await;
-                *max = (*max).max(*curr);
+                *max = (*max).max(*current_count);
             }
 
             // Simulate work
@@ -74,8 +75,8 @@ async fn test_batch_concurrency_limit() {
 
             // Decrement current
             {
-                let mut curr = current.lock().await;
-                *curr -= 1;
+                let mut current_count = current.lock().await;
+                *current_count -= 1;
             }
 
             42

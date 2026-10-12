@@ -106,14 +106,17 @@ pub(crate) fn scrape_from_document(document: &scraper::Html) -> (Html, Metadata,
 
 fn flatten_jsonld(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
-        serde_json::Value::Array(arr) => arr.into_iter().flat_map(flatten_jsonld).collect(),
-        serde_json::Value::Object(mut obj) => {
-            let graph = obj.remove("@graph").map(flatten_jsonld).unwrap_or_default();
+        serde_json::Value::Array(array) => array.into_iter().flat_map(flatten_jsonld).collect(),
+        serde_json::Value::Object(mut object) => {
+            let graph = object
+                .remove("@graph")
+                .map(flatten_jsonld)
+                .unwrap_or_default();
             // An object that only wraps its `@graph` is not an entity itself.
-            let is_entity = obj
+            let is_entity = object
                 .keys()
                 .any(|key| !matches!(key.as_str(), "@context" | "@id"));
-            let mut entity = serde_json::Value::Object(obj);
+            let mut entity = serde_json::Value::Object(object);
             shorten_types(&mut entity);
             is_entity
                 .then_some(entity)
@@ -221,7 +224,7 @@ fn microdata_items(document: &scraper::Html) -> Jsonld {
 
 /// Build a flattened, JSON-LD-shaped object from an `itemscope` element.
 fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
+    let mut object = serde_json::Map::new();
 
     // `@type` from `itemtype` (short names). Anonymous items (no `itemtype`)
     // simply get no `@type`, which `extract_schema_types` skips.
@@ -234,10 +237,10 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         match types.len() {
             0 => {}
             1 => {
-                obj.insert("@type".to_string(), types.into_iter().next().unwrap());
+                object.insert("@type".to_string(), types.into_iter().next().unwrap());
             }
             _ => {
-                obj.insert("@type".to_string(), serde_json::Value::Array(types));
+                object.insert("@type".to_string(), serde_json::Value::Array(types));
             }
         }
     }
@@ -245,7 +248,7 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     if let Some(itemid) = item.value().attr("itemid") {
         let itemid = itemid.trim();
         if !itemid.is_empty() {
-            obj.insert(
+            object.insert(
                 "@id".to_string(),
                 serde_json::Value::String(itemid.to_string()),
             );
@@ -273,10 +276,10 @@ fn microdata_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         if is_copy && !spend_copy_budget(&value) {
             continue;
         }
-        insert_under_names(&mut obj, &names, value, insert_property);
+        insert_under_names(&mut object, &names, value, insert_property);
     }
 
-    serde_json::Value::Object(obj)
+    serde_json::Value::Object(object)
 }
 
 /// Collect `(element, property-name)` pairs belonging to `item`, walking
@@ -376,7 +379,7 @@ fn spend_copy_budget(value: &serde_json::Value) -> bool {
 /// Store `value` under each of the space-separated `names`: under the first
 /// for free, under the rest while the document's copy budget lasts.
 fn insert_under_names(
-    obj: &mut serde_json::Map<String, serde_json::Value>,
+    object: &mut serde_json::Map<String, serde_json::Value>,
     names: &str,
     value: serde_json::Value,
     insert: fn(&mut serde_json::Map<String, serde_json::Value>, &str, serde_json::Value),
@@ -389,25 +392,25 @@ fn insert_under_names(
         if !spend_copy_budget(&value) {
             break;
         }
-        insert(obj, name, value.clone());
+        insert(object, name, value.clone());
     }
-    insert(obj, first, value);
+    insert(object, first, value);
 }
 
 /// Insert a property, promoting to an array when the same name repeats.
 fn insert_property(
-    obj: &mut serde_json::Map<String, serde_json::Value>,
+    object: &mut serde_json::Map<String, serde_json::Value>,
     name: &str,
     value: serde_json::Value,
 ) {
-    match obj.get_mut(name) {
-        Some(serde_json::Value::Array(arr)) => arr.push(value),
+    match object.get_mut(name) {
+        Some(serde_json::Value::Array(array)) => array.push(value),
         Some(existing) => {
             let previous = existing.take();
             *existing = serde_json::Value::Array(vec![previous, value]);
         }
         None => {
-            obj.insert(name.to_string(), value);
+            object.insert(name.to_string(), value);
         }
     }
 }
@@ -478,7 +481,7 @@ fn rdfa_items(document: &scraper::Html) -> Jsonld {
 
 /// Build a flattened, JSON-LD-shaped object from a `typeof` element.
 fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
+    let mut object = serde_json::Map::new();
 
     if let Some(types_attribute) = item.value().attr("typeof") {
         let types: Vec<serde_json::Value> = types_attribute
@@ -489,10 +492,10 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         match types.len() {
             0 => {}
             1 => {
-                obj.insert("@type".to_string(), types.into_iter().next().unwrap());
+                object.insert("@type".to_string(), types.into_iter().next().unwrap());
             }
             _ => {
-                obj.insert("@type".to_string(), serde_json::Value::Array(types));
+                object.insert("@type".to_string(), serde_json::Value::Array(types));
             }
         }
     }
@@ -505,7 +508,7 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
     {
         let id = id.trim();
         if !id.is_empty() {
-            obj.insert("@id".to_string(), serde_json::Value::String(id.to_string()));
+            object.insert("@id".to_string(), serde_json::Value::String(id.to_string()));
         }
     }
 
@@ -527,10 +530,10 @@ fn rdfa_item_to_value(item: &scraper::ElementRef) -> serde_json::Value {
         if is_copy && !spend_copy_budget(&value) {
             continue;
         }
-        insert_under_names(&mut obj, &names, value, insert_property);
+        insert_under_names(&mut object, &names, value, insert_property);
     }
 
-    serde_json::Value::Object(obj)
+    serde_json::Value::Object(object)
 }
 
 /// The value of a non-`typeof` `property` element, per RDFa precedence.
@@ -637,14 +640,15 @@ fn class_tokens(element: &scraper::ElementRef) -> Vec<String> {
     element
         .value()
         .attr("class")
-        .map(|c| c.split_whitespace().map(str::to_string).collect())
+        .map(|class| class.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
 }
 
 fn is_microformat_root(element: &scraper::ElementRef) -> bool {
-    element.value().attr("class").is_some_and(|c| {
-        c.split_whitespace()
-            .any(|t| MICROFORMAT_ROOTS.contains(&t) || microformats1_root(t).is_some())
+    element.value().attr("class").is_some_and(|class| {
+        class
+            .split_whitespace()
+            .any(|token| MICROFORMAT_ROOTS.contains(&token) || microformats1_root(token).is_some())
     })
 }
 
@@ -657,7 +661,7 @@ fn root_types_and_vocabulary(
     let tokens = class_tokens(element);
     let microformats2: Vec<String> = tokens
         .iter()
-        .filter(|t| MICROFORMAT_ROOTS.contains(&t.as_str()))
+        .filter(|token| MICROFORMAT_ROOTS.contains(&token.as_str()))
         .cloned()
         .collect();
     if !microformats2.is_empty() {
@@ -673,13 +677,13 @@ fn root_types_and_vocabulary(
 
 fn has_microformat_root_ancestor(element: &scraper::ElementRef) -> bool {
     let mut node = element.parent();
-    while let Some(n) = node {
-        if let Some(ancestor_element) = scraper::ElementRef::wrap(n) {
+    while let Some(ancestor) = node {
+        if let Some(ancestor_element) = scraper::ElementRef::wrap(ancestor) {
             if is_microformat_root(&ancestor_element) {
                 return true;
             }
         }
-        node = n.parent();
+        node = ancestor.parent();
     }
     false
 }
@@ -702,18 +706,21 @@ fn microformat_property_classes(element: &scraper::ElementRef) -> Vec<(PropertyK
     class_tokens(element)
         .iter()
         .filter_map(|token| {
-            let (kind, name) = if let Some(n) = token.strip_prefix("dt-") {
-                (PropertyKind::Dt, n)
-            } else if let Some(n) = token.strip_prefix("p-") {
-                (PropertyKind::P, n)
-            } else if let Some(n) = token.strip_prefix("u-") {
-                (PropertyKind::U, n)
-            } else if let Some(n) = token.strip_prefix("e-") {
-                (PropertyKind::E, n)
+            let (kind, name) = if let Some(property_name) = token.strip_prefix("dt-") {
+                (PropertyKind::Dt, property_name)
+            } else if let Some(property_name) = token.strip_prefix("p-") {
+                (PropertyKind::P, property_name)
+            } else if let Some(property_name) = token.strip_prefix("u-") {
+                (PropertyKind::U, property_name)
+            } else if let Some(property_name) = token.strip_prefix("e-") {
+                (PropertyKind::E, property_name)
             } else {
                 return None;
             };
-            if name.chars().any(|c| c.is_ascii_alphabetic()) {
+            if name
+                .chars()
+                .any(|character| character.is_ascii_alphabetic())
+            {
                 Some((kind, name.to_string()))
             } else {
                 None
@@ -728,19 +735,19 @@ fn parse_microformat_item(root: &scraper::ElementRef) -> serde_json::Value {
     let mut children = Vec::new();
     collect_microformat(root, vocabulary, &mut properties, &mut children);
 
-    let mut obj = serde_json::Map::new();
-    obj.insert(
+    let mut object = serde_json::Map::new();
+    object.insert(
         "type".to_string(),
         serde_json::Value::Array(types.into_iter().map(serde_json::Value::String).collect()),
     );
-    obj.insert(
+    object.insert(
         "properties".to_string(),
         serde_json::Value::Object(properties),
     );
     if !children.is_empty() {
-        obj.insert("children".to_string(), serde_json::Value::Array(children));
+        object.insert("children".to_string(), serde_json::Value::Array(children));
     }
-    serde_json::Value::Object(obj)
+    serde_json::Value::Object(object)
 }
 
 /// Walk descendants of a root, populating its `properties` and `children`.
@@ -818,7 +825,7 @@ fn push_microformat_property(
     value: serde_json::Value,
 ) {
     match properties.get_mut(name) {
-        Some(serde_json::Value::Array(arr)) => arr.push(value),
+        Some(serde_json::Value::Array(array)) => array.push(value),
         _ => {
             properties.insert(name.to_string(), serde_json::Value::Array(vec![value]));
         }
@@ -887,7 +894,11 @@ fn microformat_text(element: &scraper::ElementRef) -> String {
 
 fn microformat_p_value(element: &scraper::ElementRef) -> String {
     let element_node = element.value();
-    let attribute = |n: &str| element_node.attr(n).map(|s| s.trim().to_string());
+    let attribute = |name: &str| {
+        element_node
+            .attr(name)
+            .map(|value| value.trim().to_string())
+    };
     match element_node.name() {
         "abbr" | "link" => attribute("title").unwrap_or_else(|| microformat_text(element)),
         "data" | "input" => attribute("value").unwrap_or_else(|| microformat_text(element)),
@@ -898,7 +909,11 @@ fn microformat_p_value(element: &scraper::ElementRef) -> String {
 
 fn microformat_u_value(element: &scraper::ElementRef) -> String {
     let element_node = element.value();
-    let attribute = |n: &str| element_node.attr(n).map(|s| s.trim().to_string());
+    let attribute = |name: &str| {
+        element_node
+            .attr(name)
+            .map(|value| value.trim().to_string())
+    };
     match element_node.name() {
         "a" | "area" | "link" => attribute("href"),
         "img" | "audio" | "video" | "source" => attribute("src"),
@@ -910,7 +925,11 @@ fn microformat_u_value(element: &scraper::ElementRef) -> String {
 
 fn microformat_dt_value(element: &scraper::ElementRef) -> String {
     let element_node = element.value();
-    let attribute = |n: &str| element_node.attr(n).map(|s| s.trim().to_string());
+    let attribute = |name: &str| {
+        element_node
+            .attr(name)
+            .map(|value| value.trim().to_string())
+    };
     match element_node.name() {
         "time" | "ins" | "del" => attribute("datetime"),
         "abbr" => attribute("title"),
@@ -981,7 +1000,7 @@ fn microformats1_property_classes(
     class_tokens(element)
         .iter()
         .filter_map(|token| {
-            microformats1_property(vocabulary, token).map(|(k, n)| (k, n.to_string()))
+            microformats1_property(vocabulary, token).map(|(kind, name)| (kind, name.to_string()))
         })
         .collect()
 }
@@ -1060,12 +1079,12 @@ fn microformats1_property(
 /// (those bare words double as common class names; the other Microformats1 roots are
 /// microformat coinages that essentially never appear as CSS classes).
 fn is_empty_geo_or_adr(item: &serde_json::Value) -> bool {
-    let ty = item
+    let first_type = item
         .get("type")
         .and_then(serde_json::Value::as_array)
-        .and_then(|a| a.first())
+        .and_then(|types| types.first())
         .and_then(serde_json::Value::as_str);
-    matches!(ty, Some("h-geo") | Some("h-adr"))
+    matches!(first_type, Some("h-geo") | Some("h-adr"))
         && item
             .get("properties")
             .and_then(serde_json::Value::as_object)
@@ -1119,44 +1138,46 @@ fn schema_identity(entity: &serde_json::Value) -> Option<SchemaIdentity> {
     ))
 }
 
-fn schema_name(v: &serde_json::Value) -> Option<String> {
-    match v.get("name")? {
-        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        serde_json::Value::Array(arr) => arr
+fn schema_name(entity: &serde_json::Value) -> Option<String> {
+    match entity.get("name")? {
+        serde_json::Value::String(name) if !name.trim().is_empty() => Some(name.trim().to_string()),
+        serde_json::Value::Array(array) => array
             .first()
             .and_then(serde_json::Value::as_str)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty()),
         _ => None,
     }
 }
 
 /// Short `@type` name (last segment of an IRI/CURIE; first of an array).
-fn schema_type_short(v: &serde_json::Value) -> Option<String> {
-    schema_types(v).into_iter().next()
+fn schema_type_short(entity: &serde_json::Value) -> Option<String> {
+    schema_types(entity).into_iter().next()
 }
 
 /// Fill only missing/empty properties of `existing` from `incoming` — a richer
 /// existing value is never overwritten.
 fn fill_missing_properties(existing: &mut serde_json::Value, incoming: serde_json::Value) {
-    let (Some(ex), serde_json::Value::Object(inc)) = (existing.as_object_mut(), incoming) else {
+    let (Some(existing_fields), serde_json::Value::Object(incoming_fields)) =
+        (existing.as_object_mut(), incoming)
+    else {
         return;
     };
-    for (key, value) in inc {
-        match ex.get(&key) {
+    for (key, value) in incoming_fields {
+        match existing_fields.get(&key) {
             Some(current) if !schema_property_is_empty(current) => {}
             _ => {
-                ex.insert(key, value);
+                existing_fields.insert(key, value);
             }
         }
     }
 }
 
-fn schema_property_is_empty(v: &serde_json::Value) -> bool {
-    match v {
+fn schema_property_is_empty(value: &serde_json::Value) -> bool {
+    match value {
         serde_json::Value::Null => true,
-        serde_json::Value::String(s) => s.trim().is_empty(),
-        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::String(text) => text.trim().is_empty(),
+        serde_json::Value::Array(items) => items.is_empty(),
         _ => false,
     }
 }
@@ -1188,12 +1209,12 @@ fn microformat_item_to_schema(item: &serde_json::Value) -> Option<serde_json::Va
         .as_array()?
         .iter()
         .filter_map(serde_json::Value::as_str)
-        .find(|t| t.starts_with("h-"))?;
+        .find(|item_type| item_type.starts_with("h-"))?;
     let schema_type = microformat_type_to_schema(h_type)?;
     let properties = item.get("properties")?.as_object()?;
 
-    let mut obj = serde_json::Map::new();
-    obj.insert(
+    let mut object = serde_json::Map::new();
+    object.insert(
         "@type".to_string(),
         serde_json::Value::String(schema_type.to_string()),
     );
@@ -1201,22 +1222,22 @@ fn microformat_item_to_schema(item: &serde_json::Value) -> Option<serde_json::Va
         let Some(schema_key) = microformat_property_to_schema(h_type, microformat_key) else {
             continue;
         };
-        let Some(arr) = values.as_array() else {
+        let Some(array) = values.as_array() else {
             continue;
         };
-        let value = convert_microformat_values(arr, is_steplist_property(schema_key));
+        let value = convert_microformat_values(array, is_steplist_property(schema_key));
         if !microformat_value_is_empty(&value) {
             // First mapping wins (two microformat properties can map to one schema key, e.g.
             // `photo`/`featured` → `image`).
-            obj.entry(schema_key).or_insert(value);
+            object.entry(schema_key).or_insert(value);
         }
     }
 
     // An entity that mapped nothing beyond `@type` carries no usable data.
-    if obj.len() <= 1 {
+    if object.len() <= 1 {
         return None;
     }
-    Some(serde_json::Value::Object(obj))
+    Some(serde_json::Value::Object(object))
 }
 
 /// Common `h-*` microformat types → schema.org `@type`. Unrecognized types are
@@ -1300,11 +1321,11 @@ fn convert_microformat_values(
     split_blocks: bool,
 ) -> serde_json::Value {
     let mut out: Vec<serde_json::Value> = Vec::new();
-    for v in values {
-        match v {
-            serde_json::Value::String(s) => push_nonempty(&mut out, s),
-            serde_json::Value::Object(o) => {
-                if let Some(html) = o.get("html").and_then(serde_json::Value::as_str) {
+    for microformat_value in values {
+        match microformat_value {
+            serde_json::Value::String(text) => push_nonempty(&mut out, text),
+            serde_json::Value::Object(fields) => {
+                if let Some(html) = fields.get("html").and_then(serde_json::Value::as_str) {
                     // `e-*` parsed-element property.
                     let blocks = if split_blocks {
                         split_e_blocks(html)
@@ -1313,16 +1334,19 @@ fn convert_microformat_values(
                     };
                     if blocks.len() > 1 {
                         out.extend(blocks.into_iter().map(serde_json::Value::String));
-                    } else if let Some(value) = o.get("value").and_then(serde_json::Value::as_str) {
+                    } else if let Some(value) =
+                        fields.get("value").and_then(serde_json::Value::as_str)
+                    {
                         push_nonempty(&mut out, value);
                     } else if let Some(block) = blocks.into_iter().next() {
                         out.push(serde_json::Value::String(block));
                     }
-                } else if let Some(value) = o
+                } else if let Some(value) = fields
                     .get("value")
                     .and_then(serde_json::Value::as_str)
                     .or_else(|| {
-                        v.pointer("/properties/name/0")
+                        microformat_value
+                            .pointer("/properties/name/0")
                             .and_then(serde_json::Value::as_str)
                     })
                 {
@@ -1341,8 +1365,8 @@ fn convert_microformat_values(
     }
 }
 
-fn push_nonempty(out: &mut Vec<serde_json::Value>, s: &str) {
-    let trimmed = s.trim();
+fn push_nonempty(out: &mut Vec<serde_json::Value>, text: &str) {
+    let trimmed = text.trim();
     if !trimmed.is_empty() {
         out.push(serde_json::Value::String(trimmed.to_string()));
     }
@@ -1364,7 +1388,7 @@ fn split_e_blocks(html: &str) -> Vec<String> {
                     .collect::<Vec<_>>()
                     .join(" ")
             })
-            .filter(|s| !s.is_empty())
+            .filter(|step| !step.is_empty())
             .collect();
         if !steps.is_empty() {
             return steps;
@@ -1373,10 +1397,10 @@ fn split_e_blocks(html: &str) -> Vec<String> {
     Vec::new()
 }
 
-fn microformat_value_is_empty(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Array(a) => a.is_empty(),
-        serde_json::Value::String(s) => s.is_empty(),
+fn microformat_value_is_empty(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(items) => items.is_empty(),
+        serde_json::Value::String(text) => text.is_empty(),
         serde_json::Value::Null => true,
         _ => false,
     }

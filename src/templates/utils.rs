@@ -161,7 +161,7 @@ pub(super) async fn page_content(
 }
 
 /// Run `work` over `source`, at most `concurrency` at once, and send what
-/// `finish` keeps of each result to `tx`, in completion order. Returns `false`
+/// `finish` keeps of each result to `sender`, in completion order. Returns `false`
 /// when the consumer is gone.
 ///
 /// Work in flight keeps being polled while the consumer is slow — a fetch that
@@ -171,7 +171,7 @@ pub(super) async fn page_content(
 async fn drive<S, Work, Fut, Finish, T>(
     source: S,
     concurrency: usize,
-    tx: &mpsc::Sender<T>,
+    sender: &mpsc::Sender<T>,
     work: Work,
     mut finish: Finish,
 ) -> bool
@@ -191,7 +191,7 @@ where
         let can_start =
             !source.is_done() && in_flight.len() < concurrency && ready.len() < concurrency;
         tokio::select! {
-            permit = tx.reserve(), if !ready.is_empty() => match permit {
+            permit = sender.reserve(), if !ready.is_empty() => match permit {
                 Ok(permit) => permit.send(ready.pop_front().expect("ready is not empty")),
                 Err(_) => return false,
             },
@@ -199,16 +199,16 @@ where
             output = in_flight.next(), if !in_flight.is_empty() => {
                 ready.extend(output.and_then(&mut finish));
             }
-            _ = tx.closed() => return false,
+            _ = sender.closed() => return false,
         }
     }
 }
 
 fn receiver_stream<T: Send + 'static>(
-    rx: mpsc::Receiver<T>,
+    receiver: mpsc::Receiver<T>,
 ) -> impl Stream<Item = T> + Send + 'static {
-    futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
+    futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
     })
 }
 
@@ -253,7 +253,7 @@ where
     Fut: Future<Output = Option<Visited<T>>> + Send + 'static,
 {
     let concurrency = context.concurrency.get();
-    let (tx, rx) = mpsc::channel(concurrency);
+    let (sender, receiver) = mpsc::channel(concurrency);
     tokio::spawn(context.scope(async move {
         // Every URL ever queued, and every page yielded. Pulling a target
         // reads `yielded` and finishing a visit writes it, from two closures,
@@ -279,7 +279,7 @@ where
                     futures_util::future::ready(!is_yielded)
                 }),
                 concurrency,
-                &tx,
+                &sender,
                 // A page whose visit panics is dropped; the rest of the crawl goes on.
                 |target: Target| {
                     let given = target.url.clone();
@@ -317,5 +317,5 @@ where
             frontier = next;
         }
     }));
-    receiver_stream(rx)
+    receiver_stream(receiver)
 }

@@ -218,7 +218,7 @@ fn map_sibling_groups_recursive<'a>(
         // 1. Detect single-element patterns with common-prefix matching
         let mut pattern_groups: Vec<(Vec<String>, Vec<usize>)> = Vec::new();
 
-        for (idx, child) in children.iter().enumerate() {
+        for (index, child) in children.iter().enumerate() {
             let pattern = map_structure_pattern(child);
 
             // Find existing group with compatible pattern (shares common prefix)
@@ -229,7 +229,7 @@ fn map_sibling_groups_recursive<'a>(
                 if min_len >= MIN_COMMON_PREFIX_LEN
                     && group_tags[..min_len] == pattern.tags[..min_len]
                 {
-                    indices.push(idx);
+                    indices.push(index);
                     // Update group to use shortest pattern (core pattern)
                     if pattern.tags.len() < group_tags.len() {
                         *group_tags = pattern.tags.clone();
@@ -240,14 +240,17 @@ fn map_sibling_groups_recursive<'a>(
             }
 
             if !matched {
-                pattern_groups.push((pattern.tags.clone(), vec![idx]));
+                pattern_groups.push((pattern.tags.clone(), vec![index]));
             }
         }
 
         // Convert to sibling groups, filtering out trivial patterns
         for (tags, indices) in pattern_groups {
             if indices.len() >= MIN_SIBLING_GROUP_SIZE && !tags.is_empty() {
-                let siblings: Vec<String> = indices.iter().map(|&i| children[i].html()).collect();
+                let siblings: Vec<String> = indices
+                    .iter()
+                    .map(|&child_index| children[child_index].html())
+                    .collect();
 
                 if siblings.len() >= MIN_SIBLING_GROUP_SIZE {
                     let first_child = &children[indices[0]];
@@ -280,7 +283,7 @@ fn map_sibling_groups_recursive<'a>(
 fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<SiblingGroup>) {
     use std::collections::HashMap;
 
-    let n = children.len();
+    let child_count = children.len();
     let structures: Vec<StructurePattern> = children.iter().map(map_structure_pattern).collect();
 
     // A unit of `p` elements repeats its structures `p` apart, so the distance
@@ -291,23 +294,23 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
     // unit's own length. Only the next repeat counts: a repeat further on is
     // the length of several units, which an ad between items or two item
     // lengths would make frequent, and which would outrank the unit itself.
-    let ends_a_run = |idx: usize| structures.get(idx + 1) != Some(&structures[idx]);
+    let ends_a_run = |index: usize| structures.get(index + 1) != Some(&structures[index]);
     let mut last_seen: HashMap<&StructurePattern, usize> = HashMap::new();
     let mut distances: HashMap<usize, usize> = HashMap::new();
-    for (idx, structure) in structures
+    for (index, structure) in structures
         .iter()
         .enumerate()
-        .filter(|(idx, _)| ends_a_run(*idx))
+        .filter(|(index, _)| ends_a_run(*index))
     {
-        if let Some(previous) = last_seen.insert(structure, idx) {
-            *distances.entry(idx - previous).or_default() += 1;
+        if let Some(previous) = last_seen.insert(structure, index) {
+            *distances.entry(index - previous).or_default() += 1;
         }
     }
     let mut candidates: Vec<(usize, usize)> = distances
         .into_iter()
         .filter(|(len, _)| {
-            (MIN_PATTERN_LEN..=(n / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN)).contains(len)
-                && n >= len * MIN_SIBLING_GROUP_SIZE
+            (MIN_PATTERN_LEN..=(child_count / MAX_PATTERN_RATIO).min(MAX_PATTERN_LEN)).contains(len)
+                && child_count >= len * MIN_SIBLING_GROUP_SIZE
         })
         .collect();
     let top_repeats = candidates
@@ -323,12 +326,12 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
         let mut multi_pattern_groups: HashMap<&[StructurePattern], Vec<usize>> = HashMap::new();
 
         // Scan through all possible positions
-        let mut idx = 0;
-        while idx + pattern_len <= n {
-            let pattern = &structures[idx..idx + pattern_len];
+        let mut index = 0;
+        while index + pattern_len <= child_count {
+            let pattern = &structures[index..index + pattern_len];
 
-            multi_pattern_groups.entry(pattern).or_default().push(idx);
-            idx += 1;
+            multi_pattern_groups.entry(pattern).or_default().push(index);
+            index += 1;
         }
 
         // Each multi-element pattern that repeats `MIN_SIBLING_GROUP_SIZE` times is a group
@@ -358,24 +361,27 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
             if start_indices.len() >= MIN_SIBLING_GROUP_SIZE {
                 // Skip homogeneous patterns (handled by single-element detection)
                 let first = &pattern[0];
-                if pattern.iter().all(|p| p == first) {
+                if pattern
+                    .iter()
+                    .all(|structure_pattern| structure_pattern == first)
+                {
                     continue;
                 }
 
                 // Filter out overlapping instances
                 let mut non_overlapping: Vec<usize> = Vec::new();
-                for &idx in &start_indices {
-                    let overlaps = non_overlapping.iter().any(|&selected_idx| {
-                        let range1 = selected_idx..(selected_idx + pattern_len);
-                        let range2 = idx..(idx + pattern_len);
-                        range1.contains(&idx)
-                            || range1.contains(&(idx + pattern_len - 1))
-                            || range2.contains(&selected_idx)
-                            || range2.contains(&(selected_idx + pattern_len - 1))
+                for &index in &start_indices {
+                    let overlaps = non_overlapping.iter().any(|&selected_index| {
+                        let range1 = selected_index..(selected_index + pattern_len);
+                        let range2 = index..(index + pattern_len);
+                        range1.contains(&index)
+                            || range1.contains(&(index + pattern_len - 1))
+                            || range2.contains(&selected_index)
+                            || range2.contains(&(selected_index + pattern_len - 1))
                     });
 
                     if !overlaps {
-                        non_overlapping.push(idx);
+                        non_overlapping.push(index);
                     }
                 }
 
@@ -415,9 +421,9 @@ fn map_multi_element_patterns(children: &[ElementRef], all_groups: &mut Vec<Sibl
                     };
                     let siblings: Vec<String> = non_overlapping
                         .iter()
-                        .map(|&start_idx| {
+                        .map(|&start_index| {
                             (0..pattern_len)
-                                .map(|offset| children[start_idx + offset].html())
+                                .map(|offset| children[start_index + offset].html())
                                 .collect::<Vec<_>>()
                                 .join("")
                         })
@@ -544,21 +550,21 @@ pub(super) fn map_jsonld_itemlist_from_document(document: &scraper::Html) -> Vec
 
 fn collect_itemlists(value: &Value, out: &mut Vec<Value>) {
     match value {
-        Value::Array(arr) => {
-            for item in arr {
+        Value::Array(array) => {
+            for item in array {
                 collect_itemlists(item, out);
             }
         }
-        Value::Object(obj) => {
+        Value::Object(object) => {
             if schema_types(value)
                 .iter()
                 .any(|schema_type| schema_type.eq_ignore_ascii_case("ItemList"))
             {
-                out.push(Value::Object(obj.clone()));
+                out.push(Value::Object(object.clone()));
             }
             // A nested `@graph` is data to the reader, which opens the top one.
             for key in ["mainEntity", "@graph"] {
-                if let Some(nested) = obj.get(key) {
+                if let Some(nested) = object.get(key) {
                     collect_itemlists(nested, out);
                 }
             }
@@ -591,10 +597,10 @@ pub(super) fn map_itemlist_link(
                 item_list_elements
                     .iter()
                     .filter_map(|item_list_element| {
-                        let url_str = item_list_element.get("url")?.as_str()?;
+                        let item_url = item_list_element.get("url")?.as_str()?;
 
                         // Case 1: Anchor reference (#id)
-                        if let Some(anchor_id) = url_str.strip_prefix('#') {
+                        if let Some(anchor_id) = item_url.strip_prefix('#') {
                             if let Some(resolved) = map_anchor_to_link(anchor_id, document, &base) {
                                 return Some(resolved);
                             }
@@ -603,7 +609,7 @@ pub(super) fn map_itemlist_link(
 
                         // Case 2: a link to an anchor of this same page stands
                         // for the link inside that anchor's element
-                        let url = resolve_href(url_str, &base)?;
+                        let url = resolve_href(item_url, &base)?;
                         let is_this_page = url.path() == base.path()
                             && url.query() == base.query()
                             && url.port_or_known_default() == base.port_or_known_default()
@@ -704,11 +710,13 @@ fn collect_heading_texts(element: &ElementRef) -> Vec<String> {
         .collect()
 }
 
-fn link_matches_heading(link_text_norm: &str, headings: &[String]) -> bool {
-    headings.iter().any(|h| {
-        !h.is_empty()
-            && !link_text_norm.is_empty()
-            && (link_text_norm == *h || link_text_norm.contains(h) || h.contains(link_text_norm))
+fn link_matches_heading(link_text_normalized: &str, headings: &[String]) -> bool {
+    headings.iter().any(|heading| {
+        !heading.is_empty()
+            && !link_text_normalized.is_empty()
+            && (link_text_normalized == *heading
+                || link_text_normalized.contains(heading)
+                || heading.contains(link_text_normalized))
     })
 }
 
@@ -755,8 +763,8 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
             // Multiple heading links: use deterministic priority matching
             // Priority 1: Perfect match (link text == heading)
             for (url, link_text) in &heading_links {
-                for h in &headings {
-                    if link_text == h {
+                for heading in &headings {
+                    if link_text == heading {
                         return Some(url.clone());
                     }
                 }
@@ -764,8 +772,8 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
 
             // Priority 2: Link contains heading (more specific)
             for (url, link_text) in &heading_links {
-                for h in &headings {
-                    if !h.is_empty() && link_text.contains(h) {
+                for heading in &headings {
+                    if !heading.is_empty() && link_text.contains(heading) {
                         return Some(url.clone());
                     }
                 }
@@ -773,8 +781,8 @@ fn select_primary_link_in_element(element: &ElementRef, base: &Url) -> Option<St
 
             // Priority 3: Heading contains link (less specific)
             for (url, link_text) in &heading_links {
-                for h in &headings {
-                    if !link_text.is_empty() && h.contains(link_text) {
+                for heading in &headings {
+                    if !link_text.is_empty() && heading.contains(link_text) {
                         return Some(url.clone());
                     }
                 }

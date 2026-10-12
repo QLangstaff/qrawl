@@ -283,7 +283,7 @@ mod local_site {
     fn diamond(path: &str) -> Reply {
         let filler = |name: &str| {
             (0..3)
-                .map(|n| format!("/{name}-filler{n}"))
+                .map(|number| format!("/{name}-filler{number}"))
                 .collect::<Vec<_>>()
         };
         let links = match path {
@@ -652,7 +652,7 @@ mod local_site {
         fn site_reply(path: &str) -> Reply {
             let filler = |name: &str| {
                 (0..3)
-                    .map(|n| format!("/{name}-filler{n}"))
+                    .map(|number| format!("/{name}-filler{number}"))
                     .collect::<Vec<_>>()
             };
             match path {
@@ -921,11 +921,13 @@ mod local_site {
     #[tokio::test]
     async fn the_limit_stops_a_crawl_of_urls_that_all_redirect() {
         let site = TestSite::serve(|path| match path.strip_prefix("/short") {
-            Some(n) => Reply::Redirect(format!("/item{n}")),
+            Some(number) => Reply::Redirect(format!("/item{number}")),
             None => Reply::Html(listing_page(path, "", &[])),
         })
         .await;
-        let urls: Vec<String> = (0..200).map(|n| site.url(&format!("/short{n}"))).collect();
+        let urls: Vec<String> = (0..200)
+            .map(|number| site.url(&format!("/short{number}")))
+            .collect();
 
         let pages = qrawl_many_urls(urls, CrawlOptions::default().with_limit(1), context(2)).await;
         tokio::time::sleep(Duration::from_millis(500)).await;

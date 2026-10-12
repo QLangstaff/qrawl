@@ -57,13 +57,13 @@ async fn microdata_value_by_element_type() {
             </div>
         "#;
     let items = scrape_jsonld(&html.into()).await;
-    let p = &items[0];
-    assert_eq!(p["sku"], "ABC123"); // <meta content>
-    assert_eq!(p["url"], "https://ex.com/p"); // <a href>
-    assert_eq!(p["image"], "https://ex.com/i.jpg"); // <img src>
-    assert_eq!(p["releaseDate"], "2024-01-01"); // <time datetime>
-    assert_eq!(p["productID"], "42"); // <data value>
-    assert_eq!(p["name"], "Widget"); // text content
+    let product = &items[0];
+    assert_eq!(product["sku"], "ABC123"); // <meta content>
+    assert_eq!(product["url"], "https://ex.com/p"); // <a href>
+    assert_eq!(product["image"], "https://ex.com/i.jpg"); // <img src>
+    assert_eq!(product["releaseDate"], "2024-01-01"); // <time datetime>
+    assert_eq!(product["productID"], "42"); // <data value>
+    assert_eq!(product["name"], "Widget"); // text content
 }
 
 #[tokio::test]
@@ -105,7 +105,7 @@ async fn microdata_anonymous_item_has_no_type() {
     assert_eq!(items[0]["name"], "Anon");
 
     // No @type on the item.
-    assert!(items.iter().all(|i| i.get("@type").is_none()));
+    assert!(items.iter().all(|item| item.get("@type").is_none()));
 }
 
 #[tokio::test]
@@ -129,7 +129,10 @@ async fn microdata_yields_short_types() {
             <div itemscope itemtype="https://schema.org/Product"><span itemprop="name">P</span></div>
         "#;
     let items = scrape_jsonld(&html.into()).await;
-    let mut types: Vec<&str> = items.iter().filter_map(|i| i["@type"].as_str()).collect();
+    let mut types: Vec<&str> = items
+        .iter()
+        .filter_map(|item| item["@type"].as_str())
+        .collect();
     types.sort();
     assert_eq!(types, vec!["Product", "Recipe"]);
 }
@@ -421,7 +424,10 @@ async fn scrape_jsonld_folds_in_microformats() {
     // `scrape_jsonld` is the full unified view: the JSON-LD Article AND the
     // h-card (normalized to Person) both surface.
     let schema = scrape_jsonld(&html.into()).await;
-    let types: Vec<&str> = schema.iter().filter_map(|v| v["@type"].as_str()).collect();
+    let types: Vec<&str> = schema
+        .iter()
+        .filter_map(|entity| entity["@type"].as_str())
+        .collect();
     assert!(types.contains(&"Article"), "JSON-LD present: {types:?}");
     assert!(types.contains(&"Person"), "mf2 folded in: {types:?}");
     // Raw Microformats2 is still parseable directly (no public tool exposes it).
@@ -617,10 +623,10 @@ fn merge_folds_microformat_into_microdata_twin() {
 
     // One merged entity, not a partial duplicate.
     assert_eq!(structured.len(), 1);
-    let r = &structured[0];
-    assert_eq!(r["recipeYield"], "16 bars"); // kept from the first
+    let recipe = &structured[0];
+    assert_eq!(recipe["recipeYield"], "16 bars"); // kept from the first
     assert_eq!(
-        r["recipeInstructions"],
+        recipe["recipeInstructions"],
         json!(["Heat oven", "Line pan", "Beat cheese"]) // filled from the second
     );
 }
@@ -663,19 +669,19 @@ async fn microformats2_h_recipe_normalizes_with_step_array() {
         "#;
     let schema = scrape_jsonld(&html.into()).await;
     assert_eq!(schema.len(), 1, "one recipe entity");
-    let r = &schema[0];
-    assert_eq!(r["@type"], "Recipe");
-    assert_eq!(r["name"], "Raspberry Swirl Cheesecake Bars");
-    assert_eq!(r["recipeYield"], "Makes 16 bars");
+    let recipe = &schema[0];
+    assert_eq!(recipe["@type"], "Recipe");
+    assert_eq!(recipe["name"], "Raspberry Swirl Cheesecake Bars");
+    assert_eq!(recipe["recipeYield"], "Makes 16 bars");
     assert_eq!(
-        r["recipeIngredient"],
+        recipe["recipeIngredient"],
         serde_json::json!([
             "1 1/4 cups graham cracker crumbs",
             "1/4 cup granulated sugar",
             "2 packages cream cheese"
         ])
     );
-    let steps = r["recipeInstructions"]
+    let steps = recipe["recipeInstructions"]
         .as_array()
         .expect("recipeInstructions should be an array");
     assert_eq!(steps.len(), 3, "one step per <p> in e-instructions");
@@ -740,26 +746,29 @@ async fn scrape_jsonld_merges_native_and_microformats2() {
             <div class="h-card"><span class="p-name">Ada</span></div>
         "#;
     let schema = scrape_jsonld(&html.into()).await;
-    let recipes: Vec<_> = schema.iter().filter(|v| v["@type"] == "Recipe").collect();
+    let recipes: Vec<_> = schema
+        .iter()
+        .filter(|entity| entity["@type"] == "Recipe")
+        .collect();
     assert_eq!(
         recipes.len(),
         1,
         "double-encoded Recipe merged: {schema:#?}"
     );
-    let r = recipes[0];
-    assert_eq!(r["name"], "Cheesecake Bars");
+    let recipe = recipes[0];
+    assert_eq!(recipe["name"], "Cheesecake Bars");
     assert!(
-        r.to_string().contains("cream cheese"),
-        "Microdata ingredient kept: {r:#?}"
+        recipe.to_string().contains("cream cheese"),
+        "Microdata ingredient kept: {recipe:#?}"
     );
-    let steps = r["recipeInstructions"]
+    let steps = recipe["recipeInstructions"]
         .as_array()
         .expect("steps filled from mf2");
-    assert_eq!(steps.len(), 2, "two e-instructions steps: {r:#?}");
+    assert_eq!(steps.len(), 2, "two e-instructions steps: {recipe:#?}");
     assert!(
         schema
             .iter()
-            .any(|v| v["@type"] == "Person" && v["name"] == "Ada"),
+            .any(|entity| entity["@type"] == "Person" && entity["name"] == "Ada"),
         "h-card Person unified in: {schema:#?}"
     );
 }
@@ -779,16 +788,16 @@ fn scrape_embed_reddit_permalink_array() {
         ]}},
         {"kind":"Listing","data":{"children":[]}}
     ]"#;
-    let r = reddit(body);
-    assert_eq!(value(&r, "reddit:title"), Some("Hello World"));
-    assert_eq!(value(&r, "reddit:text"), Some("Body text here"));
-    assert_eq!(value(&r, "reddit:author"), Some("u/spez"));
+    let metadata = reddit(body);
+    assert_eq!(value(&metadata, "reddit:title"), Some("Hello World"));
+    assert_eq!(value(&metadata, "reddit:text"), Some("Body text here"));
+    assert_eq!(value(&metadata, "reddit:author"), Some("u/spez"));
     // No link destination, so the preview thumbnail is the image.
     assert_eq!(
-        value(&r, "reddit:image"),
+        value(&metadata, "reddit:image"),
         Some("https://b.thumbs.redditmedia.com/x.jpg")
     );
-    assert_eq!(value(&r, "reddit:video"), None);
+    assert_eq!(value(&metadata, "reddit:video"), None);
 }
 
 #[test]
@@ -797,11 +806,11 @@ fn scrape_embed_reddit_empty_fields_are_absent() {
     let body = r#"[{"kind":"Listing","data":{"children":[
         {"kind":"t3","data":{"title":"Top Post","selftext":"","author":"alice","thumbnail":"self"}}
     ]}}]"#;
-    let r = reddit(body);
-    assert_eq!(value(&r, "reddit:title"), Some("Top Post"));
-    assert_eq!(value(&r, "reddit:text"), None);
-    assert_eq!(value(&r, "reddit:author"), Some("u/alice"));
-    assert_eq!(value(&r, "reddit:image"), None);
+    let metadata = reddit(body);
+    assert_eq!(value(&metadata, "reddit:title"), Some("Top Post"));
+    assert_eq!(value(&metadata, "reddit:text"), None);
+    assert_eq!(value(&metadata, "reddit:author"), Some("u/alice"));
+    assert_eq!(value(&metadata, "reddit:image"), None);
 }
 
 #[test]
@@ -812,33 +821,36 @@ fn scrape_embed_reddit_splits_video_and_image_honestly() {
         "title":"Clip","thumbnail":"https://b.thumbs/x.jpg",
         "secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/x/DASH_720.mp4"}}
     }}]}}]"#;
-    let r = reddit(video);
+    let metadata = reddit(video);
     assert_eq!(
-        value(&r, "reddit:video"),
+        value(&metadata, "reddit:video"),
         Some("https://v.redd.it/x/DASH_720.mp4")
     );
-    assert_eq!(value(&r, "reddit:image"), Some("https://b.thumbs/x.jpg"));
+    assert_eq!(
+        value(&metadata, "reddit:image"),
+        Some("https://b.thumbs/x.jpg")
+    );
 
-    let image_dest = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+    let image_destination = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Pic","thumbnail":"https://b.thumbs/x.jpg",
         "url_overridden_by_dest":"https://i.redd.it/full.png"
     }}]}}]"#;
-    let r = reddit(image_dest);
+    let metadata = reddit(image_destination);
     assert_eq!(
-        value(&r, "reddit:image"),
+        value(&metadata, "reddit:image"),
         Some("https://i.redd.it/full.png")
     );
-    assert_eq!(value(&r, "reddit:video"), None);
+    assert_eq!(value(&metadata, "reddit:video"), None);
 
-    let article_dest = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
+    let article_destination = r#"[{"kind":"Listing","data":{"children":[{"kind":"t3","data":{
         "title":"Link","url_overridden_by_dest":"https://news.example/story"
     }}]}}]"#;
-    let r = reddit(article_dest);
+    let metadata = reddit(article_destination);
     assert!(
-        value(&r, "reddit:image").is_none(),
+        value(&metadata, "reddit:image").is_none(),
         "an article link is neither image nor video"
     );
-    assert_eq!(value(&r, "reddit:video"), None);
+    assert_eq!(value(&metadata, "reddit:video"), None);
 }
 
 #[test]
@@ -854,14 +866,14 @@ fn scrape_embed_oembed_fields() {
         "thumbnail_url":"https://i.example/t.jpg",
         "html":"<iframe></iframe>"
     }"#;
-    let r = scrape_embed(&Embed::Oembed(body.to_string()));
-    assert_eq!(value(&r, "oembed:title"), Some("My Video"));
-    assert_eq!(value(&r, "oembed:author_name"), Some("Creator"));
+    let metadata = scrape_embed(&Embed::Oembed(body.to_string()));
+    assert_eq!(value(&metadata, "oembed:title"), Some("My Video"));
+    assert_eq!(value(&metadata, "oembed:author_name"), Some("Creator"));
     assert_eq!(
-        value(&r, "oembed:thumbnail_url"),
+        value(&metadata, "oembed:thumbnail_url"),
         Some("https://i.example/t.jpg")
     );
-    assert_eq!(r.len(), 3);
+    assert_eq!(metadata.len(), 3);
 }
 
 #[test]
@@ -873,13 +885,13 @@ fn scrape_embed_reddit_comment_is_the_comment_not_its_post() {
             {"data":{"id":"def","body":"the comment","author":"commenter"}}
         ]}}
     ]"#;
-    let r = scrape_embed(&Embed::RedditJson {
+    let metadata = scrape_embed(&Embed::RedditJson {
         body: body.to_string(),
         comment_id: Some("def".to_string()),
     });
-    assert_eq!(value(&r, "reddit:title"), Some("Post title"));
-    assert_eq!(value(&r, "reddit:text"), Some("the comment"));
-    assert_eq!(value(&r, "reddit:author"), Some("u/commenter"));
+    assert_eq!(value(&metadata, "reddit:title"), Some("Post title"));
+    assert_eq!(value(&metadata, "reddit:text"), Some("the comment"));
+    assert_eq!(value(&metadata, "reddit:author"), Some("u/commenter"));
 }
 
 use crate::types::{Embed, Metadata};
@@ -887,8 +899,8 @@ use crate::types::{Embed, Metadata};
 fn value<'a>(metadata: &'a Metadata, key: &str) -> Option<&'a str> {
     metadata
         .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
 }
 
 fn reddit(body: &str) -> Metadata {
@@ -900,10 +912,13 @@ fn reddit(body: &str) -> Metadata {
 
 #[test]
 fn scrape_embed_reddit_link_post_keeps_its_destination() {
-    let r = reddit(
+    let metadata = reddit(
         r#"[{"data":{"children":[{"data":{"title":"Link","url_overridden_by_dest":"https://news.example/story"}}]}}]"#,
     );
-    assert_eq!(value(&r, "reddit:url"), Some("https://news.example/story"));
+    assert_eq!(
+        value(&metadata, "reddit:url"),
+        Some("https://news.example/story")
+    );
 }
 
 #[tokio::test]
@@ -1107,9 +1122,9 @@ async fn a_value_stored_once_survives_a_spent_copy_budget() {
 #[tokio::test]
 async fn thousands_of_entities_each_keep_every_property_and_merge_fast() {
     let entries: String = (0..4_000)
-        .map(|n| {
+        .map(|number| {
             format!(
-                "<div class=\"h-entry\"><a class=\"p-name u-url\" href=\"https://example.com/posts/{n}\">Entry {n}</a></div>"
+                "<div class=\"h-entry\"><a class=\"p-name u-url\" href=\"https://example.com/posts/{number}\">Entry {number}</a></div>"
             )
         })
         .collect();

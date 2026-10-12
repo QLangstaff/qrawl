@@ -35,13 +35,13 @@ fn windows_has_chrome_headers() {
     assert_eq!(
         headers
             .get("sec-ch-ua-platform")
-            .and_then(|v| v.to_str().ok()),
+            .and_then(|value| value.to_str().ok()),
         Some("\"Windows\"")
     );
     assert_eq!(
         headers
             .get("sec-ch-ua-mobile")
-            .and_then(|v| v.to_str().ok()),
+            .and_then(|value| value.to_str().ok()),
         Some("?0")
     );
 }
@@ -56,24 +56,24 @@ fn ios_has_safari_headers() {
 #[test]
 fn is_suspicious_cloudflare_challenge() {
     let html = padded_html("Checking your browser before accessing... cf-browser-verification");
-    let err = validate_response(StatusCode::OK, &html).unwrap_err();
-    assert!(err.to_string().contains("suspicious"));
-    assert!(err.to_string().contains("cf-browser-verification"));
+    let error = validate_response(StatusCode::OK, &html).unwrap_err();
+    assert!(error.to_string().contains("suspicious"));
+    assert!(error.to_string().contains("cf-browser-verification"));
 }
 
 #[test]
 fn is_suspicious_cloudflare_captcha() {
     let html = padded_html("Please complete the captcha to continue. cf-captcha-container");
-    let err = validate_response(StatusCode::OK, &html).unwrap_err();
-    assert!(err.to_string().contains("suspicious"));
-    assert!(err.to_string().contains("please complete the captcha"));
+    let error = validate_response(StatusCode::OK, &html).unwrap_err();
+    assert!(error.to_string().contains("suspicious"));
+    assert!(error.to_string().contains("please complete the captcha"));
 }
 
 #[test]
 fn is_suspicious_perimeter_x_challenge() {
     let html = padded_html(r#"<div id="px-captcha"></div>"#);
-    let err = validate_response(StatusCode::OK, &html).unwrap_err();
-    assert_eq!(err, crate::errors::QrawlError::BotChallenge("px-captcha"));
+    let error = validate_response(StatusCode::OK, &html).unwrap_err();
+    assert_eq!(error, crate::errors::QrawlError::BotChallenge("px-captcha"));
 }
 
 #[test]
@@ -86,9 +86,9 @@ fn a_page_that_loads_the_perimeterx_sensor_is_not_a_challenge() {
 #[test]
 fn is_suspicious_generic_captcha() {
     let html = padded_html("Please solve this captcha to verify you are a human");
-    let err = validate_response(StatusCode::OK, &html).unwrap_err();
-    assert!(err.to_string().contains("suspicious"));
-    assert!(err.to_string().contains("verify you are a human"));
+    let error = validate_response(StatusCode::OK, &html).unwrap_err();
+    assert!(error.to_string().contains("suspicious"));
+    assert!(error.to_string().contains("verify you are a human"));
 }
 
 #[test]
@@ -119,15 +119,15 @@ fn validate_response_non_success_status() {
 #[test]
 fn detect_body_too_short() {
     let html = r#"<html><body>Short</body></html>"#;
-    let err = validate_response(StatusCode::OK, html).unwrap_err();
-    assert!(err.to_string().contains("body is too short"));
+    let error = validate_response(StatusCode::OK, html).unwrap_err();
+    assert!(error.to_string().contains("body is too short"));
 }
 
 #[test]
 fn detect_non_html_content() {
     let json = r#"{"status": "ok", "data": "This is JSON not HTML but has enough length to pass the minimum length check so we need more text here to make it realistic. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore. And some additional text to ensure we exceed 500 bytes."}"#;
-    let err = validate_response(StatusCode::OK, json).unwrap_err();
-    assert!(err.to_string().contains("missing HTML markers"));
+    let error = validate_response(StatusCode::OK, json).unwrap_err();
+    assert!(error.to_string().contains("missing HTML markers"));
 }
 
 #[test]
@@ -227,8 +227,8 @@ async fn host_cap_serializes_excess_callers() {
             drop(permit);
         }));
     }
-    for h in handles {
-        h.await.unwrap();
+    for handle in handles {
+        handle.await.unwrap();
     }
     let elapsed = start.elapsed();
 

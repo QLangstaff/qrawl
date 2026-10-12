@@ -78,7 +78,9 @@ pub(crate) fn listed_domain(entry: &str) -> String {
             .unwrap_or(without_wildcard);
         without_path
             .rsplit_once(':')
-            .filter(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+            .filter(|(_, port)| {
+                !port.is_empty() && port.chars().all(|character| character.is_ascii_digit())
+            })
             .map_or(without_path, |(host, _port)| host)
             .to_string()
     });
@@ -131,7 +133,9 @@ fn names_a_host(input: &str) -> bool {
         // A bracketed IPv6 address, with an optional port after it.
         Some(bracketed) => return bracketed.contains(']'),
         None => match authority.rsplit_once(':') {
-            Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            Some((host, port))
+                if !port.is_empty() && port.chars().all(|character| character.is_ascii_digit()) =>
+            {
                 host
             }
             Some(_) => return false,
@@ -147,9 +151,9 @@ fn names_a_host(input: &str) -> bool {
     // aren't ASCII.
     let is_label = |label: &&str| {
         !label.is_empty()
-            && label
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            && label.chars().all(|character| {
+                character.is_alphanumeric() || character == '-' || character == '_'
+            })
     };
     let is_ipv4 = labels.len() == 4 && labels.iter().all(|label| label.parse::<u8>().is_ok());
     // A TLD is letters, or punycode (`xn--p1ai`).
@@ -391,8 +395,8 @@ impl TreeSink for DepthBounded {
         self.sink.finish()
     }
 
-    fn parse_error(&mut self, msg: Cow<'static, str>) {
-        self.sink.parse_error(msg)
+    fn parse_error(&mut self, message: Cow<'static, str>) {
+        self.sink.parse_error(message)
     }
 
     fn get_document(&mut self) -> NodeId {

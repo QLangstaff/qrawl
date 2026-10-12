@@ -43,14 +43,14 @@ impl std::fmt::Display for CanonicalUrl {
 }
 
 impl From<&str> for CanonicalUrl {
-    fn from(s: &str) -> Self {
-        Self::new(s)
+    fn from(raw: &str) -> Self {
+        Self::new(raw)
     }
 }
 
 impl From<String> for CanonicalUrl {
-    fn from(s: String) -> Self {
-        Self::new(&s)
+    fn from(raw: String) -> Self {
+        Self::new(&raw)
     }
 }
 

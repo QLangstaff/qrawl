@@ -65,14 +65,14 @@ pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemap
     let host = host?;
     if HOST_SEMAPHORES.len() >= MAX_TRACKED_HOSTS {
         // A semaphore only the map holds has no fetch waiting on it.
-        HOST_SEMAPHORES.retain(|_, sema| Arc::strong_count(sema) > 1);
+        HOST_SEMAPHORES.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
         HOST_PROFILE_CACHE.clear();
     }
-    let sema = HOST_SEMAPHORES
+    let semaphore = HOST_SEMAPHORES
         .entry(host.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
         .clone();
-    sema.acquire_owned().await.ok()
+    semaphore.acquire_owned().await.ok()
 }
 
 fn client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
@@ -158,7 +158,9 @@ pub(super) fn attempt_order(
     cached: Option<FetchProfile>,
 ) -> Vec<FetchProfile> {
     let mut order = profiles.to_vec();
-    if let Some(index) = cached.and_then(|cached| order.iter().position(|p| *p == cached)) {
+    if let Some(index) =
+        cached.and_then(|cached| order.iter().position(|profile| *profile == cached))
+    {
         order[..=index].rotate_right(1);
     }
     order
@@ -245,7 +247,9 @@ async fn send(
         .await
         .map_err(|error| {
             // A redirect the domain filter refused surfaces as a reqwest error.
-            match std::error::Error::source(&error).and_then(|s| s.downcast_ref::<QrawlError>()) {
+            match std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<QrawlError>())
+            {
                 Some(blocked) => blocked.clone(),
                 None if error.is_redirect() => QrawlError::TooManyRedirects(url.to_string()),
                 None => QrawlError::Request(error.to_string()),

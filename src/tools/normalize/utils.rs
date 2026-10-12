@@ -90,9 +90,9 @@ pub(super) fn normalize_unicode(text: &str) -> String {
 /// - Zero Width No-Break Space / BOM (U+FEFF)
 pub(super) fn remove_zero_width_chars(text: &str) -> String {
     text.chars()
-        .filter(|c| {
+        .filter(|character| {
             !matches!(
-                *c,
+                *character,
                 '\u{200B}' | // Zero width space
                 '\u{200C}' | // Zero width non-joiner
                 '\u{200D}' | // Zero width joiner
@@ -108,8 +108,8 @@ pub(super) fn remove_zero_width_chars(text: &str) -> String {
 /// We keep \n and \t as they're commonly used for formatting.
 pub(super) fn remove_control_chars(text: &str) -> String {
     text.chars()
-        .map(|c| if c == '\r' { '\n' } else { c })
-        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .map(|character| if character == '\r' { '\n' } else { character })
+        .filter(|character| !character.is_control() || *character == '\n' || *character == '\t')
         .collect()
 }
 
@@ -156,7 +156,7 @@ fn normalize_any_url(url: &str) -> String {
     };
 
     let mut parsed = match Url::parse(&url_with_protocol) {
-        Ok(u) => u,
+        Ok(parsed_url) => parsed_url,
         Err(_) => return url.to_string(), // Keep malformed URLs as-is
     };
 
@@ -310,13 +310,13 @@ pub(super) fn normalize_email(email: &str) -> String {
     result = result.to_ascii_lowercase();
 
     // Validate: must have exactly one @, and domain must have valid TLD
-    if let Some(at_pos) = result.find('@') {
+    if let Some(at_position) = result.find('@') {
         // Must have exactly one @
         if result.matches('@').count() != 1 {
             return String::new();
         }
 
-        let (_local, domain) = result.split_at(at_pos);
+        let (_local, domain) = result.split_at(at_position);
         let domain = &domain[1..]; // Skip the @
 
         // Domain must have at least one dot
@@ -326,7 +326,9 @@ pub(super) fn normalize_email(email: &str) -> String {
 
         // Get TLD (last segment after final dot)
         if let Some(tld) = domain.split('.').next_back() {
-            if !TLD_LEN.contains(&tld.len()) || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+            if !TLD_LEN.contains(&tld.len())
+                || !tld.chars().all(|character| character.is_ascii_alphabetic())
+            {
                 return String::new();
             }
 
@@ -359,8 +361,8 @@ pub(super) fn normalize_phone(phone: &str) -> String {
     let mut result = phone.trim().to_string();
 
     // RFC 3966 parameters (`;ext=12`, `;phone-context=…`) aren't the number.
-    if let Some(pos) = result.find(';') {
-        result.truncate(pos);
+    if let Some(position) = result.find(';') {
+        result.truncate(position);
     }
 
     // The match starts at the number's last digit, which stays.
@@ -375,7 +377,10 @@ pub(super) fn normalize_phone(phone: &str) -> String {
     if has_plus {
         result = result.replace("(0)", "");
     }
-    let digits: String = result.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits: String = result
+        .chars()
+        .filter(|character| character.is_ascii_digit())
+        .collect();
 
     if has_plus {
         format!("+{}", digits)
@@ -425,7 +430,9 @@ impl TokenSink for FirstToken {
                     Some(Opening::StartTag(tag.name.to_string()))
                 }
                 // Whitespace as the parser defines it: ASCII only.
-                Token::CharacterTokens(text) if text.bytes().all(|b| b.is_ascii_whitespace()) => {
+                Token::CharacterTokens(text)
+                    if text.bytes().all(|byte| byte.is_ascii_whitespace()) =>
+                {
                     None
                 }
                 Token::CommentToken(_) | Token::ParseError(_) | Token::EOFToken => None,
@@ -510,7 +517,11 @@ pub(super) fn normalize_markup(html: &str) -> String {
                     // In source order: `scraper`'s `deterministic` feature.
                     for (qualified, value) in &element.attrs {
                         // A foreign element's `xmlns` gets an empty prefix.
-                        let name = match qualified.prefix.as_deref().filter(|p| !p.is_empty()) {
+                        let name = match qualified
+                            .prefix
+                            .as_deref()
+                            .filter(|prefix| !prefix.is_empty())
+                        {
                             Some(prefix) => format!("{prefix}:{}", qualified.local),
                             None => qualified.local.to_string(),
                         };
@@ -562,9 +573,9 @@ fn is_junk_attribute(name: &str) -> bool {
 /// where it meets the whitespace already written. A non-breaking space is
 /// content, not layout, and stays.
 fn push_collapsed(out: &mut String, text: &str) {
-    for c in text.chars() {
-        if !c.is_ascii_whitespace() {
-            out.push(c);
+    for character in text.chars() {
+        if !character.is_ascii_whitespace() {
+            out.push(character);
         } else if !out.ends_with(' ') {
             out.push(' ');
         }

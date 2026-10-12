@@ -44,7 +44,7 @@ pub(crate) fn social_parts(input: &str) -> Option<SocialParts> {
 /// Non-empty path segments.
 fn path_segments(url: &Url) -> Vec<&str> {
     url.path_segments()
-        .map(|segments| segments.filter(|s| !s.is_empty()).collect())
+        .map(|segments| segments.filter(|segment| !segment.is_empty()).collect())
         .unwrap_or_default()
 }
 
@@ -183,7 +183,7 @@ fn facebook_parts(segments: &[&str], url: &Url) -> Parts {
 
 fn pinterest_parts(segments: &[&str]) -> Parts {
     match segments {
-        ["pin", id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
+        ["pin", id, ..] if id.chars().all(|character| character.is_ascii_digit()) => {
             (Some(SocialKind::Post), Some((*id).to_string()), None)
         }
         // A profile's tabs (`_saved`, `_created`, `pins`) aren't boards.
@@ -257,7 +257,7 @@ fn linkedin_parts(segments: &[&str]) -> Parts {
 
 fn vimeo_parts(segments: &[&str]) -> Parts {
     match segments {
-        [id, ..] if id.chars().all(|c| c.is_ascii_digit()) => {
+        [id, ..] if id.chars().all(|character| character.is_ascii_digit()) => {
             (Some(SocialKind::Video), Some((*id).to_string()), None)
         }
         [user] if !is_reserved_vimeo(user) => profile(account(user)),
@@ -265,9 +265,9 @@ fn vimeo_parts(segments: &[&str]) -> Parts {
     }
 }
 
-fn is_reserved_vimeo(s: &str) -> bool {
+fn is_reserved_vimeo(segment: &str) -> bool {
     matches!(
-        s,
+        segment,
         "categories"
             | "channels"
             | "groups"
@@ -286,9 +286,9 @@ fn is_reserved_vimeo(s: &str) -> bool {
 }
 
 // First-segment words that are routes, not usernames.
-fn is_reserved_instagram(s: &str) -> bool {
+fn is_reserved_instagram(segment: &str) -> bool {
     matches!(
-        s,
+        segment,
         "p" | "reel"
             | "reels"
             | "tv"
@@ -315,10 +315,10 @@ fn is_pinterest_route(segment: &str) -> bool {
 }
 
 /// A `.php` segment is a script (`login.php`, `share.php`), never a profile.
-fn is_reserved_facebook(s: &str) -> bool {
-    s.ends_with(".php")
+fn is_reserved_facebook(segment: &str) -> bool {
+    segment.ends_with(".php")
         || matches!(
-            s,
+            segment,
             "watch"
                 | "privacy"
                 | "policies"
@@ -340,9 +340,9 @@ fn is_reserved_facebook(s: &str) -> bool {
         )
 }
 
-fn is_reserved_pinterest(s: &str) -> bool {
+fn is_reserved_pinterest(segment: &str) -> bool {
     matches!(
-        s,
+        segment,
         "pin"
             | "search"
             | "ideas"
@@ -361,9 +361,9 @@ fn is_reserved_pinterest(s: &str) -> bool {
     )
 }
 
-fn is_reserved_twitter(s: &str) -> bool {
+fn is_reserved_twitter(segment: &str) -> bool {
     matches!(
-        s,
+        segment,
         "home"
             | "privacy"
             | "tos"
@@ -389,6 +389,6 @@ fn is_reserved_twitter(s: &str) -> bool {
 /// A query parameter's value, where present and not empty.
 fn query_value(url: &Url, key: &str) -> Option<String> {
     url.query_pairs()
-        .find(|(k, v)| k == key && !v.is_empty())
-        .map(|(_, v)| v.into_owned())
+        .find(|(name, value)| name == key && !value.is_empty())
+        .map(|(_, value)| value.into_owned())
 }

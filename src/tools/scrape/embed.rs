@@ -53,7 +53,7 @@ fn reddit_fields(body: &str, comment_id: Option<&str>) -> Fields {
     let Some(post) = reddit_first_post(&value) else {
         return Vec::new();
     };
-    let author = |item: &Value| json_string(item.get("author")).map(|a| format!("u/{}", a));
+    let author = |item: &Value| json_string(item.get("author")).map(|name| format!("u/{}", name));
     let title = (REDDIT_TITLE, json_string(post.get("title")));
 
     if let Some(comment_id) = comment_id {
@@ -104,16 +104,18 @@ fn reddit_first_post(value: &Value) -> Option<&Value> {
 /// thumbnail; otherwise fall back to the thumbnail.
 fn reddit_image(post: &Value) -> Option<String> {
     json_string(post.get("url_overridden_by_dest"))
-        .filter(|u| is_image_url(u))
-        .or_else(|| json_string(post.get("thumbnail")).filter(|t| t.starts_with("http")))
+        .filter(|url| is_image_url(url))
+        .or_else(|| {
+            json_string(post.get("thumbnail")).filter(|thumbnail| thumbnail.starts_with("http"))
+        })
 }
 
 /// Only a genuinely playable Reddit-hosted video — never the `url_overridden_by_dest`
 /// catch-all, which can be an image or an external link.
 fn reddit_video(post: &Value) -> Option<String> {
     post.get("secure_media")
-        .and_then(|m| m.get("reddit_video"))
-        .and_then(|v| v.get("fallback_url"))
+        .and_then(|media| media.get("reddit_video"))
+        .and_then(|reddit_video| reddit_video.get("fallback_url"))
         .and_then(Value::as_str)
         .map(str::to_string)
 }
@@ -135,6 +137,6 @@ fn json_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|text| !text.is_empty())
         .map(str::to_string)
 }
