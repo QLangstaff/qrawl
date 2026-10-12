@@ -18,7 +18,7 @@ use crate::types::{Html, SocialPlatform};
 
 mod social;
 
-pub(crate) use social::social_parts;
+pub(crate) use social::{pinterest_pin_id, social_parts};
 
 /// Selector for anchor elements with hrefs.
 pub(crate) static LINK_SELECTOR: LazyLock<Selector> =

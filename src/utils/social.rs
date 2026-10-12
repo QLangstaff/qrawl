@@ -182,10 +182,12 @@ fn facebook_parts(segments: &[&str], url: &Url) -> Parts {
 }
 
 fn pinterest_parts(segments: &[&str]) -> Parts {
-    match segments {
-        ["pin", id, ..] if id.chars().all(|character| character.is_ascii_digit()) => {
-            (Some(SocialKind::Post), Some((*id).to_string()), None)
+    if let ["pin", segment, ..] = segments {
+        if let Some(id) = pinterest_pin_id(segment) {
+            return (Some(SocialKind::Post), Some(id.to_string()), None);
         }
+    }
+    match segments {
         // A profile's tabs (`_saved`, `_created`, `pins`) aren't boards.
         [user, tab] if !is_pinterest_route(user) && is_pinterest_tab(tab) => profile(account(user)),
         [user, board] if !is_pinterest_route(user) && account(board).is_some() => {
@@ -300,6 +302,14 @@ fn is_reserved_instagram(segment: &str) -> bool {
             | "developer"
             | "legal"
     )
+}
+
+/// The id in the path segment after `/pin/`: the segment itself (`<id>`), or
+/// the digits after its last `--` (`<title>--<id>`). `None` when it holds no
+/// id, so it names no pin.
+pub(crate) fn pinterest_pin_id(segment: &str) -> Option<&str> {
+    let id = segment.rsplit_once("--").map_or(segment, |(_title, id)| id);
+    (!id.is_empty() && id.chars().all(|character| character.is_ascii_digit())).then_some(id)
 }
 
 /// A Pinterest profile's tab: a `_`-prefixed segment (`_saved`, `_created`),

@@ -980,6 +980,35 @@ fn test_normalize_social_strips_mobile_prefix() {
 }
 
 #[test]
+fn test_normalize_social_names_a_pinterest_pin_by_its_id() {
+    // A pin's title can change; its id can't. Both addresses are one URL.
+    for url in [
+        "https://www.pinterest.com/pin/easy-chocolate-chip-cookie-recipe--2674081024908126/",
+        "https://pinterest.com/pin/2674081024908126",
+    ] {
+        assert_eq!(
+            normalize_url(url),
+            "https://pinterest.com/pin/2674081024908126",
+            "{url}"
+        );
+    }
+    // What follows the pin segment is kept.
+    assert_eq!(
+        normalize_url("https://pinterest.com/pin/cookies--123/sent/?invite=1"),
+        "https://pinterest.com/pin/123/sent?invite=1"
+    );
+    // Not a pin, or not Pinterest: the path is kept as written.
+    for url in [
+        "https://pinterest.com/pin/cookies--",
+        "https://pinterest.com/someuser/cookies--123",
+        "https://facebook.com/pin/cookies--123",
+        "https://example.com/pin/cookies--123",
+    ] {
+        assert_eq!(normalize_url(url), url, "{url}");
+    }
+}
+
+#[test]
 fn test_normalize_social_is_web_safe() {
     // A non-social host gets only the general pass — a functional `?s=` and an
     // `m.` host survive (no platform → no social rules).

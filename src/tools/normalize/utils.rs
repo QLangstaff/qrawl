@@ -6,9 +6,10 @@ use url::Url;
 
 use html5ever::tokenizer::{TagKind, Token, TokenSink, TokenSinkResult};
 
+use crate::types::SocialPlatform;
 use crate::utils::{
     absolute_url, canonical_domain, host_of_url, parse_document_bounded, parse_fragment_bounded,
-    social_platform, tokenize_until, PHONE_EXTENSION, TLD_LEN,
+    pinterest_pin_id, social_platform, tokenize_until, PHONE_EXTENSION, TLD_LEN,
 };
 
 // Lazy static regex for whitespace normalization
@@ -196,7 +197,8 @@ fn normalize_any_url(url: &str) -> String {
 /// Performs the general pass (`normalize_any_url`), then — for a recognized
 /// social platform only — strips a mobile host prefix (`m.`/`mobile.`) and the
 /// share / referrer tokens (`si`, `s`, `feature`, …) that would otherwise
-/// split one item across look-alike URLs. A plain web page keeps a functional
+/// split one item across look-alike URLs, and names a Pinterest pin by its id
+/// (`/pin/<title>--<id>` → `/pin/<id>`). A plain web page keeps a functional
 /// `?s=`.
 pub fn normalize_url(url: &str) -> String {
     let normalized = normalize_any_url(url);
@@ -208,9 +210,9 @@ pub fn normalize_url(url: &str) -> String {
     };
     // Social rules apply only to recognized platforms (so a plain web page keeps
     // a functional `?s=` / `?ref=` and its `m.` host).
-    if social_platform(&host).is_none() {
+    let Some(platform) = social_platform(&host) else {
         return normalized;
-    }
+    };
 
     // Strip a mobile host prefix (the `vm.`/`vt.` shorteners are kept on purpose).
     let mut desktop_host = host.as_str();
@@ -226,7 +228,27 @@ pub fn normalize_url(url: &str) -> String {
     let query = kept_query(&parsed, |key| !is_social_tracker(key), false);
     parsed.set_query(query.as_deref());
 
+    if platform == SocialPlatform::Pinterest {
+        if let Some(path) = pinterest_pin_path(parsed.path()) {
+            parsed.set_path(&path);
+        }
+    }
+
     serialize(&parsed)
+}
+
+/// A Pinterest pin's path with its pin segment reduced to the id
+/// (`/pin/<title>--<id>` → `/pin/<id>`): a pin's title can change, its id
+/// can't. `None` when `path` is no pin's.
+fn pinterest_pin_path(path: &str) -> Option<String> {
+    let (segment, rest) = path
+        .strip_prefix("/pin/")
+        .map(|after| after.split_once('/').unwrap_or((after, "")))?;
+    let id = pinterest_pin_id(segment)?;
+    Some(match rest {
+        "" => format!("/pin/{id}"),
+        rest => format!("/pin/{id}/{rest}"),
+    })
 }
 
 /// `url` as a string, without the `/` the `url` crate writes for an empty

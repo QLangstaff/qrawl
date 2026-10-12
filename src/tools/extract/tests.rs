@@ -278,6 +278,28 @@ fn pinterest_pin_board_profile() {
     assert_eq!(pin.kind, Some(SocialKind::Post));
     assert_eq!(pin.id.as_deref(), Some("12345"));
 
+    // The titled form names the same pin: its id is the digits after the last `--`.
+    for url in [
+        "https://www.pinterest.com/pin/easy-chocolate-chip-cookie-recipe--12345/",
+        "https://pinterest.com/pin/cookies--2--12345",
+    ] {
+        let titled = social(url);
+        assert_eq!(titled.kind, Some(SocialKind::Post), "{url}");
+        assert_eq!(titled.id.as_deref(), Some("12345"), "{url}");
+    }
+
+    // A title with no id is not a pin.
+    for url in [
+        "https://pinterest.com/pin/easy-chocolate-chip-cookie-recipe",
+        "https://pinterest.com/pin/cookies--",
+        "https://pinterest.com/pin/cookies--12a45",
+        "https://pinterest.com/pin/cookies-12345",
+    ] {
+        let untitled = social(url);
+        assert_eq!(untitled.kind, None, "{url}");
+        assert_eq!(untitled.id, None, "{url}");
+    }
+
     let board = social("https://pinterest.com/someuser/recipes");
     assert_eq!(board.kind, Some(SocialKind::Collection));
     assert_eq!(board.id.as_deref(), Some("recipes"));
