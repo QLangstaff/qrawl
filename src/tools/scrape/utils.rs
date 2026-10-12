@@ -74,16 +74,57 @@ pub(super) fn scrape_body_from_document(document: &scraper::Html) -> Html {
 /// Microdata + RDFa + Microformats2, with cross-encoding entities merged (same
 /// `@type` + `name`).
 pub(super) fn scrape_jsonld_from_document(document: &scraper::Html) -> Jsonld {
-    let mut items = jsonld_entities(document);
+    let mut items = with_current_property_names(jsonld_entities(document));
     // One copy budget for the three encodings.
     reset_copy_budget(document);
-    merge_schema_entities(&mut items, microdata_items(document));
-    merge_schema_entities(&mut items, rdfa_items(document));
     merge_schema_entities(
         &mut items,
-        microformats_to_schema(&microformat_items(document)),
+        with_current_property_names(microdata_items(document)),
+    );
+    merge_schema_entities(
+        &mut items,
+        with_current_property_names(rdfa_items(document)),
+    );
+    merge_schema_entities(
+        &mut items,
+        with_current_property_names(microformats_to_schema(&microformat_items(document))),
     );
     items
+}
+
+/// schema.org properties it has superseded, each with the name that
+/// supersedes it (`supersededBy` on the property's schema.org page).
+const SUPERSEDED_PROPERTIES: [(&str, &str); 1] = [("ingredients", "recipeIngredient")];
+
+/// The entities with every superseded property, nested ones too, under the
+/// name that supersedes it, so a caller reads one name whatever the page wrote.
+fn with_current_property_names(mut entities: Jsonld) -> Jsonld {
+    entities.iter_mut().for_each(rename_superseded_properties);
+    entities
+}
+
+/// A node that has both names keeps the current one's value, unless that value
+/// is empty. `@context` defines terms and a `@value` object is a literal, so
+/// neither holds a property.
+fn rename_superseded_properties(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => items.iter_mut().for_each(rename_superseded_properties),
+        serde_json::Value::Object(fields) if !fields.contains_key("@value") => {
+            for (superseded, current) in SUPERSEDED_PROPERTIES {
+                let Some(superseded_value) = fields.remove(superseded) else {
+                    continue;
+                };
+                if fields.get(current).is_none_or(schema_property_is_empty) {
+                    fields.insert(current.to_string(), superseded_value);
+                }
+            }
+            fields
+                .iter_mut()
+                .filter(|(key, _)| key.as_str() != "@context")
+                .for_each(|(_, nested)| rename_superseded_properties(nested));
+        }
+        _ => {}
+    }
 }
 
 /// The entities a document's JSON-LD scripts declare, each `@graph` opened.

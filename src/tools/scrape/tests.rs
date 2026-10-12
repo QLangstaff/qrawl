@@ -1269,3 +1269,88 @@ async fn one_documents_copies_do_not_spend_the_next_documents_budget() {
     assert_eq!(cards[0]["properties"]["name"][0], "Jane");
     assert_eq!(cards[0]["properties"]["nickname"][0], "Jane");
 }
+
+// schema.org superseded Recipe `ingredients` with `recipeIngredient`; every
+// encoding the merged view reads returns the current name.
+#[tokio::test]
+async fn scrape_jsonld_returns_a_superseded_property_under_its_current_name() {
+    let microdata = r#"
+            <div itemscope itemtype="https://schema.org/Recipe">
+              <span itemprop="name">Strawberry Pie</span>
+              <span itemprop="ingredients">1 pie crust</span>
+              <span itemprop="ingredients">4 cups strawberries</span>
+            </div>
+        "#;
+    let rdfa = r#"
+            <div vocab="https://schema.org/" typeof="Recipe">
+              <span property="name">Strawberry Pie</span>
+              <span property="ingredients">1 pie crust</span>
+              <span property="ingredients">4 cups strawberries</span>
+            </div>
+        "#;
+    let jsonld = r#"
+            <script type="application/ld+json">
+              {"@type": "Recipe", "name": "Strawberry Pie",
+               "ingredients": ["1 pie crust", "4 cups strawberries"]}
+            </script>
+        "#;
+    for html in [microdata, rdfa, jsonld] {
+        let schema = scrape_jsonld(&html.into()).await;
+        assert_eq!(schema.len(), 1, "{html}");
+        assert_eq!(
+            schema[0]["recipeIngredient"],
+            serde_json::json!(["1 pie crust", "4 cups strawberries"]),
+            "{html}"
+        );
+        assert!(schema[0].get("ingredients").is_none(), "{html}");
+    }
+}
+
+// A node with both names keeps the current one's value; an empty current
+// value is filled from the superseded one. Nested nodes are renamed too.
+#[tokio::test]
+async fn scrape_jsonld_drops_a_superseded_property_beside_its_current_name() {
+    let html = r#"
+            <script type="application/ld+json">
+              [{"@type": "Recipe", "name": "Both",
+                "ingredients": ["old"], "recipeIngredient": ["current"]},
+               {"@type": "Recipe", "name": "Empty current",
+                "ingredients": ["old"], "recipeIngredient": []},
+               {"@type": "ItemList", "name": "Nested",
+                "itemListElement": [{"@type": "Recipe", "ingredients": ["old"]}]}]
+            </script>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    assert_eq!(
+        serde_json::Value::Array(schema.to_vec()),
+        serde_json::json!([
+            {"@type": "Recipe", "name": "Both", "recipeIngredient": ["current"]},
+            {"@type": "Recipe", "name": "Empty current", "recipeIngredient": ["old"]},
+            {"@type": "ItemList", "name": "Nested",
+             "itemListElement": [{"@type": "Recipe", "recipeIngredient": ["old"]}]}
+        ])
+    );
+}
+
+// The Microdata card names its ingredients the old way and the h-recipe the
+// current way: one merged Recipe, the first source's ingredients kept.
+#[tokio::test]
+async fn scrape_jsonld_merges_a_superseded_property_with_its_current_name() {
+    let html = r#"
+            <div itemscope itemtype="https://schema.org/Recipe">
+              <span itemprop="name">Pie</span>
+              <span itemprop="ingredients">from microdata</span>
+            </div>
+            <div class="h-recipe">
+              <span class="p-name">Pie</span>
+              <span class="p-ingredient">from microformats</span>
+            </div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    assert_eq!(
+        serde_json::Value::Array(schema.to_vec()),
+        serde_json::json!([
+            {"@type": "Recipe", "name": "Pie", "recipeIngredient": "from microdata"}
+        ])
+    );
+}
