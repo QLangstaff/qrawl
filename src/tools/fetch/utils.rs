@@ -104,6 +104,36 @@ pub(super) fn validate_response(
     Ok(())
 }
 
+/// Path markers of a consent interstitial: the page a site redirects a visitor
+/// without its consent cookie to, in place of the page asked for. No list
+/// names every one; a wall at another path, or served at the address asked
+/// for, is read as the page.
+const CONSENT_PATH_MARKERS: [&str; 1] = [
+    // derstandard.at answers `/story/<id>/<slug>` with a 302 to
+    // `/consent/tcf/story/<id>/<slug>` (seen 2026-10-11). Its IAB TCF markup
+    // (`__tcfapi`) is no marker: the article carries it too.
+    "/consent/tcf/",
+];
+
+/// Reject a response a redirect took to a consent interstitial: `served`'s
+/// path has a [`CONSENT_PATH_MARKERS`] entry that `requested`'s doesn't.
+pub(super) fn check_consent_interstitial(
+    requested: &str,
+    served: &reqwest::Url,
+) -> Result<(), QrawlError> {
+    let requested_path = reqwest::Url::parse(requested)
+        .map(|requested| requested.path().to_string())
+        .unwrap_or_default();
+    let is_interstitial = CONSENT_PATH_MARKERS
+        .iter()
+        .any(|marker| served.path().contains(marker) && !requested_path.contains(marker));
+    if is_interstitial {
+        Err(QrawlError::ConsentInterstitial(served.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Reject a non-2xx status.
 pub(super) fn check_status(status_code: reqwest::StatusCode) -> Result<(), QrawlError> {
     if status_code.is_success() {

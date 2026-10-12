@@ -1,7 +1,7 @@
 use super::client::build_client_for_profile;
 use super::headers::headers_for_profile;
 use super::types::FetchProfile;
-use super::utils::{check_status, validate_response};
+use super::utils::{check_consent_interstitial, check_status, validate_response};
 use crate::errors::QrawlError;
 use crate::types::FetchStrategy;
 use crate::utils::host_of;
@@ -97,6 +97,7 @@ pub(super) async fn fetch_html(
         let bytes = read_body(&mut response).await?;
         let (body, _, _) = encoding.decode(&bytes);
         validate_response(status, &body)?;
+        check_consent_interstitial(url, response.url())?;
         Ok((served_by, body.into_owned()))
     })
     .await
@@ -209,9 +210,12 @@ where
             }
             // A missing page is missing under every profile, a redirect the
             // domain filter refused stays refused, a size is the server's, and
-            // a loop a cookie-keeping client ran into is a loop.
+            // a loop or a consent interstitial a cookie-keeping client ran into
+            // is one for every profile.
             Err(error) if error.is_final() => return Err(error),
-            Err(error @ QrawlError::TooManyRedirects(_)) if profile.keeps_cookies() => {
+            Err(error @ (QrawlError::TooManyRedirects(_) | QrawlError::ConsentInterstitial(_)))
+                if profile.keeps_cookies() =>
+            {
                 return Err(error)
             }
             Err(error) => {

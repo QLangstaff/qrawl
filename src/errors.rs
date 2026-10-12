@@ -25,6 +25,10 @@ pub enum QrawlError {
     /// The body is a bot challenge; the marker found.
     #[error("suspicious content - {0}")]
     BotChallenge(&'static str),
+    /// A redirect led to a consent interstitial, not the page; the address
+    /// that served it.
+    #[error("consent interstitial: {0}")]
+    ConsentInterstitial(String),
     /// The request never completed: connection, TLS, timeout, or a body that
     /// couldn't be read.
     #[error("HTTP request failed: {0}")]
@@ -38,8 +42,9 @@ pub enum QrawlError {
 impl QrawlError {
     /// Whether another fetch profile could not change the outcome. A 3xx
     /// status is one the client couldn't follow (an invalid `Location`), which
-    /// no profile can. A redirect loop may be a cookie the client didn't keep,
-    /// so it's final only after a profile that keeps cookies looped.
+    /// no profile can. A redirect loop or a consent interstitial may be a
+    /// cookie the client didn't keep, so it's final only after a profile that
+    /// keeps cookies met it.
     pub(crate) fn is_final(&self) -> bool {
         matches!(
             self,

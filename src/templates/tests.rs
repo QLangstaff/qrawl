@@ -805,6 +805,93 @@ mod local_site {
         assert!(page.is_ok(), "{page:?}");
     }
 
+    /// A site whose `/story` redirects a visitor to its consent interstitial,
+    /// and whose `/s` is a shortlink to `/item`.
+    fn consent_wall(path: &str) -> Reply {
+        match path {
+            "/story" => Reply::Redirect("/consent/tcf/story".to_string()),
+            "/s" => Reply::Redirect("/item".to_string()),
+            "/consent/tcf/story" | "/item" => Reply::Html(listing_page(path, "", &[])),
+            _ => Reply::NotFound,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_onto_a_consent_interstitial_is_a_failed_fetch() {
+        let site = TestSite::serve(consent_wall).await;
+
+        let wall = Context::auto()
+            .scope(fetch_strategy(&site.url("/story")))
+            .await;
+        assert_eq!(
+            wall,
+            Err(QrawlError::ConsentInterstitial(
+                site.url("/consent/tcf/story")
+            ))
+        );
+        // Two requests per profile. The first profile that keeps cookies ends
+        // it; trying all three would make it 6.
+        assert!(
+            (2..=4).contains(&site.hits()),
+            "{} requests for one wall",
+            site.hits()
+        );
+
+        let fast = Context::fast()
+            .scope(fetch_strategy(&site.url("/story")))
+            .await;
+        assert!(
+            matches!(fast, Err(QrawlError::ConsentInterstitial(_))),
+            "{fast:?}"
+        );
+
+        // An ordinary redirect is followed, and so is the interstitial's own
+        // address when it is the one asked for.
+        for (asked, served) in [
+            ("/s", "/item"),
+            ("/consent/tcf/story", "/consent/tcf/story"),
+        ] {
+            let page = Context::auto()
+                .scope(fetch_strategy(&site.url(asked)))
+                .await
+                .unwrap_or_else(|error| panic!("{asked}: {error}"));
+            assert_eq!(page.address, site.url(served));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_consent_interstitial_is_not_stood_in_for_the_page() {
+        let site = TestSite::serve(consent_wall).await;
+        let page = qrawl_any_url(&site.url("/story"), Context::auto()).await;
+        assert!(
+            matches!(page, Err(QrawlError::ConsentInterstitial(_))),
+            "{page:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consent_interstitial_a_cookie_gets_past_is_followed_by_a_profile_that_keeps_it() {
+        let site = TestSite::serve_requests(|request: &Request| {
+            let consented = request
+                .cookie
+                .is_some_and(|cookie| cookie.contains("consent=yes"));
+            match (request.path, consented) {
+                ("/story", false) => {
+                    Reply::RedirectWithCookie("/consent/tcf/story".to_string(), "consent=yes")
+                }
+                ("/consent/tcf/story", true) => Reply::Redirect("/story".to_string()),
+                _ => Reply::Html(listing_page(request.path, "", &[])),
+            }
+        })
+        .await;
+
+        let page = Context::auto()
+            .scope(fetch_strategy(&site.url("/story")))
+            .await
+            .expect("the profile that keeps the cookie reads the page");
+        assert_eq!(page.address, site.url("/story"));
+    }
+
     #[test]
     fn a_page_that_makes_the_parser_untangle_formatting_over_and_over_is_refused_early() {
         use crate::utils::parse_document_bounded;
