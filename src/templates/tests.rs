@@ -229,7 +229,7 @@ mod local_site {
         let fetched = fetch_strategy(&target.address).await.ok()?;
         Some(Visited {
             url: target.url,
-            item: fetched.url,
+            item: fetched.address,
             children: Vec::new(),
         })
     }

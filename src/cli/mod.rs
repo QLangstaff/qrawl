@@ -220,7 +220,7 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
             eprintln!(
                 "✓ Fetched {} bytes from {}",
                 fetched.html.as_str().len(),
-                fetched.url
+                fetched.address
             );
         }
 
@@ -228,7 +228,7 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
             let fetched = fetch(&url, context).await;
             write_json(
                 out,
-                &tools::map::map_children(&fetched.html, &fetched.url).await,
+                &tools::map::map_children(&fetched.html, &fetched.address).await,
             );
         }
 
@@ -236,7 +236,7 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
             let fetched = fetch(&url, context).await;
             write_json(
                 out,
-                &tools::map::map_page(&fetched.html, &fetched.url).await,
+                &tools::map::map_page(&fetched.html, &fetched.address).await,
             );
         }
 

@@ -35,9 +35,9 @@ pub async fn fetch_strategy(url: &str) -> Result<Fetched, QrawlError> {
 
 async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<Fetched, QrawlError> {
     check_request(url)?;
-    let (url, html) = strategies::fetch_html(url, strategy).await?;
+    let (address, html) = strategies::fetch_html(url, strategy).await?;
     Ok(Fetched {
-        url,
+        address,
         html: Html::new(html),
     })
 }

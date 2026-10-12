@@ -78,7 +78,7 @@ pub(super) async fn page_content(
     // no item.
     let url = fetched.as_ref().map_or_else(
         || target.url.clone(),
-        |fetched| CanonicalUrl::new(&fetched.url),
+        |fetched| CanonicalUrl::new(&fetched.address),
     );
     let item = |url: &CanonicalUrl| {
         extract_social_parts(url.as_str()).map(|social| (social.platform, social.kind, social.id))
@@ -107,7 +107,7 @@ pub(super) async fn page_content(
     // when asked.
     let ((body, page_metadata, structured), links, children) = match &fetched {
         Some(fetched) => {
-            let served_by = fetched.url.clone();
+            let served_by = fetched.address.clone();
             with_document(&fetched.html, move |document| {
                 let children = match children {
                     Children::Map => map_children_from_document(document, &served_by),
@@ -141,7 +141,7 @@ pub(super) async fn page_content(
     let page = PageContent {
         address: fetched
             .as_ref()
-            .map_or_else(|| target.address.clone(), |fetched| fetched.url.clone()),
+            .map_or_else(|| target.address.clone(), |fetched| fetched.address.clone()),
         url,
         platform: social.as_ref().map(|social| social.platform),
         kind: social.as_ref().and_then(|social| social.kind),

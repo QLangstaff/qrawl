@@ -69,7 +69,7 @@ macro_rules! chain {
     // The one I/O primitive: fetch each URL, drop failures, pair with its body.
     (@op $items:expr, fetch) => {
         $crate::tools::batch::batch($items, $crate::types::get_concurrency(), |url: String| async move {
-            $crate::tools::fetch::fetch_strategy(&url).await.ok().map(|fetched| (fetched.url, fetched.html))
+            $crate::tools::fetch::fetch_strategy(&url).await.ok().map(|fetched| (fetched.address, fetched.html))
         })
         .await
         .into_iter()

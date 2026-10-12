@@ -2,10 +2,10 @@ use crate::types::Html;
 
 /// A fetched page: its HTML and the URL that served it, which differs from
 /// the URL requested when the server redirected. Relative links in `html`
-/// resolve against `url`.
+/// resolve against `address`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched {
-    pub url: String,
+    pub address: String,
     pub html: Html,
 }
 
