@@ -773,6 +773,101 @@ async fn scrape_jsonld_merges_native_and_microformats2() {
     );
 }
 
+// A Jetpack recipe card as WordPress serves it: inside `hfeed` and `hentry`,
+// so the h-recipe is a child two roots down. Its Microdata has no steps; its
+// directions are bare text, a stray `</p>`, one `<p>…</p>` and an unclosed
+// `<p>`. One merged Recipe comes back, with all three steps.
+#[tokio::test]
+async fn scrape_jsonld_keeps_an_h_recipe_nested_in_hfeed_and_hentry() {
+    let html = r#"
+            <div class="hfeed site">
+              <article class="post type-post hentry">
+                <h1 class="entry-title">Brussels Sprouts Salad</h1>
+                <div class="hrecipe h-recipe jetpack-recipe" itemscope itemtype="https://schema.org/Recipe">
+                  <h3 class="p-name jetpack-recipe-title fn" itemprop="name">Brussels Sprouts Salad</h3>
+                  <ul>
+                    <li class="jetpack-recipe-ingredient p-ingredient ingredient" itemprop="recipeIngredient">1 red onion</li>
+                    <li class="jetpack-recipe-ingredient p-ingredient ingredient" itemprop="recipeIngredient">2 cups brussels sprouts</li>
+                  </ul>
+                  <div class="jetpack-recipe-directions e-instructions">Make the pickled onions.</p>
+<p>Combine all salad ingredients.</p>
+<p>Keep the dressing off until serving.</div>
+                </div>
+              </article>
+            </div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    let recipes: Vec<_> = schema
+        .iter()
+        .filter(|entity| entity["@type"] == "Recipe")
+        .collect();
+    assert_eq!(recipes.len(), 1, "one merged Recipe: {schema:#?}");
+    assert_eq!(
+        recipes[0]["recipeIngredient"],
+        serde_json::json!(["1 red onion", "2 cups brussels sprouts"])
+    );
+    assert_eq!(
+        recipes[0]["recipeInstructions"],
+        serde_json::json!([
+            "Make the pickled onions.",
+            "Combine all salad ingredients.",
+            "Keep the dressing off until serving."
+        ])
+    );
+}
+
+// Every nested root is emitted, parent first, at any depth: the feed's two
+// entries and the recipe inside the second, then the root after the feed.
+#[tokio::test]
+async fn scrape_jsonld_emits_each_nested_microformat_in_document_order() {
+    let html = r#"
+            <div class="h-feed">
+              <div class="h-entry"><span class="p-name">Post 1</span></div>
+              <div class="h-entry">
+                <span class="p-name">Post 2</span>
+                <div class="h-recipe"><span class="p-name">Soup</span></div>
+              </div>
+            </div>
+            <div class="h-card"><span class="p-name">Ada</span></div>
+        "#;
+    let schema = scrape_jsonld(&html.into()).await;
+    let entities: Vec<_> = schema
+        .iter()
+        .map(|entity| (entity["@type"].as_str(), entity["name"].as_str()))
+        .collect();
+    assert_eq!(
+        entities,
+        [
+            (Some("Article"), Some("Post 1")),
+            (Some("Article"), Some("Post 2")),
+            (Some("Recipe"), Some("Soup")),
+            (Some("Person"), Some("Ada")),
+        ]
+    );
+}
+
+// Text before a list is a label, not a step: the `<li>` items alone are the
+// steps, as they are when the label sits in its own `<p>`.
+#[tokio::test]
+async fn microformats2_a_label_before_a_step_list_is_not_a_step() {
+    for label in ["Directions", "<p>Directions</p>"] {
+        let html = format!(
+            r#"
+            <div class="h-recipe">
+              <span class="p-name">Soup</span>
+              <div class="e-instructions">{label}<ol><li>Chop.</li><li>Simmer.</li></ol></div>
+            </div>
+        "#
+        );
+        let schema = scrape_jsonld(&html.into()).await;
+        assert_eq!(
+            schema[0]["recipeInstructions"],
+            serde_json::json!(["Chop.", "Simmer."]),
+            "label {label:?}"
+        );
+    }
+}
+
 // ===== Embed readers (pure, no network) =====
 
 #[test]

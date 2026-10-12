@@ -1195,10 +1195,17 @@ fn schema_property_is_empty(value: &serde_json::Value) -> bool {
 // ---------------------------------------------------------------------------
 
 pub(super) fn microformats_to_schema(items: &Microformats) -> Jsonld {
-    items
-        .iter()
-        .filter_map(microformat_item_to_schema)
-        .collect()
+    // Every item and each of its `children` at any depth, parent first: a
+    // recipe card inside `hentry` inside `hfeed` is an entity of the page too.
+    let mut entities = Vec::new();
+    let mut pending: Vec<&serde_json::Value> = items.iter().rev().collect();
+    while let Some(item) = pending.pop() {
+        entities.extend(microformat_item_to_schema(item));
+        if let Some(children) = item.get("children").and_then(serde_json::Value::as_array) {
+            pending.extend(children.iter().rev());
+        }
+    }
+    entities
 }
 
 /// Convert one Microformats2 item to a schema.org-shaped object, or `None` if its type is
@@ -1373,12 +1380,13 @@ fn push_nonempty(out: &mut Vec<serde_json::Value>, text: &str) {
 }
 
 /// Split an `e-*` HTML fragment into step texts: prefer `<li>`, else `<p>`.
-/// Empty when there are no block children (the caller falls back to the flat
-/// `value`).
+/// Text before the first block is a paragraph of its own: the fragment is
+/// parsed inside an open `<p>`, which the parser closes at the first block.
+/// Empty when there is no text (the caller falls back to the flat `value`).
 fn split_e_blocks(html: &str) -> Vec<String> {
-    let frag = scraper::Html::parse_fragment(html);
+    let fragment = scraper::Html::parse_fragment(&format!("<p>{html}"));
     for selector in [&*LI_SELECTOR, &*P_SELECTOR] {
-        let steps: Vec<String> = frag
+        let steps: Vec<String> = fragment
             .select(selector)
             .map(|element| {
                 element
