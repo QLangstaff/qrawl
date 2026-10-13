@@ -10,6 +10,9 @@ pub enum QrawlError {
     /// The `Context`'s domain lists reject this URL or a redirect from it.
     #[error("blocked by domain filter: {0}")]
     BlockedDomain(String),
+    /// A domain list entry isn't a domain name; the entry as typed.
+    #[error("Invalid domain `{0}`")]
+    InvalidDomain(String),
     /// The server answered with a non-2xx status.
     #[error("HTTP status {0}")]
     Status(u16),

@@ -1,5 +1,6 @@
 //! Shared Types
 
+use crate::errors::QrawlError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
@@ -22,6 +23,36 @@ pub const DEFAULT_CONCURRENCY: NonZeroUsize = match NonZeroUsize::new(1000) {
     None => panic!("default concurrency is nonzero"),
 };
 
+/// A domain name in the form hosts compare in: lowercased and IDNA-encoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalDomain(String);
+
+impl CanonicalDomain {
+    /// `domain` as a [`CanonicalDomain`], or [`QrawlError::InvalidDomain`]
+    /// when it isn't a domain name.
+    pub fn new(domain: &str) -> Result<CanonicalDomain, QrawlError> {
+        let invalid = || QrawlError::InvalidDomain(domain.to_string());
+        let encoded = idna::domain_to_ascii(domain).map_err(|_error| invalid())?;
+        let is_label = |label: &str| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        };
+        let has_www_prefix = encoded
+            .strip_prefix("www.")
+            .is_some_and(|rest| rest.contains('.'));
+        if !encoded.split('.').all(is_label) || has_www_prefix {
+            return Err(invalid());
+        }
+        Ok(CanonicalDomain(encoded))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// How every fetch inside a [`Context::scope`] behaves.
 #[derive(Debug, Clone)]
 pub struct Context {
@@ -30,9 +61,9 @@ pub struct Context {
     /// a crawl with no slots never finishes.
     pub concurrency: NonZeroUsize,
     /// Fetch only these domains, redirects included. Empty = allow all.
-    pub allow_domains: Vec<String>,
+    pub allow_domains: Vec<CanonicalDomain>,
     /// Never request these domains, redirects included. Empty = block none.
-    pub block_domains: Vec<String>,
+    pub block_domains: Vec<CanonicalDomain>,
 }
 
 impl Context {
@@ -60,12 +91,12 @@ impl Context {
         self
     }
 
-    pub fn with_allow_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn with_allow_domains(mut self, domains: Vec<CanonicalDomain>) -> Self {
         self.allow_domains = domains;
         self
     }
 
-    pub fn with_block_domains(mut self, domains: Vec<String>) -> Self {
+    pub fn with_block_domains(mut self, domains: Vec<CanonicalDomain>) -> Self {
         self.block_domains = domains;
         self
     }

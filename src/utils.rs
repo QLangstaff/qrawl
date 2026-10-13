@@ -65,28 +65,6 @@ pub(crate) fn canonical_domain(host: &str) -> String {
     apex.to_string()
 }
 
-/// The domain a list entry names, in [`canonical_domain`] form. An entry may
-/// be written as a host, a wildcard (`*.example.com`), a host with a port or
-/// a path, or a whole URL.
-pub(crate) fn listed_domain(entry: &str) -> String {
-    let entry = entry.trim();
-    let host = host_of(entry).unwrap_or_else(|| {
-        let without_wildcard = entry.trim_start_matches("*.").trim_start_matches('.');
-        let without_path = without_wildcard
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or(without_wildcard);
-        without_path
-            .rsplit_once(':')
-            .filter(|(_, port)| {
-                !port.is_empty() && port.chars().all(|character| character.is_ascii_digit())
-            })
-            .map_or(without_path, |(host, _port)| host)
-            .to_string()
-    });
-    canonical_domain(&host)
-}
-
 /// The `http(s)` URL `input` names — with `https://` when it names no scheme
 /// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `tel:911`,
 /// `ftp:`, a relative path, an email address, a bare word or number).

@@ -1,4 +1,5 @@
 #![cfg(test)]
+use crate::errors::QrawlError;
 use crate::tools::fetch::embed::{embed_request, oembed_request_url, reddit_json_url};
 use crate::tools::fetch::headers::headers_for_profile;
 use crate::tools::fetch::strategies::{
@@ -6,7 +7,7 @@ use crate::tools::fetch::strategies::{
 };
 use crate::tools::fetch::types::FetchProfile;
 use crate::tools::fetch::utils::{is_url_allowed, validate_response};
-use crate::types::{SocialKind, SocialParts, SocialPlatform};
+use crate::types::{CanonicalDomain, SocialKind, SocialParts, SocialPlatform};
 use crate::utils::host_matches;
 use reqwest::StatusCode;
 use std::time::{Duration, Instant};
@@ -142,7 +143,10 @@ fn host_matches_equal_and_subdomain() {
 
 #[test]
 fn is_url_allowed_block_list() {
-    let block = vec!["reddit.com".to_string(), "tiktok.com".to_string()];
+    let block = vec![
+        CanonicalDomain::new("reddit.com").unwrap(),
+        CanonicalDomain::new("tiktok.com").unwrap(),
+    ];
     assert!(!is_url_allowed("https://reddit.com/r/rust", &[], &block));
     assert!(!is_url_allowed(
         "https://old.reddit.com/r/rust",
@@ -154,7 +158,7 @@ fn is_url_allowed_block_list() {
 
 #[test]
 fn is_url_allowed_allow_list() {
-    let allow = vec!["example.com".to_string()];
+    let allow = vec![CanonicalDomain::new("example.com").unwrap()];
     assert!(is_url_allowed("https://example.com", &allow, &[]));
     assert!(is_url_allowed("https://sub.example.com", &allow, &[]));
     assert!(!is_url_allowed("https://reddit.com", &allow, &[]));
@@ -162,25 +166,25 @@ fn is_url_allowed_allow_list() {
 
 #[test]
 fn is_url_allowed_block_beats_allow() {
-    let allow = vec!["example.com".to_string()];
-    let block = vec!["bad.example.com".to_string()];
+    let allow = vec![CanonicalDomain::new("example.com").unwrap()];
+    let block = vec![CanonicalDomain::new("bad.example.com").unwrap()];
     assert!(!is_url_allowed("https://bad.example.com", &allow, &block));
     assert!(is_url_allowed("https://good.example.com", &allow, &block));
 }
 
 #[test]
 fn is_url_allowed_hostless_url_needs_no_allow_list() {
-    let allow = vec!["example.com".to_string()];
-    let block = vec!["reddit.com".to_string()];
+    let allow = vec![CanonicalDomain::new("example.com").unwrap()];
+    let block = vec![CanonicalDomain::new("reddit.com").unwrap()];
     assert!(is_url_allowed("mailto:a@example.com", &[], &block));
     assert!(!is_url_allowed("mailto:a@example.com", &allow, &[]));
 }
 
 #[test]
-fn is_url_allowed_ignores_case_and_www() {
-    let listed = vec!["WWW.Example.com".to_string()];
+fn is_url_allowed_ignores_the_case_and_www_of_a_host() {
+    let listed = vec![CanonicalDomain::new("Example.com").unwrap()];
     assert!(is_url_allowed("https://example.com/x", &listed, &[]));
-    assert!(!is_url_allowed("https://www.example.com/x", &[], &listed));
+    assert!(!is_url_allowed("https://WWW.Example.com/x", &[], &listed));
     assert!(!is_url_allowed("https://other.com/x", &listed, &[]));
 }
 
@@ -355,13 +359,13 @@ fn no_embed_request_for_listings_profiles_shortlinks_and_other_hosts() {
 
 #[test]
 fn is_url_allowed_blocks_a_fully_qualified_host() {
-    let block = vec!["example.com".to_string()];
+    let block = vec![CanonicalDomain::new("example.com").unwrap()];
     assert!(!is_url_allowed("https://example.com./a", &[], &block));
 }
 
 #[test]
-fn a_listed_domain_may_be_written_many_ways() {
-    for listed in [
+fn a_domain_entry_written_another_way_is_refused() {
+    for entry in [
         "example.com:8080",
         "example.com.",
         " example.com",
@@ -369,21 +373,64 @@ fn a_listed_domain_may_be_written_many_ways() {
         "example.com/path",
         "https://www.example.com/a",
     ] {
-        let block = vec![listed.to_string()];
-        assert!(
-            !is_url_allowed("https://sub.example.com/x", &[], &block),
-            "{listed}"
+        assert_eq!(
+            CanonicalDomain::new(entry),
+            Err(QrawlError::InvalidDomain(entry.to_string()))
         );
-        assert!(
-            is_url_allowed("https://other.com/x", &[], &block),
-            "{listed}"
+    }
+}
+
+#[test]
+fn canonical_domain_new_accepts_a_domain_name() {
+    for entry in [
+        "reddit.com",
+        "old.reddit.com",
+        "my-site.com",
+        "127.0.0.1",
+        "localhost",
+        "www.com",
+    ] {
+        assert_eq!(CanonicalDomain::new(entry).unwrap().as_str(), entry);
+    }
+    assert_eq!(
+        CanonicalDomain::new("Reddit.COM").unwrap().as_str(),
+        "reddit.com"
+    );
+    assert_eq!(
+        CanonicalDomain::new("münchen.de").unwrap().as_str(),
+        "xn--mnchen-3ya.de"
+    );
+    assert_eq!(
+        CanonicalDomain::new("MÜNCHEN.DE").unwrap().as_str(),
+        "xn--mnchen-3ya.de"
+    );
+}
+
+#[test]
+fn canonical_domain_new_refuses_what_is_not_a_domain_name() {
+    for entry in [
+        "www.reddit.com",
+        "*.reddit.com",
+        "reddit.com:8080",
+        "reddit.com/r/rust",
+        "https://reddit.com/r/rust",
+        "reddit.com.",
+        " reddit.com",
+        "",
+        "not a domain!",
+        // Letters, digits and hyphens, but no Punycode a name decodes from.
+        "xn--a.com",
+    ] {
+        assert_eq!(
+            CanonicalDomain::new(entry),
+            Err(QrawlError::InvalidDomain(entry.to_string()))
         );
     }
 }
 
 #[test]
 fn a_www_tld_entry_does_not_list_every_host_of_the_tld() {
-    let block = vec!["www.com".to_string()];
+    let block = vec![CanonicalDomain::new("www.com").unwrap()];
     assert!(!is_url_allowed("https://www.com/x", &[], &block));
     assert!(is_url_allowed("https://example.com/x", &[], &block));
 }

@@ -160,7 +160,7 @@ mod local_site {
     use crate::tools::fetch::fetch_strategy;
     use crate::tools::normalize::normalize_html;
     use crate::tools::scrape::scrape_all;
-    use crate::types::Context;
+    use crate::types::{CanonicalDomain, Context};
 
     fn context(concurrency: usize) -> Context {
         Context::fast().with_concurrency(NonZeroUsize::new(concurrency).unwrap())
@@ -414,10 +414,10 @@ mod local_site {
         let hits = site.hits();
         assert!(hits > 0);
 
-        for listed in ["127.0.0.1", "http://127.0.0.1/"] {
+        for listed in ["127.0.0.1"] {
             let blocked = qrawl_any_url(
                 &site.url("/b"),
-                context(4).with_block_domains(vec![listed.to_string()]),
+                context(4).with_block_domains(vec![CanonicalDomain::new(listed).unwrap()]),
             )
             .await;
             assert!(
@@ -427,7 +427,7 @@ mod local_site {
         }
         let allow_other = qrawl_any_url(
             &site.url("/b"),
-            context(4).with_allow_domains(vec!["example.com".to_string()]),
+            context(4).with_allow_domains(vec![CanonicalDomain::new("example.com").unwrap()]),
         )
         .await;
         assert!(matches!(allow_other, Err(QrawlError::BlockedDomain(_))));
@@ -447,7 +447,7 @@ mod local_site {
 
         let blocked = qrawl_any_url(
             &redirecting.url("/go"),
-            context(4).with_block_domains(vec!["localhost".to_string()]),
+            context(4).with_block_domains(vec![CanonicalDomain::new("localhost").unwrap()]),
         )
         .await;
         assert!(
@@ -714,7 +714,7 @@ mod local_site {
 
         let blocked = qrawl_any_url(
             &redirecting.url("/go"),
-            Context::auto().with_block_domains(vec!["localhost".to_string()]),
+            Context::auto().with_block_domains(vec![CanonicalDomain::new("localhost").unwrap()]),
         )
         .await;
 

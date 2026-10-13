@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 
 use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions};
 use crate::tools::fetch::Fetched;
-use crate::types::{Context, Html};
+use crate::types::{CanonicalDomain, Context, Html};
 use crate::{runtime, tools};
 
 #[derive(Parser)]
@@ -333,9 +333,15 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
             include_schemas,
             exclude_schemas,
         } => {
+            let canonical_domains = |domains: Vec<String>| -> Vec<CanonicalDomain> {
+                domains
+                    .iter()
+                    .map(|domain| CanonicalDomain::new(domain).unwrap_or_else(|error| fail(error)))
+                    .collect()
+            };
             let context = context
-                .with_allow_domains(allow_domains)
-                .with_block_domains(block_domains);
+                .with_allow_domains(canonical_domains(allow_domains))
+                .with_block_domains(canonical_domains(block_domains));
             let options = CrawlOptions::default()
                 .with_depth(depth)
                 .with_allow_urls(allow_urls)
