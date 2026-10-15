@@ -1,7 +1,6 @@
 use serde::Serialize;
 
-use crate::tools::normalize::CanonicalUrl;
-use crate::types::{Html, Jsonld, Metadata, SocialKind, SocialPlatform};
+use crate::types::{CanonicalUrl, Html, Jsonld, Metadata, SocialKind, SocialPlatform};
 
 /// Everything qrawl could pull from one URL — the one shape
 /// [`qrawl_any_url`](super::qrawl_any_url) and
@@ -69,8 +68,8 @@ pub const MAX_DEPTH: usize = 3;
 pub struct CrawlOptions {
     pub(super) depth: usize,
     pub(super) limit: Option<usize>,
-    pub(super) allow_urls: Vec<String>,
-    pub(super) block_urls: Vec<String>,
+    pub(super) allow_urls: Vec<CanonicalUrl>,
+    pub(super) block_urls: Vec<CanonicalUrl>,
     pub(super) include_schemas: Vec<String>,
     pub(super) exclude_schemas: Vec<String>,
 }
@@ -89,13 +88,13 @@ impl CrawlOptions {
     }
 
     /// Crawl only these URLs. Empty = allow all.
-    pub fn with_allow_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn with_allow_urls(mut self, urls: Vec<CanonicalUrl>) -> Self {
         self.allow_urls = urls;
         self
     }
 
     /// Skip these URLs.
-    pub fn with_block_urls(mut self, urls: Vec<String>) -> Self {
+    pub fn with_block_urls(mut self, urls: Vec<CanonicalUrl>) -> Self {
         self.block_urls = urls;
         self
     }

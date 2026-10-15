@@ -1,7 +1,7 @@
 #![cfg(test)]
 use crate::tools::normalize::utils::{decode_html_entities, normalize_email, normalize_phone};
 use crate::tools::normalize::*;
-use crate::utils::canonical_domain;
+use crate::types::CanonicalUrl;
 use crate::utils::TOKENIZE_CHUNK_BYTES;
 
 // Tests for normalize_text()
@@ -737,21 +737,26 @@ fn test_decode_html_entities() {
     assert_eq!(decode_html_entities("&nbsp;"), "\u{00A0}");
 }
 
+/// The canonical host of a URL string.
+fn host(url: &str) -> String {
+    CanonicalUrl::new(url).unwrap().host().to_string()
+}
+
 #[test]
-fn test_normalize_domain() {
+fn test_canonical_host() {
     // Basic lowercase
-    assert_eq!(canonical_domain("Example.com"), "example.com");
-    assert_eq!(canonical_domain("GITHUB.COM"), "github.com");
+    assert_eq!(host("https://Example.com"), "example.com");
+    assert_eq!(host("https://GITHUB.COM"), "github.com");
     // Strip www
-    assert_eq!(canonical_domain("www.example.com"), "example.com");
-    assert_eq!(canonical_domain("WWW.EXAMPLE.COM"), "example.com");
+    assert_eq!(host("https://www.example.com"), "example.com");
+    assert_eq!(host("https://WWW.EXAMPLE.COM"), "example.com");
     // Combined
-    assert_eq!(canonical_domain("WWW.GitHub.com"), "github.com");
+    assert_eq!(host("https://WWW.GitHub.com"), "github.com");
     // Don't strip www if it's the whole domain
-    assert_eq!(canonical_domain("www"), "www");
+    assert_eq!(host("https://www"), "www");
     // Subdomains preserved
-    assert_eq!(canonical_domain("api.example.com"), "api.example.com");
-    assert_eq!(canonical_domain("www.api.example.com"), "api.example.com");
+    assert_eq!(host("https://api.example.com"), "api.example.com");
+    assert_eq!(host("https://www.api.example.com"), "api.example.com");
 }
 
 #[test]
@@ -792,20 +797,20 @@ fn test_normalize_url() {
 
 #[test]
 fn test_canonical_url_new_canonicalizes() {
-    let url = CanonicalUrl::new("HTTP://www.Example.COM/path/?utm_source=x&id=7");
+    let url = CanonicalUrl::new("HTTP://www.Example.COM/path/?utm_source=x&id=7").unwrap();
     assert_eq!(url.as_str(), "https://example.com/path?id=7");
 }
 
 #[test]
 fn test_canonical_url_idempotent() {
-    let once = CanonicalUrl::new("https://Example.com/");
-    let twice = CanonicalUrl::new(once.as_str());
+    let once = CanonicalUrl::new("https://Example.com/").unwrap();
+    let twice = CanonicalUrl::new(once.as_str()).unwrap();
     assert_eq!(once, twice);
 }
 
 #[test]
 fn test_canonical_url_serialize_transparent() {
-    let url = CanonicalUrl::new("https://example.com");
+    let url = CanonicalUrl::new("https://example.com").unwrap();
     let json = serde_json::to_string(&url).unwrap();
     // Bare string, not a wrapper object.
     assert_eq!(json, "\"https://example.com\"");
@@ -820,11 +825,25 @@ fn test_canonical_url_deserialize_strict() {
 }
 
 #[test]
-fn test_canonical_url_from_str_and_string() {
-    let from_str: CanonicalUrl = "https://Example.com/".into();
-    let from_string: CanonicalUrl = String::from("https://Example.com/").into();
-    assert_eq!(from_str, from_string);
-    assert_eq!(from_str.as_str(), "https://example.com");
+fn canonical_url_new_refuses_what_is_not_a_url() {
+    for url in [
+        "not-a-url",
+        "mailto:hi@example.com",
+        "/relative/path",
+        "",
+        "https://./a",
+        "https://.../a",
+    ] {
+        assert!(CanonicalUrl::new(url).is_none(), "{url}");
+    }
+    assert!(serde_json::from_str::<CanonicalUrl>("\"not-a-url\"").is_err());
+}
+
+#[test]
+fn normalize_url_returns_what_is_not_an_http_url_unchanged() {
+    // The social rules apply only to a `CanonicalUrl`.
+    let ftp = "ftp://M.Reddit.com/r/rust/?si=1";
+    assert_eq!(normalize_url(ftp), ftp);
 }
 
 #[test]
@@ -1142,9 +1161,9 @@ fn dedupe_urls_keeps_the_first_address_of_each_page() {
 }
 
 #[test]
-fn canonical_domain_never_reduces_a_host_to_a_tld() {
-    assert_eq!(canonical_domain("www.com"), "www.com");
-    assert_eq!(canonical_domain("WWW.Example.com."), "example.com");
+fn a_canonical_host_is_never_reduced_to_a_tld() {
+    assert_eq!(host("https://www.com"), "www.com");
+    assert_eq!(host("https://WWW.Example.com."), "example.com");
     assert_eq!(normalize_url("https://www.com/a"), "https://www.com/a");
 }
 

@@ -9,7 +9,7 @@
 //! [`fetch_strategy`](super::fetch_strategy), which validates for HTML and
 //! would reject every JSON response.
 
-use crate::types::{Embed, SocialKind, SocialParts, SocialPlatform};
+use crate::types::{CanonicalUrl, Embed, SocialKind, SocialParts, SocialPlatform};
 use crate::utils::social_parts;
 
 use super::fetch_bytes;
@@ -22,10 +22,10 @@ use super::utils::check_domain_filter;
 /// of its items), an opaque shortlink, Instagram/Facebook/X/LinkedIn, which
 /// serve none without a token, and a URL the domain filter rejects. Also `None`
 /// when the request fails (logged at debug).
-pub async fn fetch_embed(url: &str) -> Option<Embed> {
+pub async fn fetch_embed(url: &CanonicalUrl) -> Option<Embed> {
     // The embed is served by another host (`youtu.be` → `www.youtube.com`), so
     // the item's own URL has to pass the filter too.
-    check_domain_filter(url).ok()?;
+    check_domain_filter(url.as_str(), url).ok()?;
     let (request, embed) = embed_request(url)?;
     match fetch_bytes(&request, None).await {
         Ok(bytes) => Some(embed(String::from_utf8_lossy(&bytes).into_owned())),
@@ -40,13 +40,13 @@ pub async fn fetch_embed(url: &str) -> Option<Embed> {
 type EmbedOf = Box<dyn FnOnce(String) -> Embed + Send>;
 
 /// The request that serves `url`'s embed, and the [`Embed`] its response is.
-pub(super) fn embed_request(url: &str) -> Option<(String, EmbedOf)> {
+pub(super) fn embed_request(url: &CanonicalUrl) -> Option<(String, EmbedOf)> {
     let social = social_parts(url)?;
     match (social.platform, social.kind) {
         (SocialPlatform::Reddit, Some(kind @ (SocialKind::Post | SocialKind::Comment))) => {
             let comment_id = social.id.filter(|_| kind == SocialKind::Comment);
             Some((
-                reddit_json_url(url),
+                reddit_json_url(url.as_str()),
                 Box::new(move |body| Embed::RedditJson { body, comment_id }),
             ))
         }

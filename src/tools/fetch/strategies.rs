@@ -3,8 +3,7 @@ use super::headers::headers_for_profile;
 use super::types::FetchProfile;
 use super::utils::{check_consent_interstitial, check_status, validate_response};
 use crate::errors::QrawlError;
-use crate::types::FetchStrategy;
-use crate::utils::host_of;
+use crate::types::{CanonicalUrl, FetchStrategy};
 use dashmap::DashMap;
 use encoding_rs::{Encoding, UTF_8};
 use reqwest::header::CONTENT_TYPE;
@@ -59,10 +58,8 @@ fn attempt_timeout(strategy: FetchStrategy) -> Duration {
     }
 }
 
-/// Acquire a permit for this host. `None` when the URL has no host, which skips
-/// the cap.
-pub(super) async fn acquire_host_permit(host: Option<&str>) -> Option<OwnedSemaphorePermit> {
-    let host = host?;
+/// Acquire a permit for this host.
+pub(super) async fn acquire_host_permit(host: &str) -> Option<OwnedSemaphorePermit> {
     if HOST_SEMAPHORES.len() >= MAX_TRACKED_HOSTS {
         // A semaphore only the map holds has no fetch waiting on it.
         HOST_SEMAPHORES.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
@@ -87,17 +84,18 @@ fn client_for_profile(profile: FetchProfile) -> Result<Client, QrawlError> {
 /// Fetch a page as text, validated as scrapable HTML, with the URL that
 /// served it.
 pub(super) async fn fetch_html(
-    url: &str,
+    address: &str,
+    url: &CanonicalUrl,
     strategy: FetchStrategy,
 ) -> Result<(String, String), QrawlError> {
-    cascade(url, strategy, None, |mut response| async move {
+    cascade(address, url, strategy, None, |mut response| async move {
         let status = response.status();
         let served_by = response.url().to_string();
         let encoding = declared_encoding(&response);
         let bytes = read_body(&mut response).await?;
         let (body, _, _) = encoding.decode(&bytes);
         validate_response(status, &body)?;
-        check_consent_interstitial(url, response.url())?;
+        check_consent_interstitial(address, response.url())?;
         Ok((served_by, body.into_owned()))
     })
     .await
@@ -140,11 +138,12 @@ async fn read_body(response: &mut Response) -> Result<Vec<u8>, QrawlError> {
 /// Fetch raw bytes (images, PDFs, JSON). Skips the HTML validation, and sends
 /// `referer` for hosts with hotlink protection.
 pub(super) async fn fetch_bytes(
-    url: &str,
+    address: &str,
+    url: &CanonicalUrl,
     strategy: FetchStrategy,
     referer: Option<&str>,
 ) -> Result<Vec<u8>, QrawlError> {
-    cascade(url, strategy, referer, |mut response| async move {
+    cascade(address, url, strategy, referer, |mut response| async move {
         check_status(response.status())?;
         read_body(&mut response).await
     })
@@ -167,10 +166,11 @@ pub(super) fn attempt_order(
     order
 }
 
-/// Send `url` with each of the strategy's profiles, in [`attempt_order`],
+/// Send `address` with each of the strategy's profiles, in [`attempt_order`],
 /// until `read` accepts a response.
 async fn cascade<T, Read, Fut>(
-    url: &str,
+    address: &str,
+    url: &CanonicalUrl,
     strategy: FetchStrategy,
     referer: Option<&str>,
     read: Read,
@@ -180,28 +180,23 @@ where
     Fut: Future<Output = Result<T, QrawlError>>,
 {
     let start = Instant::now();
-    let host = host_of(url);
-    let _permit = acquire_host_permit(host.as_deref()).await;
+    let _permit = acquire_host_permit(url.host()).await;
 
-    let cached = host
-        .as_ref()
-        .and_then(|host| HOST_PROFILE_CACHE.get(host).map(|profile| *profile));
+    let cached = HOST_PROFILE_CACHE.get(url.host()).map(|profile| *profile);
     let profiles = attempt_order(profiles(strategy), cached);
 
     let mut errors = Vec::new();
     for (attempt, profile) in profiles.iter().enumerate() {
-        let result = match send(url, *profile, referer, attempt_timeout(strategy)).await {
+        let result = match send(address, *profile, referer, attempt_timeout(strategy)).await {
             Ok(response) => read(response).await,
             Err(error) => Err(error),
         };
         match result {
             Ok(value) => {
-                if let Some(host) = host {
-                    HOST_PROFILE_CACHE.insert(host, *profile);
-                }
+                HOST_PROFILE_CACHE.insert(url.host().to_string(), *profile);
                 log::info!(
                     "fetched {} via {:?} in {}ms ({} attempts)",
-                    url,
+                    address,
                     profile,
                     start.elapsed().as_millis(),
                     attempt + 1
@@ -219,7 +214,7 @@ where
                 return Err(error)
             }
             Err(error) => {
-                log::debug!("{} via {:?} failed: {}", url, profile, error);
+                log::debug!("{} via {:?} failed: {}", address, profile, error);
                 errors.push(error);
             }
         }

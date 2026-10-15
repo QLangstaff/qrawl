@@ -1,5 +1,9 @@
 //! Shared Types
 
+mod canonical_url;
+
+pub use canonical_url::CanonicalUrl;
+
 use crate::errors::QrawlError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,13 +43,23 @@ impl CanonicalDomain {
                     .chars()
                     .all(|character| character.is_ascii_alphanumeric() || character == '-')
         };
-        let has_www_prefix = encoded
-            .strip_prefix("www.")
-            .is_some_and(|rest| rest.contains('.'));
-        if !encoded.split('.').all(is_label) || has_www_prefix {
+        if !encoded.split('.').all(is_label) {
+            return Err(invalid());
+        }
+        // A domain is written the way a URL's host comes out, so that it can
+        // match one: `www.reddit.com` and `m.facebook.com` never do.
+        let is_a_canonical_host = CanonicalUrl::new(&format!("https://{encoded}"))
+            .is_some_and(|url| url.host() == encoded);
+        if !is_a_canonical_host {
             return Err(invalid());
         }
         Ok(CanonicalDomain(encoded))
+    }
+
+    /// `domain` as a [`CanonicalDomain`], unchecked: for the crate's own
+    /// table of social domains, which [`CanonicalDomain::new`] reads.
+    pub(crate) fn new_unchecked(domain: &str) -> CanonicalDomain {
+        CanonicalDomain(domain.to_string())
     }
 
     pub fn as_str(&self) -> &str {

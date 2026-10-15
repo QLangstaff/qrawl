@@ -3,8 +3,7 @@ use std::collections::HashSet;
 use futures_util::stream::StreamExt;
 
 use crate::tools::classify::classify_has_schema_type;
-use crate::tools::normalize::CanonicalUrl;
-use crate::types::{Context, Jsonld};
+use crate::types::{CanonicalUrl, Context, Jsonld};
 
 use super::types::{CrawlOptions, PageContent};
 use super::utils::{crawl, page_content, Children, Visited};
@@ -61,10 +60,10 @@ pub async fn qrawl_many_urls(
         include_schemas,
         exclude_schemas,
     } = options;
-    let canonical_set = |urls: &[String]| -> HashSet<CanonicalUrl> {
-        urls.iter().map(|url| CanonicalUrl::new(url)).collect()
-    };
-    let (allow_urls, block_urls) = (canonical_set(&allow_urls), canonical_set(&block_urls));
+    let (allow_urls, block_urls): (HashSet<CanonicalUrl>, HashSet<CanonicalUrl>) = (
+        allow_urls.into_iter().collect(),
+        block_urls.into_iter().collect(),
+    );
     let admit = move |url: &CanonicalUrl| {
         (allow_urls.is_empty() || allow_urls.contains(url)) && !block_urls.contains(url)
     };

@@ -160,7 +160,13 @@ mod local_site {
     use crate::tools::fetch::fetch_strategy;
     use crate::tools::normalize::normalize_html;
     use crate::tools::scrape::scrape_all;
-    use crate::types::{CanonicalDomain, Context};
+    use crate::types::{CanonicalDomain, CanonicalUrl, Context};
+
+    fn canonical_urls(urls: &[String]) -> Vec<CanonicalUrl> {
+        urls.iter()
+            .map(|url| CanonicalUrl::new(url).expect("valid URL"))
+            .collect()
+    }
 
     fn context(concurrency: usize) -> Context {
         Context::fast().with_concurrency(NonZeroUsize::new(concurrency).unwrap())
@@ -326,7 +332,7 @@ mod local_site {
 
         let blocked = qrawl_many_urls(
             seeds(),
-            depth(2).with_block_urls(vec![site.url("/x")]),
+            depth(2).with_block_urls(canonical_urls(&[site.url("/x")])),
             context(4),
         )
         .await;
@@ -339,7 +345,7 @@ mod local_site {
 
         let allowed = qrawl_many_urls(
             seeds(),
-            depth(2).with_allow_urls(vec![site.url("/a"), site.url("/c")]),
+            depth(2).with_allow_urls(canonical_urls(&[site.url("/a"), site.url("/c")])),
             context(4),
         )
         .await;
@@ -574,7 +580,7 @@ mod local_site {
 
         let blocked = qrawl_many_urls(
             vec![site.url("/old")],
-            CrawlOptions::default().with_block_urls(vec![site.url("/new")]),
+            CrawlOptions::default().with_block_urls(canonical_urls(&[site.url("/new")])),
             context(1),
         )
         .await;
@@ -805,13 +811,24 @@ mod local_site {
         assert!(page.is_ok(), "{page:?}");
     }
 
+    #[tokio::test]
+    async fn a_redirect_to_an_address_that_is_no_url_fails_the_fetch() {
+        let site = TestSite::serve(|_path| Reply::Redirect("https://./a".to_string())).await;
+        let page = Context::auto().scope(fetch_strategy(&site.url("/r"))).await;
+        assert_eq!(page, Err(QrawlError::InvalidUrl("https://./a".to_string())));
+        // Final: the cascade didn't try its other two profiles.
+        assert_eq!(site.hits(), 1);
+    }
+
     /// A site whose `/story` redirects a visitor to its consent interstitial,
     /// and whose `/s` is a shortlink to `/item`.
     fn consent_wall(path: &str) -> Reply {
         match path {
             "/story" => Reply::Redirect("/consent/tcf/story".to_string()),
             "/s" => Reply::Redirect("/item".to_string()),
-            "/consent/tcf/story" | "/item" => Reply::Html(listing_page(path, "", &[])),
+            "/consent/tcf/story" | "/consent/tcf/" | "/item" => {
+                Reply::Html(listing_page(path, "", &[]))
+            }
             _ => Reply::NotFound,
         }
     }
@@ -850,6 +867,9 @@ mod local_site {
         for (asked, served) in [
             ("/s", "/item"),
             ("/consent/tcf/story", "/consent/tcf/story"),
+            // The requested address, not its canonical form, which has no
+            // trailing slash and so no marker.
+            ("/consent/tcf/", "/consent/tcf/"),
         ] {
             let page = Context::auto()
                 .scope(fetch_strategy(&site.url(asked)))

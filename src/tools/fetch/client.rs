@@ -1,6 +1,7 @@
 use super::types::FetchProfile;
 use super::utils::check_domain_filter;
 use crate::errors::QrawlError;
+use crate::types::CanonicalUrl;
 use reqwest::{redirect, Client};
 use std::time::Duration;
 
@@ -43,9 +44,15 @@ fn redirect_policy(limit: usize) -> redirect::Policy {
         if attempt.previous().len() >= limit {
             return attempt.error("too many redirects");
         }
-        match check_domain_filter(attempt.url().as_str()) {
+        // Every address requested is a `CanonicalUrl` the domain lists
+        // checked, a redirect target too.
+        let address = attempt.url().as_str();
+        match CanonicalUrl::new(address)
+            .ok_or_else(|| QrawlError::InvalidUrl(address.to_string()))
+            .and_then(|url| check_domain_filter(address, &url))
+        {
             Ok(()) => attempt.follow(),
-            Err(blocked) => attempt.error(blocked),
+            Err(error) => attempt.error(error),
         }
     })
 }

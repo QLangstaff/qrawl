@@ -4,7 +4,7 @@ mod tests;
 mod types;
 mod utils;
 
-use crate::types::{Html, Jsonld, Metadata, SocialParts};
+use crate::types::{CanonicalUrl, Html, Jsonld, Metadata, SocialParts};
 use crate::utils::embed_keys::*;
 use crate::utils::{schema_types, social_parts, with_document};
 pub use types::Preview;
@@ -66,20 +66,22 @@ pub fn extract_preview(metadata: &Metadata) -> Preview {
 
 /// Extract the [`SocialParts`] of a social URL — its platform, the kind of
 /// item, and its identifiers — or `None` when the host isn't a recognized
-/// platform or the input isn't a URL. Pure path-pattern matching, no network.
+/// platform. Pure path-pattern matching, no network.
 ///
 /// ```
 /// use qrawl::tools::extract::extract_social_parts;
-/// use qrawl::types::{SocialKind, SocialPlatform};
+/// use qrawl::types::{CanonicalUrl, SocialKind, SocialPlatform};
 ///
-/// let s = extract_social_parts("https://tiktok.com/@user/video/12345").unwrap();
-/// assert_eq!(s.platform, SocialPlatform::TikTok);
-/// assert_eq!(s.kind, Some(SocialKind::Video));
-/// assert_eq!(s.id.as_deref(), Some("12345"));
-/// assert_eq!(s.handle.as_deref(), Some("@user"));
-/// assert!(extract_social_parts("https://example.com/recipe").is_none());
+/// let url = CanonicalUrl::new("https://tiktok.com/@user/video/12345").unwrap();
+/// let social = extract_social_parts(&url).unwrap();
+/// assert_eq!(social.platform, SocialPlatform::TikTok);
+/// assert_eq!(social.kind, Some(SocialKind::Video));
+/// assert_eq!(social.id.as_deref(), Some("12345"));
+/// assert_eq!(social.handle.as_deref(), Some("@user"));
+/// let recipe = CanonicalUrl::new("https://example.com/recipe").unwrap();
+/// assert!(extract_social_parts(&recipe).is_none());
 /// ```
-pub fn extract_social_parts(url: &str) -> Option<SocialParts> {
+pub fn extract_social_parts(url: &CanonicalUrl) -> Option<SocialParts> {
     social_parts(url)
 }
 

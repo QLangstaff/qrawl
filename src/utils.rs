@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use crate::types::{Html, SocialPlatform};
+use crate::types::{CanonicalDomain, CanonicalUrl, Html, SocialPlatform};
 
 mod social;
 
@@ -28,42 +28,6 @@ pub(crate) static LINK_SELECTOR: LazyLock<Selector> =
 pub(crate) static JSONLD_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("script[type='application/ld+json']").expect("valid jsonld selector")
 });
-
-/// The lowercased host of `url`, without the root dot of a fully qualified
-/// name (`example.com.`), or `None` when `url` has no host (`mailto:`,
-/// `file:`).
-pub(crate) fn host_of_url(url: &url::Url) -> Option<String> {
-    url.host_str()
-        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
-}
-
-/// [`host_of_url`] for a URL string, or `None` when it doesn't parse.
-pub(crate) fn host_of(url: &str) -> Option<String> {
-    host_of_url(&url::Url::parse(url).ok()?)
-}
-
-/// Whether `host` is `domain` or a subdomain of it (`old.reddit.com` matches
-/// `reddit.com`; `notreddit.com` doesn't).
-pub(crate) fn host_matches(host: &str, domain: &str) -> bool {
-    host == domain
-        || host
-            .strip_suffix(domain)
-            .is_some_and(|prefix| prefix.ends_with('.'))
-}
-
-/// A host in the form two hosts compare in: lowercased, IDNA-encoded, without
-/// the root dot of a fully qualified name or a `www.` prefix
-/// (`WWW.Example.COM.` → `example.com`). `www.com` keeps its `www.`: without it
-/// the host would be a bare TLD.
-pub(crate) fn canonical_domain(host: &str) -> String {
-    let lower = host.trim_end_matches('.').to_ascii_lowercase();
-    let idna = idna::domain_to_ascii(&lower).unwrap_or(lower);
-    let mut apex = idna.as_str();
-    while let Some(stripped) = apex.strip_prefix("www.").filter(|rest| rest.contains('.')) {
-        apex = stripped;
-    }
-    apex.to_string()
-}
 
 /// The `http(s)` URL `input` names — with `https://` when it names no scheme
 /// (`example.com/a`) — or `None` when it isn't one (`mailto:`, `tel:911`,
@@ -143,11 +107,10 @@ fn names_a_host(input: &str) -> bool {
     is_ipv4 || has_tld
 }
 
-/// The social platform a host belongs to, or `None` for a non-social host.
-/// Subdomain-aware (`old.reddit.com`, `m.facebook.com`, `vm.tiktok.com`) and
-/// handles the alt short-domains (`youtu.be`, `fb.me`, …).
-pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
-    const DOMAINS: &[(&str, SocialPlatform)] = &[
+/// The domains each social platform serves from, short domains included
+/// (`youtu.be`, `fb.me`, …).
+static SOCIAL_DOMAINS: LazyLock<Vec<(CanonicalDomain, SocialPlatform)>> = LazyLock::new(|| {
+    [
         ("reddit.com", SocialPlatform::Reddit),
         ("redd.it", SocialPlatform::Reddit),
         ("tiktok.com", SocialPlatform::TikTok),
@@ -168,10 +131,18 @@ pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
         ("vimeo.com", SocialPlatform::Vimeo),
         ("pinterest.com", SocialPlatform::Pinterest),
         ("pin.it", SocialPlatform::Pinterest),
-    ];
-    DOMAINS
+    ]
+    .into_iter()
+    .map(|(domain, platform)| (CanonicalDomain::new_unchecked(domain), platform))
+    .collect()
+});
+
+/// The social platform a URL belongs to, or `None` for a non-social URL.
+/// Subdomain-aware (`old.reddit.com`, `vm.tiktok.com`).
+pub(crate) fn social_platform(url: &CanonicalUrl) -> Option<SocialPlatform> {
+    SOCIAL_DOMAINS
         .iter()
-        .find(|(domain, _)| host_matches(host, domain))
+        .find(|(domain, _)| url.has_domain(domain))
         .map(|(_, platform)| *platform)
         // Pinterest's country hosts, each verified to redirect to
         // `<country>.pinterest.com`. A `pinterest` label alone proves nothing:
@@ -182,9 +153,11 @@ pub(crate) fn social_platform(host: &str) -> Option<SocialPlatform> {
                 "com.mx", "de", "dk", "es", "fr", "id", "ie", "in", "it", "jp", "kr", "mx", "nl",
                 "nz", "ph", "pt", "ru", "se",
             ];
-            let suffix = host
-                .strip_prefix("pinterest.")
-                .or_else(|| host.split_once(".pinterest.").map(|(_, suffix)| suffix))?;
+            let suffix = url.host().strip_prefix("pinterest.").or_else(|| {
+                url.host()
+                    .split_once(".pinterest.")
+                    .map(|(_, suffix)| suffix)
+            })?;
             COUNTRY_SUFFIXES
                 .contains(&suffix)
                 .then_some(SocialPlatform::Pinterest)

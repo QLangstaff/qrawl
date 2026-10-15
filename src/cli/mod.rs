@@ -5,9 +5,10 @@ mod tests;
 use clap::{Parser, Subcommand};
 use std::io::{Read, Write};
 
+use crate::errors::QrawlError;
 use crate::templates::{qrawl_any_url, qrawl_many_urls, CrawlOptions};
 use crate::tools::fetch::Fetched;
-use crate::types::{CanonicalDomain, Context, Html};
+use crate::types::{CanonicalDomain, CanonicalUrl, Context, Html};
 use crate::{runtime, tools};
 
 #[derive(Parser)]
@@ -333,6 +334,14 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
             include_schemas,
             exclude_schemas,
         } => {
+            let canonical_urls = |urls: Vec<String>| -> Vec<CanonicalUrl> {
+                urls.iter()
+                    .map(|url| {
+                        CanonicalUrl::new(url)
+                            .unwrap_or_else(|| fail(QrawlError::InvalidUrl(url.to_string())))
+                    })
+                    .collect()
+            };
             let canonical_domains = |domains: Vec<String>| -> Vec<CanonicalDomain> {
                 domains
                     .iter()
@@ -344,8 +353,8 @@ async fn run_command(command: Commands, context: Context, out: &mut (impl Write 
                 .with_block_domains(canonical_domains(block_domains));
             let options = CrawlOptions::default()
                 .with_depth(depth)
-                .with_allow_urls(allow_urls)
-                .with_block_urls(block_urls)
+                .with_allow_urls(canonical_urls(allow_urls))
+                .with_block_urls(canonical_urls(block_urls))
                 .with_include_schemas(include_schemas)
                 .with_exclude_schemas(exclude_schemas);
             let options = match limit {

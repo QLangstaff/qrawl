@@ -13,9 +13,9 @@ use crate::errors::QrawlError;
 use crate::tools::extract::{extract_preview, extract_social_parts};
 use crate::tools::fetch::{fetch_embed, fetch_strategy};
 use crate::tools::map::{map_children_from_document, map_page_from_document};
-use crate::tools::normalize::{absolute_url, normalize_urls, CanonicalUrl};
+use crate::tools::normalize::{absolute_url, normalize_urls};
 use crate::tools::scrape::{scrape_embed, scrape_from_document};
-use crate::types::{Context, Html, SocialKind};
+use crate::types::{CanonicalUrl, Context, Html, SocialKind};
 use crate::utils::with_document;
 
 use super::types::PageContent;
@@ -34,10 +34,10 @@ pub(super) struct Target {
 /// `input` isn't an HTTP URL. An input without a scheme (`example.com/a`) is
 /// fetched over `https`.
 pub(super) fn parse_url(input: &str) -> Result<Target, QrawlError> {
-    let address =
-        absolute_url(input).ok_or_else(|| QrawlError::InvalidUrl(input.trim().to_string()))?;
+    let invalid = || QrawlError::InvalidUrl(input.trim().to_string());
+    let address = absolute_url(input).ok_or_else(invalid)?;
     Ok(Target {
-        url: CanonicalUrl::new(&address),
+        url: CanonicalUrl::new(&address).ok_or_else(invalid)?,
         address,
     })
 }
@@ -61,11 +61,8 @@ pub(super) async fn page_content(
     children: Children,
 ) -> Result<(PageContent, Vec<String>), QrawlError> {
     // fetch: the page, and the platform's embed when the URL has one.
-    let (fetched, embed) = futures_util::future::join(
-        fetch_strategy(&target.address),
-        fetch_embed(target.url.as_str()),
-    )
-    .await;
+    let (fetched, embed) =
+        futures_util::future::join(fetch_strategy(&target.address), fetch_embed(&target.url)).await;
     let (fetched, page_error) = match fetched {
         Ok(fetched) => (Some(fetched), None),
         // A filtered page is not stood in for by its embed.
@@ -78,10 +75,10 @@ pub(super) async fn page_content(
     // no item.
     let url = fetched.as_ref().map_or_else(
         || target.url.clone(),
-        |fetched| CanonicalUrl::new(&fetched.address),
+        |fetched| CanonicalUrl::new(&fetched.address).unwrap_or_else(|| target.url.clone()),
     );
     let item = |url: &CanonicalUrl| {
-        extract_social_parts(url.as_str()).map(|social| (social.platform, social.kind, social.id))
+        extract_social_parts(url).map(|social| (social.platform, social.kind, social.id))
     };
     let embed = match item(&url) {
         served if served == item(&target.url) => embed,
@@ -90,7 +87,7 @@ pub(super) async fn page_content(
             _,
             Some(SocialKind::Post | SocialKind::Video | SocialKind::Photo | SocialKind::Comment),
             _,
-        )) => fetch_embed(url.as_str()).await,
+        )) => fetch_embed(&url).await,
         // A wall, a profile, or a plain page: the given item's embed stands.
         _ => embed,
     };
@@ -132,12 +129,16 @@ pub(super) async fn page_content(
     // normalize + extract: the social URLs among the page's links.
     let socials = normalize_urls(&links)
         .into_iter()
-        .filter(|link| extract_social_parts(link).is_some_and(|social| social.kind.is_some()))
+        .filter(|link| {
+            CanonicalUrl::new(link).is_some_and(|url| {
+                extract_social_parts(&url).is_some_and(|social| social.kind.is_some())
+            })
+        })
         .collect();
 
     // extract: the content fields and the URL's social facts.
     let preview = extract_preview(&metadata);
-    let social = extract_social_parts(url.as_str());
+    let social = extract_social_parts(&url);
     let page = PageContent {
         address: fetched
             .as_ref()

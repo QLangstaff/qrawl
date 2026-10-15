@@ -1,6 +1,7 @@
 use crate::tools::scrape::jsonld_entities;
+use crate::types::CanonicalUrl;
+use crate::utils::schema_types;
 use crate::utils::LINK_SELECTOR;
-use crate::utils::{canonical_domain, schema_types};
 use scraper::ElementRef;
 use serde_json::Value;
 use std::cmp::Reverse;
@@ -613,8 +614,9 @@ pub(super) fn map_itemlist_link(
                         let is_this_page = url.path() == base.path()
                             && url.query() == base.query()
                             && url.port_or_known_default() == base.port_or_known_default()
-                            && url.host_str().map(canonical_domain)
-                                == base.host_str().map(canonical_domain);
+                            && CanonicalUrl::new(url.as_str())
+                                .zip(CanonicalUrl::new(base.as_str()))
+                                .is_some_and(|(url, base)| url.host() == base.host());
                         match url.fragment() {
                             Some(fragment) if is_this_page => {
                                 let anchor_id = urlencoding::decode(fragment).ok()?;

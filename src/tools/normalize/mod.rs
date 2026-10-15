@@ -1,10 +1,8 @@
 //! Normalize Tools
 
 mod tests;
-mod types;
 mod utils;
 
-pub use types::CanonicalUrl;
 pub use utils::normalize_url;
 
 use crate::types::Html;

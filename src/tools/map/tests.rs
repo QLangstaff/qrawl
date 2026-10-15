@@ -266,6 +266,34 @@ fn test_map_itemlist_link_multiple() {
 }
 
 #[test]
+fn test_map_itemlist_link_counts_a_mobile_social_host_as_its_desktop_page() {
+    // The base is the mobile host, the item names the desktop host: one page.
+    let html = r##"
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                    "@type": "ItemList",
+                    "itemListElement": [
+                        {"@type": "ListItem", "url": "https://reddit.com/r/x#a"}
+                    ]
+                }
+                </script>
+            </head>
+            <body>
+                <div id="a"><a href="https://target.example/t">Target</a></div>
+            </body>
+            </html>
+        "##;
+
+    let document = scraper::Html::parse_document(html);
+    let itemlist = map_jsonld_itemlist_from_document(&document);
+    let urls = map_itemlist_link(&itemlist, &document, "https://m.reddit.com/r/x");
+
+    assert_eq!(urls, ["https://target.example/t"]);
+}
+
+#[test]
 fn test_map_itemlist() {
     let html = r##"
             <html>

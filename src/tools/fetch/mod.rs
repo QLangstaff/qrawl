@@ -14,7 +14,7 @@ pub use strategies::MAX_RESPONSE_BYTES;
 pub use types::Fetched;
 
 use crate::errors::QrawlError;
-use crate::types::{get_fetch_strategy, FetchStrategy, Html};
+use crate::types::{get_fetch_strategy, CanonicalUrl, FetchStrategy, Html};
 use crate::utils::absolute_url;
 use utils::check_domain_filter;
 
@@ -34,8 +34,8 @@ pub async fn fetch_strategy(url: &str) -> Result<Fetched, QrawlError> {
 }
 
 async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<Fetched, QrawlError> {
-    check_request(url)?;
-    let (address, html) = strategies::fetch_html(url, strategy).await?;
+    let canonical_url = check_request(url)?;
+    let (address, html) = strategies::fetch_html(url, &canonical_url, strategy).await?;
     Ok(Fetched {
         address,
         html: Html::new(html),
@@ -45,15 +45,18 @@ async fn fetch_html(url: &str, strategy: FetchStrategy) -> Result<Fetched, Qrawl
 /// Fetch raw bytes (images, PDFs, JSON) with the strategy of the enclosing
 /// [`Context`](crate::types::Context).
 pub async fn fetch_bytes(url: &str, referer: Option<&str>) -> Result<Vec<u8>, QrawlError> {
-    check_request(url)?;
-    strategies::fetch_bytes(url, get_fetch_strategy(), referer).await
+    let canonical_url = check_request(url)?;
+    strategies::fetch_bytes(url, &canonical_url, get_fetch_strategy(), referer).await
 }
 
 /// Refuse, before any network, a URL that isn't `http(s)` or that the domain
-/// filter rejects.
-fn check_request(url: &str) -> Result<(), QrawlError> {
+/// filter rejects; otherwise its [`CanonicalUrl`].
+fn check_request(url: &str) -> Result<CanonicalUrl, QrawlError> {
+    let invalid = || QrawlError::InvalidUrl(url.to_string());
     if absolute_url(url).as_deref() != Some(url.trim()) {
-        return Err(QrawlError::InvalidUrl(url.to_string()));
+        return Err(invalid());
     }
-    check_domain_filter(url)
+    let canonical_url = CanonicalUrl::new(url).ok_or_else(invalid)?;
+    check_domain_filter(url, &canonical_url)?;
+    Ok(canonical_url)
 }

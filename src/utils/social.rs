@@ -3,30 +3,28 @@
 
 use url::Url;
 
-use crate::types::{SocialKind, SocialParts, SocialPlatform};
+use crate::types::{CanonicalUrl, SocialKind, SocialParts, SocialPlatform};
 
-use super::{canonical_domain, host_of_url, social_platform};
+use super::social_platform;
 
 /// The [`SocialParts`] of a social URL, or `None` when the host isn't a
-/// recognized platform or the input isn't a URL.
-pub(crate) fn social_parts(input: &str) -> Option<SocialParts> {
-    let url = Url::parse(input).ok()?;
-    let host = canonical_domain(&host_of_url(&url)?);
-    let platform = social_platform(&host)?;
+/// recognized platform.
+pub(crate) fn social_parts(url: &CanonicalUrl) -> Option<SocialParts> {
+    let platform = social_platform(url)?;
 
-    let (kind, id, handle) = if is_opaque_shortener(&host) {
+    let (kind, id, handle) = if is_opaque_shortener(url.host()) {
         // Platform known, but the path is an opaque short code that only a
         // network round-trip expands.
         (None, None, None)
     } else {
-        let segments = path_segments(&url);
+        let segments = path_segments(url.as_url());
         match platform {
             SocialPlatform::Reddit => reddit_parts(&segments),
             SocialPlatform::TikTok => tiktok_parts(&segments),
             SocialPlatform::Instagram => instagram_parts(&segments),
-            SocialPlatform::Facebook => facebook_parts(&segments, &url),
+            SocialPlatform::Facebook => facebook_parts(&segments, url.as_url()),
             SocialPlatform::Pinterest => pinterest_parts(&segments),
-            SocialPlatform::YouTube => youtube_parts(&host, &segments, &url),
+            SocialPlatform::YouTube => youtube_parts(url.host(), &segments, url.as_url()),
             SocialPlatform::Twitter => twitter_parts(&segments),
             SocialPlatform::LinkedIn => linkedin_parts(&segments),
             SocialPlatform::Vimeo => vimeo_parts(&segments),

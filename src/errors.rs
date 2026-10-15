@@ -45,13 +45,17 @@ pub enum QrawlError {
 impl QrawlError {
     /// Whether another fetch profile could not change the outcome. A 3xx
     /// status is one the client couldn't follow (an invalid `Location`), which
-    /// no profile can. A redirect loop or a consent interstitial may be a
+    /// no profile can, and neither can a redirect to an address that isn't a
+    /// URL. A redirect loop or a consent interstitial may be a
     /// cookie the client didn't keep, so it's final only after a profile that
     /// keeps cookies met it.
     pub(crate) fn is_final(&self) -> bool {
         matches!(
             self,
-            Self::BlockedDomain(_) | Self::Status(300..=399 | 404 | 410) | Self::TooLarge(_)
+            Self::InvalidUrl(_)
+                | Self::BlockedDomain(_)
+                | Self::Status(300..=399 | 404 | 410)
+                | Self::TooLarge(_)
         )
     }
 }

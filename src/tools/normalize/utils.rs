@@ -2,14 +2,12 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
-use url::Url;
 
 use html5ever::tokenizer::{TagKind, Token, TokenSink, TokenSinkResult};
 
-use crate::types::SocialPlatform;
+use crate::types::CanonicalUrl;
 use crate::utils::{
-    absolute_url, canonical_domain, host_of_url, parse_document_bounded, parse_fragment_bounded,
-    pinterest_pin_id, social_platform, tokenize_until, PHONE_EXTENSION, TLD_LEN,
+    parse_document_bounded, parse_fragment_bounded, tokenize_until, PHONE_EXTENSION, TLD_LEN,
 };
 
 // Lazy static regex for whitespace normalization
@@ -37,31 +35,6 @@ static JUNK_ATTRIBUTE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid regex")
 });
-
-/// Tracking / analytics query parameters stripped by `normalize_url` so the
-/// same page reached via different campaigns/referrers canonicalizes identically.
-///
-/// Coverage is the top ~10 sources that dominate real-world noise; not exhaustive.
-/// In addition to this exact-match list, any param whose name starts with `utm_`
-/// is stripped (covers the full Urchin Tracking Module family).
-const TRACKING_PARAM_PREFIXES: &[&str] = &["utm_"];
-const TRACKING_PARAM_NAMES: &[&str] = &[
-    "fbclid",  // Facebook click ID
-    "gclid",   // Google Ads click ID
-    "mc_eid",  // Mailchimp email ID
-    "mc_cid",  // Mailchimp campaign ID
-    "_ga",     // Google Analytics
-    "igshid",  // Instagram share ID
-    "ref_src", // Twitter/X referrer source
-    "ref_url", // generic referrer URL
-];
-
-fn is_tracking_param(key: &str) -> bool {
-    TRACKING_PARAM_PREFIXES
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
-        || TRACKING_PARAM_NAMES.contains(&key)
-}
 
 /// Decode HTML entities (named and numeric).
 ///
@@ -134,168 +107,9 @@ pub(super) fn normalize_each(items: &[String], normalize: impl Fn(&str) -> Strin
         .collect()
 }
 
-/// The general canonicalization every URL gets.
-///
-/// Performs:
-/// 1. Add https:// if protocol is missing
-/// 2. Normalize protocol to https
-/// 3. Canonicalize domain (lowercase, IDNA, strip www)
-/// 4. Normalize path (strip all trailing slashes)
-/// 5. Strip tracking / analytics query params (utm_*, fbclid, gclid, ...)
-/// 6. Sort remaining query parameters
-/// 7. Remove fragment
-///
-/// Examples:
-/// - `example.com` → `https://example.com`
-/// - `HTTP://Example.com/path/` → `https://example.com/path`
-/// - `https://www.example.com?b=2&a=1` → `https://example.com/?a=1&b=2`
-/// - `https://example.com/page#section` → `https://example.com/page`
-/// - `https://example.com?utm_source=x&id=7` → `https://example.com/?id=7`
-fn normalize_any_url(url: &str) -> String {
-    let Some(url_with_protocol) = absolute_url(url) else {
-        return url.to_string();
-    };
-
-    let mut parsed = match Url::parse(&url_with_protocol) {
-        Ok(parsed_url) => parsed_url,
-        Err(_) => return url.to_string(), // Keep malformed URLs as-is
-    };
-
-    // 1. Normalize protocol to https
-    let _ = parsed.set_scheme("https");
-
-    // 2. Canonicalize domain
-    if let Some(host) = parsed.host_str() {
-        let canonical_host = canonical_domain(host);
-        let _ = parsed.set_host(Some(&canonical_host));
-    }
-
-    // 3. Normalize path (strip all trailing slashes)
-    let path = parsed.path().to_string();
-    let normalized = path.trim_end_matches('/');
-    let new_path = if normalized.is_empty() {
-        ""
-    } else {
-        normalized
-    };
-    parsed.set_path(new_path);
-
-    // 4. Strip tracking params, then sort the remaining query parameters by
-    // key. The pairs stay percent-encoded, so `?q=a%26b` keeps its one value.
-    let query = kept_query(&parsed, |key| !is_tracking_param(key), true);
-    parsed.set_query(query.as_deref());
-
-    // 5. Remove fragment
-    parsed.set_fragment(None);
-
-    // url crate adds trailing slash for empty path, strip it
-    serialize(&parsed)
-}
-
-/// Canonicalize a URL: the one form two URLs of the same page share.
-///
-/// Performs the general pass (`normalize_any_url`), then — for a recognized
-/// social platform only — strips a mobile host prefix (`m.`/`mobile.`) and the
-/// share / referrer tokens (`si`, `s`, `feature`, …) that would otherwise
-/// split one item across look-alike URLs, and names a Pinterest pin by its id
-/// (`/pin/<title>--<id>` → `/pin/<id>`). A plain web page keeps a functional
-/// `?s=`.
+/// Canonicalize a URL ([`CanonicalUrl::new`]). What isn't an `http(s)` URL is returned as given.
 pub fn normalize_url(url: &str) -> String {
-    let normalized = normalize_any_url(url);
-    let Ok(mut parsed) = Url::parse(&normalized) else {
-        return normalized;
-    };
-    let Some(host) = host_of_url(&parsed) else {
-        return normalized;
-    };
-    // Social rules apply only to recognized platforms (so a plain web page keeps
-    // a functional `?s=` / `?ref=` and its `m.` host).
-    let Some(platform) = social_platform(&host) else {
-        return normalized;
-    };
-
-    // Strip a mobile host prefix (the `vm.`/`vt.` shorteners are kept on purpose).
-    let mut desktop_host = host.as_str();
-    while let Some(stripped) = desktop_host
-        .strip_prefix("m.")
-        .or_else(|| desktop_host.strip_prefix("mobile."))
-        .or_else(|| desktop_host.strip_prefix("www."))
-    {
-        desktop_host = stripped;
-    }
-    let _ = parsed.set_host(Some(desktop_host));
-
-    let query = kept_query(&parsed, |key| !is_social_tracker(key), false);
-    parsed.set_query(query.as_deref());
-
-    if platform == SocialPlatform::Pinterest {
-        if let Some(path) = pinterest_pin_path(parsed.path()) {
-            parsed.set_path(&path);
-        }
-    }
-
-    serialize(&parsed)
-}
-
-/// A Pinterest pin's path with its pin segment reduced to the id
-/// (`/pin/<title>--<id>` → `/pin/<id>`): a pin's title can change, its id
-/// can't. `None` when `path` is no pin's.
-fn pinterest_pin_path(path: &str) -> Option<String> {
-    let (segment, rest) = path
-        .strip_prefix("/pin/")
-        .map(|after| after.split_once('/').unwrap_or((after, "")))?;
-    let id = pinterest_pin_id(segment)?;
-    Some(match rest {
-        "" => format!("/pin/{id}"),
-        rest => format!("/pin/{id}/{rest}"),
-    })
-}
-
-/// `url` as a string, without the `/` the `url` crate writes for an empty
-/// path. A query keeps it (`https://example.com/?a=1`), so a slash inside a
-/// query value is never mistaken for it.
-fn serialize(url: &Url) -> String {
-    let serialized = url.to_string();
-    match (url.path(), url.query()) {
-        ("/", None) => serialized.trim_end_matches('/').to_string(),
-        _ => serialized,
-    }
-}
-
-/// The query of `url` with only the pairs whose key `keep` accepts, as written
-/// (still percent-encoded), sorted by key when `sort`. `None` when no pair is
-/// left.
-fn kept_query(url: &Url, keep: impl Fn(&str) -> bool, sort: bool) -> Option<String> {
-    let key_of = |pair: &str| pair.split('=').next().unwrap_or(pair).to_string();
-    let mut pairs: Vec<&str> = url
-        .query()?
-        .split('&')
-        .filter(|pair| !pair.is_empty() && keep(&key_of(pair)))
-        .collect();
-    if sort {
-        pairs.sort_by_key(|pair| key_of(pair));
-    }
-    (!pairs.is_empty()).then(|| pairs.join("&"))
-}
-
-/// Social share / referrer tokens [`normalize_url`] strips on top of the
-/// general trackers, for recognized platforms only.
-fn is_social_tracker(key: &str) -> bool {
-    matches!(
-        key,
-        "si" | "igsh"
-            | "s"
-            | "_t"
-            | "_r"
-            | "ref"
-            | "share_id"
-            | "share_app_id"
-            | "is_from_webapp"
-            | "sender_device"
-            | "feature"
-            | "rdt"
-            | "spm"
-    )
+    CanonicalUrl::new(url).map_or_else(|| url.to_string(), CanonicalUrl::into_inner)
 }
 
 /// Normalize a single email address.

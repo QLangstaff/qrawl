@@ -1,6 +1,6 @@
 #![cfg(test)]
 use crate::tools::extract::*;
-use crate::types::{SocialKind, SocialPlatform};
+use crate::types::{CanonicalUrl, SocialKind, SocialParts, SocialPlatform};
 use serde_json::json;
 
 #[tokio::test]
@@ -122,9 +122,14 @@ async fn test_extract_phones_preserves_formats() {
 // Inputs are already canonical (the pipeline runs `normalize_social` first).
 // ---------------------------------------------------------------------------
 
+/// The [`SocialParts`] of a URL string, or `None` when it isn't a social URL.
+fn social_parts_of(url: &str) -> Option<SocialParts> {
+    CanonicalUrl::new(url).and_then(|url| extract_social_parts(&url))
+}
+
 /// Extract a URL's [`SocialParts`] parts. Panics on a non-social URL.
 fn social(url: &str) -> SocialParts {
-    extract_social_parts(url).unwrap_or_else(|| panic!("expected a social URL: {url}"))
+    social_parts_of(url).unwrap_or_else(|| panic!("expected a social URL: {url}"))
 }
 
 #[test]
@@ -412,11 +417,11 @@ fn facebook_watch_and_profile() {
 
 #[test]
 fn non_social_and_unparseable_are_none() {
-    assert!(extract_social_parts("https://example.com/foo/bar").is_none());
-    assert!(extract_social_parts("https://www.allrecipes.com/recipe/10813").is_none());
-    assert!(extract_social_parts("http://").is_none()); // a URL, but has no host
-    assert!(extract_social_parts("mailto:hi@example.com").is_none());
-    assert!(extract_social_parts("not a url").is_none());
+    assert!(social_parts_of("https://example.com/foo/bar").is_none());
+    assert!(social_parts_of("https://www.allrecipes.com/recipe/10813").is_none());
+    assert!(social_parts_of("http://").is_none()); // a URL, but has no host
+    assert!(social_parts_of("mailto:hi@example.com").is_none());
+    assert!(social_parts_of("not a url").is_none());
 }
 
 #[test]
@@ -466,10 +471,10 @@ fn share_buttons_have_no_social_kind() {
         "https://facebook.com/sharer.php?u=https://example.com",
         "https://pinterest.com/pin/create/button/?url=https://example.com",
     ] {
-        let social = extract_social_parts(url).expect("social host");
+        let social = social_parts_of(url).expect("social host");
         assert_eq!(social.kind, None, "{url}");
     }
-    let profile = extract_social_parts("https://twitter.com/rustlang").expect("social host");
+    let profile = social_parts_of("https://twitter.com/rustlang").expect("social host");
     assert_eq!(profile.kind, Some(SocialKind::Profile));
 }
 
@@ -505,19 +510,19 @@ fn site_pages_and_authorless_paths_are_not_profiles() {
         "https://vimeo.com/categories",
         "https://facebook.com/watch/",
     ] {
-        let social = extract_social_parts(url).expect("social host");
+        let social = social_parts_of(url).expect("social host");
         assert_eq!(social.kind, None, "{url}");
     }
-    let post = extract_social_parts("https://x.com/i/status/1").expect("social host");
+    let post = social_parts_of("https://x.com/i/status/1").expect("social host");
     assert_eq!(post.kind, Some(SocialKind::Post));
     assert_eq!(post.handle, None);
 }
 
 #[test]
 fn a_www_prefix_does_not_change_what_a_short_host_means() {
-    let short = extract_social_parts("https://www.pin.it/abc").expect("social host");
+    let short = social_parts_of("https://www.pin.it/abc").expect("social host");
     assert_eq!(short.kind, None);
-    let video = extract_social_parts("https://www.youtu.be/dQw4w9WgXcQ").expect("social host");
+    let video = social_parts_of("https://www.youtu.be/dQw4w9WgXcQ").expect("social host");
     assert_eq!(video.kind, Some(SocialKind::Video));
     assert_eq!(video.id.as_deref(), Some("dQw4w9WgXcQ"));
 }
@@ -565,7 +570,7 @@ fn only_pinterest_country_hosts_are_pinterest() {
 }
 
 fn is_social(url: &str) -> bool {
-    extract_social_parts(url).is_some()
+    social_parts_of(url).is_some()
 }
 
 #[tokio::test]
@@ -585,7 +590,7 @@ async fn emails_and_phones_come_from_content_not_from_scripts() {
 #[test]
 fn a_playlist_player_is_not_a_video() {
     let player =
-        extract_social_parts("https://youtube.com/embed/videoseries?list=PL1").expect("youtube");
+        social_parts_of("https://youtube.com/embed/videoseries?list=PL1").expect("youtube");
     assert_eq!(player.kind, None);
 }
 

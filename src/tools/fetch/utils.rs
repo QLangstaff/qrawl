@@ -1,46 +1,33 @@
 use crate::errors::QrawlError;
-use crate::types::{with_context, CanonicalDomain};
-use crate::utils::{canonical_domain, host_matches, host_of};
+use crate::types::{with_context, CanonicalDomain, CanonicalUrl};
 
 // ---------------------------------------------------------------------------
 // Domain filtering
 // ---------------------------------------------------------------------------
 
-/// Whether `url`'s host passes the allow/block lists. An empty list filters
-/// nothing; a blocked host loses even when it's also allowed; a URL with no
-/// host passes only when there's no allowlist. Hosts compare in
-/// [`canonical_domain`] form, which a [`CanonicalDomain`] already is.
+/// Whether `url` passes the allow/block lists. An empty list filters
+/// nothing; a blocked domain loses even when it's also allowed.
 pub(super) fn is_url_allowed(
-    url: &str,
+    url: &CanonicalUrl,
     allow_domains: &[CanonicalDomain],
     block_domains: &[CanonicalDomain],
 ) -> bool {
-    if allow_domains.is_empty() && block_domains.is_empty() {
-        return true;
-    }
-    let Some(host) = host_of(url) else {
-        return allow_domains.is_empty();
-    };
-    let host = canonical_domain(&host);
-    let matches_any = |domains: &[CanonicalDomain]| {
-        domains
-            .iter()
-            .any(|listed| host_matches(&host, listed.as_str()))
-    };
+    let matches_any =
+        |domains: &[CanonicalDomain]| domains.iter().any(|domain| url.has_domain(domain));
     !matches_any(block_domains) && (allow_domains.is_empty() || matches_any(allow_domains))
 }
 
 /// Enforce the enclosing `Context`'s domain lists on a URL about to be
 /// requested: the one given, or one a redirect points to. Outside a
 /// `Context::scope` nothing is filtered.
-pub(super) fn check_domain_filter(url: &str) -> Result<(), QrawlError> {
+pub(super) fn check_domain_filter(address: &str, url: &CanonicalUrl) -> Result<(), QrawlError> {
     let is_allowed =
         with_context(|context| is_url_allowed(url, &context.allow_domains, &context.block_domains))
             .unwrap_or(true);
     if is_allowed {
         Ok(())
     } else {
-        Err(QrawlError::BlockedDomain(url.to_string()))
+        Err(QrawlError::BlockedDomain(address.to_string()))
     }
 }
 
